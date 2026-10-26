@@ -86,34 +86,37 @@ func configEntryPoints(rel string, data []byte) []entryPoint {
 	}
 	var (
 		eps  []entryPoint
-		walk func(v any, keys []string)
+		walk func(v any, keys []string, matcher string)
 	)
-	walk = func(v any, keys []string) {
+	walk = func(v any, keys []string, matcher string) {
 		switch v := v.(type) {
 		case map[string]any:
-			if ep, ok := configEntry(rel, v, keys); ok {
+			if m, ok := v["matcher"].(string); ok { // applies to the hooks under it
+				matcher = m
+			}
+			if ep, ok := configEntry(rel, v, keys, matcher); ok {
 				eps = append(eps, ep)
 			}
 			for _, k := range slices.Sorted(maps.Keys(v)) {
-				walk(v[k], append(slices.Clip(keys), k))
+				walk(v[k], append(slices.Clip(keys), k), matcher)
 			}
 		case []any:
 			for _, child := range v {
-				walk(child, keys)
+				walk(child, keys, matcher)
 			}
 		}
 	}
-	walk(doc, nil)
+	walk(doc, nil, "")
 	return eps
 }
 
-func configEntry(rel string, entry map[string]any, keys []string) (entryPoint, bool) {
+func configEntry(rel string, entry map[string]any, keys []string, matcher string) (entryPoint, bool) {
 	cmd, ok := entry["command"].(string)
 	if !ok || cmd == "" {
 		return entryPoint{}, false
 	}
 	if event, ok := keyAfter(keys, "hooks"); ok {
-		return entryPoint{Kind: "hook", Name: event, Source: rel, Command: cmd, Stdin: hookInput(event)}, true
+		return entryPoint{Kind: "hook", Name: event, Source: rel, Command: cmd, Stdin: hookInput(event, matcher)}, true
 	}
 	if name, ok := keyAfter(keys, "mcpServers"); ok {
 		var args []string
@@ -130,9 +133,30 @@ func configEntry(rel string, entry map[string]any, keys []string) (entryPoint, b
 	return entryPoint{}, false
 }
 
+// _toolInputs are realistic tool calls for tool hooks, by tool name.
+var _toolInputs = map[string]map[string]any{
+	"Bash":      {"command": "ls"},
+	"Edit":      {"file_path": "/home/runner/work/README.md", "old_string": "a", "new_string": "b"},
+	"MultiEdit": {"file_path": "/home/runner/work/README.md", "edits": []any{}},
+	"Write":     {"file_path": "/home/runner/work/README.md", "content": "# readme\n"},
+	"Read":      {"file_path": "/home/runner/work/README.md"},
+	"WebFetch":  {"url": "https://example.com", "prompt": "summarize"},
+}
+
+// matcherTool picks the tool a hook's matcher fires for ("Edit|Write" →
+// Edit), so the hook takes its real path. Patterns and unknown tools get Bash.
+func matcherTool(matcher string) string {
+	for _, alt := range strings.Split(matcher, "|") {
+		if _, ok := _toolInputs[strings.TrimSpace(alt)]; ok {
+			return strings.TrimSpace(alt)
+		}
+	}
+	return "Bash"
+}
+
 // hookInput is a realistic event payload for a hook's stdin, so the hook
 // takes its normal path instead of failing on empty input.
-func hookInput(event string) string {
+func hookInput(event, matcher string) string {
 	in := map[string]any{
 		"session_id":      "sbox",
 		"transcript_path": "/home/runner/.claude/transcript.jsonl",
@@ -140,9 +164,11 @@ func hookInput(event string) string {
 		"hook_event_name": event,
 	}
 	switch strings.ToLower(event) {
-	case "pretooluse", "posttooluse", "beforeshellexecution", "aftershellexecution":
-		in["tool_name"] = "Bash"
-		in["tool_input"] = map[string]any{"command": "ls"}
+	case "pretooluse", "posttooluse":
+		tool := matcherTool(matcher)
+		in["tool_name"] = tool
+		in["tool_input"] = _toolInputs[tool]
+	case "beforeshellexecution", "aftershellexecution": // Cursor
 		in["command"] = "ls"
 	case "userpromptsubmit", "beforesubmitprompt":
 		in["prompt"] = "hello"

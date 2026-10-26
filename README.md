@@ -127,7 +127,7 @@ fresh microVM, as `runner`, under strace:
 
 | Entry point | Found in | Run as |
 |---|---|---|
-| hook commands | `hooks.json`, `settings.json`, `plugin.json` (Claude Code and Cursor layouts) | the command, with a realistic event JSON on stdin and `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` set |
+| hook commands | `hooks.json`, `settings.json`, `plugin.json` (Claude Code and Cursor layouts) | the command, with a realistic event JSON on stdin (tool hooks get a call to the tool their matcher names, e.g. `Edit` for `Edit\|Write`) and `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` set |
 | stdio MCP servers | `.mcp.json`, `mcp.json`, `plugin.json` | the server, sent `initialize` and `tools/list`, kept running until the timeout |
 | npm install scripts | root `package.json` (`preinstall`, `install`, `postinstall`, `prepare`) | `npm run-script <hook>` |
 | `setup.py` | root | `python3 setup.py egg_info` |

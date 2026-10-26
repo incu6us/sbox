@@ -198,7 +198,7 @@ func writeScanJSON(w io.Writer, dir string, runs []entryRun, findings [][]findin
 		e := entryJSON{
 			Kind: r.ep.Kind, Name: r.ep.Name, Source: r.ep.Source, Command: r.ep.Command,
 			Ran: r.ran, ExitCode: r.exitCode,
-			Processes: eventStrings(r.procs), Network: eventStrings(r.network), Files: eventStrings(r.files),
+			Processes: eventStrings(r.procs), Network: networkItems(r), Files: eventStrings(r.files),
 			DNS: []dnsJSON{}, Findings: append([]finding{}, findings[i]...),
 		}
 		for _, d := range r.dns {

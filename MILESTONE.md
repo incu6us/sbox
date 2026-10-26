@@ -11,7 +11,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 4 | Guest instrumentation and skill entry points: `sbox scan` ✅, more entry points ⬜ | 🟡 |
 | 5 | Dependency prefetch | ⬜ |
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
-| 7 | Calibration on installed skills and plugins | ⬜ |
+| 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | ⬜ |
 
 ## Architecture
@@ -214,11 +214,37 @@ registries.
   a missing file; planting fake ones with unique markers would also show
   whether the content went anywhere.
 
-## 7. Calibration ⬜
+## 7. Calibration ✅
 
-Run sbox on the installed skills and plugins (the 53 targets from
-`skills-audit -installed`), especially those with hooks and MCP servers, and
-tune it until the noise is acceptable.
+Scanned all 73 installed plugin and skill folders from
+`skills-audit -installed`, plus the cached copies of three uninstalled plugins
+that ship real hooks.
+
+- Only ponytail, among the installed ones, declares local entry points;
+  figma and vercel use remote (HTTP) MCP servers, which can't run locally.
+  The other targets return "no automatic entry points" without starting a VM.
+- Results over 4 plugins and 12 entry points:
+
+  | Plugin | Verdict | Notes |
+  |---|---|---|
+  | ponytail | PASS | one low: its own marker file under `~/.claude` |
+  | claude-obsidian | PASS | 4 hooks |
+  | claude-seo | PASS | 1 hook |
+  | vercel-plugin | REVIEW | a SessionStart hook looks up `telemetry.vercel.com`: telemetry on every session start |
+
+  No false positives, no timeouts; the vercel finding is the kind static
+  review misses.
+- Fixed from what the run showed:
+  - Tool-hook payloads follow the hook's matcher (`Edit|Write` → an `Edit`
+    call with a `file_path`), instead of always `Bash`, so hooks take their
+    real path.
+  - JSON's `network` list matches the text report: when the DNS logger has the
+    name, strace's anonymous DNS line is dropped.
+- Not scanned: the user's own hooks in `~/.claude*/settings.json` and
+  `~/.cursor/hooks.json`. `sbox scan` copies a folder into the VM, and those
+  folders hold session transcripts and caches; their hooks also call host
+  binaries by absolute path, which don't exist in the guest. A `-file` mode
+  that copies a single config file is the way to cover them if needed.
 
 ## v2 ⬜
 
