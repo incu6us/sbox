@@ -24,7 +24,13 @@ chown -R runner:runner /home/runner
 
 echo "SBOX-$nonce START"
 cd /home/runner/work
-setpriv --reuid=runner --regid=runner --init-groups --reset-env sh /drive/sbox/cmd.sh </dev/null 2>&1
+if [ -f /drive/sbox/scan.sh ]; then
+	# Scan mode: the script runs as root and drops each entry point to the
+	# runner under strace. It prints its own markers, so it gets the nonce.
+	nonce="$nonce" sh /drive/sbox/scan.sh </dev/null 2>&1
+else
+	setpriv --reuid=runner --regid=runner --init-groups --reset-env sh /drive/sbox/cmd.sh </dev/null 2>&1
+fi
 status=$?
 echo # the command's output may not end with a newline
 echo "SBOX-$nonce EXIT $status"

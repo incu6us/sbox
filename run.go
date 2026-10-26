@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +39,16 @@ type runResult struct {
 	started  bool
 	exitCode int // the command's, valid when started && !timedOut
 	timedOut bool
+	markers  []string // other nonce-marked lines from the guest, prefix removed
+}
+
+// guestJob is what the guest runs: a command as the runner, or a scan
+// script as root (it drops to the runner for what it runs), with input
+// files for it under sbox/in/.
+type guestJob struct {
+	command []string
+	scan    string
+	files   map[string]string
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -60,7 +72,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	start := time.Now()
-	res, err := runVM(ctx, rest[0], rest[2:], *timeout, *verbose, stdout, stderr)
+	res, err := runVM(ctx, rest[0], guestJob{command: rest[2:]}, *timeout, *verbose, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
@@ -78,10 +90,10 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return res.exitCode
 }
 
-// runVM sends the directory and command into a fresh microVM and streams
-// the guest's output to out, the VM side's diagnostics to errOut. They must
-// be separate writers: exec copies errOut from its own goroutine.
-func runVM(ctx context.Context, dir string, command []string, timeout time.Duration, verbose bool, out, errOut io.Writer) (runResult, error) {
+// runVM sends the directory and job into a fresh microVM and streams the
+// guest's output to out, the VM side's diagnostics to errOut. They must be
+// separate writers: exec copies errOut from its own goroutine.
+func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration, verbose bool, out, errOut io.Writer) (runResult, error) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return runResult{}, fmt.Errorf("%s: not a directory", dir)
 	}
@@ -95,7 +107,7 @@ func runVM(ctx context.Context, dir string, command []string, timeout time.Durat
 	}
 
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeRunTar(pw, dir, command, nonce)) }()
+	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce)) }()
 
 	// The VM side enforces the timeout; the host one only catches a hung VM.
 	ctx, cancel := context.WithTimeout(ctx, timeout+30*time.Second)
@@ -130,15 +142,16 @@ func runVM(ctx context.Context, dir string, command []string, timeout time.Durat
 func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string) runResult {
 	var (
 		res     runResult
-		blank   bool // held back: the init prints one before its exit marker
-		start   = "SBOX-" + nonce + " START"
-		exitPfx = "SBOX-" + nonce + " EXIT "
+		blank   bool // held back: the guest prints one before each marker
+		mark    = "SBOX-" + nonce + " "
+		start   = mark + "START"
+		exitPfx = mark + "EXIT "
 	)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
-		if blank && !strings.HasPrefix(line, exitPfx) {
+		if blank && !strings.HasPrefix(line, mark) {
 			_, _ = fmt.Fprintln(out, "│")
 		}
 		blank = false
@@ -149,6 +162,8 @@ func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string) runRe
 			if code, err := strconv.Atoi(strings.TrimPrefix(line, exitPfx)); err == nil {
 				res.exitCode = code
 			}
+		case strings.HasPrefix(line, mark):
+			res.markers = append(res.markers, strings.TrimPrefix(line, mark))
 		case res.started && line == "":
 			blank = true
 		case res.started && !isNoise(line):
@@ -181,9 +196,9 @@ func printable(s string) string {
 }
 
 // writeRunTar packs what the guest gets: skill/ (the directory, symlinks
-// kept as links), sbox/init.sh and sbox/nonce for root only, and
-// sbox/cmd.sh for the runner.
-func writeRunTar(w io.Writer, dir string, command []string, nonce string) error {
+// kept as links), sbox/init.sh, sbox/nonce and sbox/scan.sh for root only,
+// sbox/cmd.sh and sbox/in/* for the runner.
+func writeRunTar(w io.Writer, dir string, job guestJob, nonce string) error {
 	tw := tar.NewWriter(w)
 	total := int64(0)
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -233,15 +248,23 @@ func writeRunTar(w io.Writer, dir string, command []string, nonce string) error 
 		return err
 	}
 
-	cmdScript := "#!/bin/sh\nexec " + shellJoin(command) + "\n"
-	for _, f := range []struct {
+	type file struct {
 		name, body string
 		mode       int64
-	}{
+	}
+	files := []file{
 		{"sbox/init.sh", _guestInit, 0o700},
 		{"sbox/nonce", nonce, 0o400},
-		{"sbox/cmd.sh", cmdScript, 0o755},
-	} {
+	}
+	if job.scan != "" {
+		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})
+	} else {
+		files = append(files, file{"sbox/cmd.sh", "#!/bin/sh\nexec " + shellJoin(job.command) + "\n", 0o755})
+	}
+	for _, name := range slices.Sorted(maps.Keys(job.files)) {
+		files = append(files, file{"sbox/in/" + name, job.files[name], 0o644})
+	}
+	for _, f := range files {
 		hdr := &tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.body)), Typeflag: tar.TypeReg}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err

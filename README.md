@@ -28,6 +28,7 @@ sbox setup
 sbox setup
 sbox doctor
 sbox run [-timeout <duration>] [-v] <dir> -- <command> [args...]
+sbox scan [-timeout <duration>] [-v] <dir>
 ```
 
 ### `sbox setup`
@@ -112,6 +113,51 @@ What each run gets:
   fake its exit status; a timeout is reported outside the guest's console
 - cleanup of the run's jail, drive, cgroup and namespace afterwards, also on
   timeout
+
+### `sbox scan`
+
+```sh
+./sbox scan ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>
+./sbox scan -timeout 30s -v ./some-skill      # longer per entry point, show their output
+```
+
+Finds the skill's automatic entry points and runs each one in a single
+fresh microVM, as `runner`, under strace:
+
+| Entry point | Found in | Run as |
+|---|---|---|
+| hook commands | `hooks.json`, `settings.json`, `plugin.json` (Claude Code and Cursor layouts) | the command, with a realistic event JSON on stdin and `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` set |
+| stdio MCP servers | `.mcp.json`, `mcp.json`, `plugin.json` | the server, sent `initialize` and `tools/list`, kept running until the timeout |
+| npm install scripts | root `package.json` (`preinstall`, `install`, `postinstall`, `prepare`) | `npm run-script <hook>` |
+| `setup.py` | root | `python3 setup.py egg_info` |
+
+Dependency folders are skipped. For each entry point the report shows its exit
+status and what it did: processes started, network connections attempted
+(with destination), and files read, written, deleted or renamed outside system
+paths. Example, for a plugin's SessionStart hook:
+
+```
+1/2  hook SessionStart (hooks/hooks.json)
+     $ command -v node >/dev/null 2>&1 && node "${CLAUDE_PLUGIN_ROOT}/hooks/activate.js" || exit 0
+     exit 0
+     processes  node /home/runner/work/hooks/activate.js
+     network    none
+     files      read /home/runner/.config/plugin/config.json (ENOENT)
+                write /home/runner/.claude/.plugin-active
+```
+
+| Flag | Meaning |
+|---|---|
+| `-timeout <duration>` | Stop each entry point after this long. Default `20s`. |
+| `-v` | Also show the entry points' own output. |
+
+How it stays trustworthy: strace runs as root and writes each trace to a
+root-only directory, so an entry point can't edit the record of what it did.
+Every `runner` process is killed before the next entry point starts. The
+network is blocked as for `sbox run`, so connections show up as attempts; a
+hostname lookup currently shows as "DNS lookup" without the name (milestone
+3b). Exit codes: `0` the scan completed, `125` sbox failed. Verdicts come in
+milestone 6.
 
 ## Managing the VM
 

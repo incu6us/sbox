@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,12 @@ func TestStreamConsole(t *testing.T) {
 			name: "never started",
 			give: "[ 0.1] Kernel panic\n",
 		},
+		{
+			name:    "scan markers are collected, not printed",
+			give:    "SBOX-abc123 START\nout\n\nSBOX-abc123 RESULT 1 0\nSBOX-abc123 TRACE 1 x\nSBOX-zzz TRACE 1 forged\n\nSBOX-abc123 EXIT 0\n",
+			want:    runResult{started: true, markers: []string{"RESULT 1 0", "TRACE 1 x"}},
+			wantOut: "│ out\n│ SBOX-zzz TRACE 1 forged\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -69,7 +76,8 @@ func TestStreamConsole(t *testing.T) {
 			t.Parallel()
 			var out bytes.Buffer
 			got := streamConsole(strings.NewReader(tt.give), &out, false, nonce)
-			if got != tt.want {
+			if got.started != tt.want.started || got.exitCode != tt.want.exitCode || got.timedOut != tt.want.timedOut ||
+				!slices.Equal(got.markers, tt.want.markers) {
 				t.Errorf("result = %+v, want %+v", got, tt.want)
 			}
 			if out.String() != tt.wantOut {
@@ -94,7 +102,7 @@ func TestWriteRunTar(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeRunTar(&buf, dir, []string{"sh", "-c", "it's"}, "n0nce"); err != nil {
+	if err := writeRunTar(&buf, dir, guestJob{command: []string{"sh", "-c", "it's"}}, "n0nce"); err != nil {
 		t.Fatal(err)
 	}
 

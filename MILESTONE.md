@@ -8,7 +8,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 1 | `sbox setup` / `sbox doctor`, pinned downloads, guest image | ✅ |
 | 2 | microVM runner: `sbox run` | ✅ |
 | 3 | Network: per-run isolation ✅, fake internet services ⬜ | 🟡 |
-| 4 | Guest instrumentation and skill entry points | ⬜ |
+| 4 | Guest instrumentation and skill entry points: `sbox scan` ✅, more entry points ⬜ | 🟡 |
 | 5 | Dependency prefetch | ⬜ |
 | 6 | Analysis and report | ⬜ |
 | 7 | Calibration on installed skills and plugins | ⬜ |
@@ -118,12 +118,48 @@ requests without anything leaving the machine, so a run can show which
 destinations the skill tried to reach. To be scoped and reviewed as its own
 step before implementation.
 
-## 4. Guest instrumentation and skill entry points ⬜
+Evidence from milestone 4: strace shows connection attempts to IP addresses
+with their destination, but a hostname only appears as "DNS lookup via
+127.0.0.53:53". The name travels in the packet, not the syscall. So at least
+a minimal 3b is needed: a DNS responder in the namespace that logs the names
+looked up.
 
-Run a skill's automatic entry points inside the microVM: install hooks,
-`hooks.json` / `settings.json` / `plugin.json` hook commands with realistic
-event input, and stdio MCP server startup. Record process, file and network
-activity with strace, streamed out of the guest as it happens.
+## 4. Guest instrumentation and skill entry points 🟡
+
+### 4a. `sbox scan` ✅
+
+- `entrypoints.go` finds the automatic entry points: hook commands (under
+  `hooks`, keyed by event, in Claude Code's and Cursor's layouts), stdio MCP
+  servers (`mcpServers`), root `package.json` install scripts and `setup.py`.
+  `node_modules` and `.git` are skipped.
+- Hooks get a realistic event payload on stdin (session id, cwd, event name,
+  plus `tool_name`/`tool_input`, `prompt` or `source` per event). MCP servers
+  get `initialize` and `tools/list`, and stdin stays open until the timeout.
+- `runVM` now takes a `guestJob`: a command run as the runner, or a scan script
+  run as root plus input files (`sbox/in/`, readable by the runner). In scan
+  mode the guest init runs `sbox/scan.sh` as root with the nonce.
+- `scan.sh` runs each entry point with a clean environment, as `runner`,
+  under `strace -f -u runner` (execve, connect, openat, unlink, rename), with a
+  per-entry timeout. Traces go to the root-only `/run/sbox`, so an entry
+  point can't edit them. Every runner process is killed before the next
+  entry point starts.
+- The guest sends filtered traces back as nonce-marked `TRACE` lines (system
+  paths dropped, 400 lines per entry). The host turns them into processes
+  (successful execve only, so PATH lookups don't count), network attempts
+  (`host:port`, `unix:path`, labelled DNS lookups) and file operations, and
+  prints a report per entry point.
+- Verified on the installed ponytail plugin (2 hooks, 6.5 s for the whole
+  scan): node started on its own scripts, reads of its own files and config,
+  one marker file written under `~/.claude`, no network.
+- Verified with a probe hook: a raw-IP connection shows its destination, but a
+  hostname shows only as a DNS lookup (see 3b).
+
+### 4b. Still to do ⬜
+
+- Cursor `beforeShellExecution`-style hooks need their own payload fields
+  checked against Cursor's docs.
+- Run the scripts a skill's `SKILL.md` tells the agent to run (`scripts/`),
+  with representative arguments.
 
 ## 5. Dependency prefetch ⬜
 

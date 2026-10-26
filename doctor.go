@@ -78,7 +78,7 @@ func probe(ctx context.Context) []check {
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	var buf, diag bytes.Buffer
-	res, err := runVM(ctx, dir, []string{"sh", "-c", _probeScript}, 30*time.Second, false, &buf, &diag)
+	res, err := runVM(ctx, dir, guestJob{command: []string{"sh", "-c", _probeScript}}, 30*time.Second, false, &buf, &diag)
 	switch {
 	case err != nil:
 		return []check{{name: "run probe", detail: err.Error() + ": " + truncate(diag.String(), 300)}}
