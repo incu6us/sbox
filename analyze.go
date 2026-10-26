@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"path"
@@ -66,13 +67,15 @@ var (
 	_networkTools = map[string]bool{
 		"curl": true, "wget": true, "nc": true, "ncat": true, "netcat": true, "socat": true,
 		"ssh": true, "scp": true, "sftp": true, "rsync": true, "ftp": true, "telnet": true,
+		"dig": true, "nslookup": true, "host": true, "drill": true,
 	}
 	_escalation = map[string]bool{"sudo": true, "su": true, "doas": true, "pkexec": true}
 	_environ    = regexp.MustCompile(`^/proc/(self|thread-self|\d+)/environ$`)
 )
 
 // analyze turns what one entry point did into findings, worst first.
-func analyze(r entryRun) []finding {
+// canary is the marker in the run's fake credentials.
+func analyze(r entryRun, canary string) []finding {
 	var out []finding
 	seen := make(map[string]bool)
 	add := func(sev severity, rule, detail string) {
@@ -117,6 +120,20 @@ func analyze(r entryRun) []finding {
 	for _, d := range r.dns {
 		usesNetwork = true
 		add(sevMedium, "dns-lookup", "looks up "+d.name)
+		if carries(d.name, canary) {
+			add(sevCritical, "canary-exfiltration", "sends a planted credential out in a DNS lookup: "+d.name)
+		}
+	}
+	for _, p := range r.procs {
+		if !carries(strings.Join(p.argv, " "), canary) {
+			continue
+		}
+		name := path.Base(p.path)
+		if _networkTools[name] {
+			add(sevCritical, "canary-exfiltration", "passes a planted credential to "+name)
+		} else {
+			add(sevHigh, "canary-argv", "puts a planted credential on "+name+"'s command line")
+		}
 	}
 
 	for _, p := range r.procs {
@@ -210,6 +227,17 @@ func writeScanJSON(w io.Writer, dir string, runs []entryRun, findings [][]findin
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(report)
+}
+
+// carries reports whether s contains the canary, as is or hex-encoded,
+// in any case: the usual ways a stolen value gets packed into a hostname or
+// an argument.
+func carries(s, canary string) bool {
+	if canary == "" {
+		return false
+	}
+	s = strings.ToLower(s)
+	return strings.Contains(s, canary) || strings.Contains(s, hex.EncodeToString([]byte(canary)))
 }
 
 func prefixed(base string, rels ...string) []string {

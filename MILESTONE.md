@@ -210,9 +210,14 @@ registries.
 - Verified: ponytail PASS (one low: its marker file under `~/.claude`), the
   network probe REVIEW, and a probe hook reading `~/.aws/credentials` then
   looking up a host BLOCK with exit 2.
-- Not yet: fake credentials in the guest's home. Today a credential read hits
-  a missing file; planting fake ones with unique markers would also show
-  whether the content went anywhere.
+- Fake credentials: the host generates a random marker per run (root-only on
+  the drive); the guest init plants fake AWS, SSH, `.env`, `.netrc`, npm, gh
+  and docker credentials carrying it, and `sbox scan` adds fake
+  `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` and AWS keys to the entry points'
+  environment. The marker (as is or hex-encoded, any case) in a DNS lookup or
+  in a network tool's arguments is CRITICAL (`canary-exfiltration`); on another
+  program's command line, HIGH. Verified with a probe hook that read the fake
+  AWS secret and put it in a lookup: BLOCK, exit 2; ponytail still PASS.
 
 ## 7. Calibration ✅
 

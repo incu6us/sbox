@@ -138,7 +138,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	findings := make([][]finding, len(runs))
 	var all []finding
 	for i, r := range runs {
-		findings[i] = analyze(r)
+		findings[i] = analyze(r, res.canary)
 		all = append(all, findings[i]...)
 	}
 	verdict := verdictFor(all)
@@ -187,6 +187,8 @@ func scanScript(eps []entryPoint, perEntry time.Duration) (string, map[string]st
 getent hosts "entry-%d-$nonce.sbox.invalid" >/dev/null 2>&1 # DNS log boundary
 env -i HOME=/home/runner USER=runner LOGNAME=runner PATH=/usr/local/bin:/usr/bin:/bin \
 	CLAUDE_PLUGIN_ROOT=/home/runner/work CLAUDE_PROJECT_DIR=/home/runner/work CURSOR_PROJECT_DIR=/home/runner/work \
+	ANTHROPIC_API_KEY="sk-ant-api03-sbox${canary}Rt5Yu6" GITHUB_TOKEN="ghp_sbox${canary}Mn3Bv4Cx5" \
+	AWS_ACCESS_KEY_ID="AKIASBOX$(echo "$canary" | tr a-f A-F)" AWS_SECRET_ACCESS_KEY="sbox${canary}Kf9wQ2xLr7Tz4Vb1Nm8Pc3Hd6Js5" \
 	timeout -k 2 %d strace -f -qq -s 200 -u runner -e trace=%s -o /run/sbox/trace.%d sh -c %s <%s 2>&1
 status=$?
 pkill -KILL -u runner 2>/dev/null

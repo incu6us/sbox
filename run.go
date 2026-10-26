@@ -41,6 +41,7 @@ type runResult struct {
 	timedOut bool
 	markers  []string // other nonce-marked lines from the guest and VM side, prefix removed
 	nonce    string
+	canary   string // marker in the run's fake credentials
 }
 
 // dnsName is a hostname looked up during a run, with the record types asked for.
@@ -146,9 +147,13 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	if err != nil {
 		return runResult{}, err
 	}
+	canary, err := randomHex(6)
+	if err != nil {
+		return runResult{}, err
+	}
 
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce)) }()
+	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce, canary)) }()
 
 	// The VM side enforces the timeout; the host one only catches a hung VM.
 	ctx, cancel := context.WithTimeout(ctx, timeout+30*time.Second)
@@ -166,7 +171,7 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	}
 
 	res := streamConsole(console, out, verbose, nonce)
-	res.nonce = nonce
+	res.nonce, res.canary = nonce, canary
 	err = cmd.Wait()
 	var exitErr *exec.ExitError
 	switch {
@@ -238,9 +243,9 @@ func printable(s string) string {
 }
 
 // writeRunTar packs what the guest gets: skill/ (the directory, symlinks
-// kept as links), sbox/init.sh, sbox/nonce and sbox/scan.sh for root only,
-// sbox/cmd.sh and sbox/in/* for the runner.
-func writeRunTar(w io.Writer, dir string, job guestJob, nonce string) error {
+// kept as links), sbox/init.sh, sbox/nonce, sbox/canary and sbox/scan.sh
+// for root only, sbox/cmd.sh and sbox/in/* for the runner.
+func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) error {
 	tw := tar.NewWriter(w)
 	total := int64(0)
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -297,6 +302,7 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce string) error {
 	files := []file{
 		{"sbox/init.sh", _guestInit, 0o700},
 		{"sbox/nonce", nonce, 0o400},
+		{"sbox/canary", canary, 0o400},
 	}
 	if job.scan != "" {
 		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})

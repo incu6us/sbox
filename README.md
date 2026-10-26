@@ -156,7 +156,9 @@ verdict: REVIEW  (0 critical, 1 high, 2 medium, 0 low)
 
 | Rule | Severity | When an entry point… |
 |---|---|---|
+| `canary-exfiltration` | CRITICAL | sends a planted fake credential out: in a DNS lookup, or as an argument to a network tool |
 | `possible-exfiltration` | CRITICAL | reads credentials **and** tries the network |
+| `canary-argv` | HIGH | puts a planted fake credential on another program's command line |
 | `credential-read` | HIGH | reads `~/.ssh`, `~/.aws`, gcloud/azure/kube/docker/gh config, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.gnupg`, shell history or `~/.env`, even if missing |
 | `connect` | HIGH | tries to connect to a non-local address |
 | `agent-config-write` | HIGH | writes agent configuration: `settings.json`, `CLAUDE.md`, `AGENTS.md`, `.mcp.json`, skills, commands, rules, hooks |
@@ -194,6 +196,17 @@ hostname lookups show the names, attributed to the entry point that made them
 | `1` | REVIEW |
 | `2` | BLOCK |
 | `125` | sbox failed: bad usage, VM not set up, or the microVM stopped before the scan started |
+
+### Fake credentials
+
+Every run's home folder holds fake credentials where real ones live:
+`~/.aws/credentials`, `~/.ssh/id_ed25519`, `~/.env`, `~/.netrc`, `~/.npmrc`,
+`~/.config/gh/hosts.yml`, `~/.docker/config.json`. In `sbox scan`, entry
+points also get fake `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` and AWS keys in
+their environment. Each value carries a random marker for the run (and the
+word `sbox`), so a read shows in the trace and the content is recognised if it
+goes anywhere: in a hostname sent to the DNS logger, or on a command line, as
+is or hex-encoded, in any case. They exist only inside the throwaway VM.
 
 ### DNS
 
