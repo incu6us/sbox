@@ -5,7 +5,7 @@
 set -euo pipefail
 
 DIR=/opt/sbox
-ROOTFS_REVISION=3 # bump when the rootfs recipe below changes
+ROOTFS_REVISION=4 # bump when the rootfs recipe below changes
 GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils
 
 mkdir -p "$DIR/cache" "$DIR/bin"
@@ -75,7 +75,8 @@ mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -o ro /dev/vdb /drive && exec /bin/sh /drive/sbox/init.sh
 echo "SBOX-ERROR no run drive"
-reboot -f
+echo 1 >/proc/sys/kernel/sysrq
+echo b >/proc/sysrq-trigger
 INIT
 chmod 0755 "$root/sbin/sbox-init"
 
@@ -96,7 +97,9 @@ echo "SBOX node=$(node --version 2>&1)"
 echo "SBOX python=$(python3 --version 2>&1 | cut -d' ' -f2)"
 echo "SBOX uv=$(uv --version 2>&1 | cut -d' ' -f2)"
 echo "SBOX strace=$(strace -V 2>&1 | head -1 | awk '{print $NF}')"
-reboot -f
+# No systemd, so no reboot(8): ask the kernel. Firecracker exits on reboot.
+echo 1 >/proc/sys/kernel/sysrq
+echo b >/proc/sysrq-trigger
 EOF
 chmod 0755 "$root/sbin/sbox-hello"
 
