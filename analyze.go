@@ -196,6 +196,7 @@ func writeScanJSON(w io.Writer, dir string, pre *prefetchResult, runs []entryRun
 		Command   string    `json:"command"`
 		Ran       bool      `json:"ran"`
 		ExitCode  int       `json:"exit_code"`
+		Hidden    int       `json:"harness_events_hidden"`
 		Processes []string  `json:"processes"`
 		Network   []string  `json:"network"`
 		Files     []string  `json:"files"`
@@ -215,7 +216,7 @@ func writeScanJSON(w io.Writer, dir string, pre *prefetchResult, runs []entryRun
 	for i, r := range runs {
 		e := entryJSON{
 			Kind: r.ep.Kind, Name: r.ep.Name, Source: r.ep.Source, Command: r.ep.Command,
-			Ran: r.ran, ExitCode: r.exitCode,
+			Ran: r.ran, ExitCode: r.exitCode, Hidden: r.hidden,
 			Processes: eventStrings(r.procs), Network: networkItems(r), Files: eventStrings(r.files),
 			DNS: []dnsJSON{}, Findings: append([]finding{}, findings[i]...),
 		}

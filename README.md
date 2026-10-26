@@ -190,8 +190,11 @@ Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 | `-no-prefetch` | Don't download dependencies first. |
 | `-prefetch-timeout <duration>` | Stop the dependency download after this long. Default `3m`. |
 
-How it stays trustworthy: strace runs as root and writes each trace to a
-root-only directory, so an entry point can't edit the record of what it did.
+How it stays trustworthy: strace runs as root and writes each process's trace
+to a root-only directory, so an entry point can't edit the record of what it
+did. The host rebuilds the process tree from the traces, so each event is
+attributed to the program that caused it; sbox's own helpers (npm in the
+`npm rebuild` entry point) aren't judged, only what they launch.
 Every `runner` process is killed before the next entry point starts. The
 network is blocked as for `sbox run`, so connections show up as attempts, and
 hostname lookups show the names, attributed to the entry point that made them

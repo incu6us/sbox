@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -14,11 +15,12 @@ import (
 
 const (
 	_defaultEntryTimeout = 20 * time.Second
-	_maxTraceLines       = 400 // per entry point, sent from the guest
-	_maxListed           = 15  // per category in the report
+	_maxTraceLines       = 3000 // per entry point, sent from the guest
+	_maxListed           = 15   // per category in the report
 
-	// _traced are the syscalls that show what an entry point did.
-	_traced = "execve,connect,openat,unlink,unlinkat,rename,renameat2"
+	// _traced are the syscalls that show what an entry point did, plus
+	// process creation, to rebuild the process tree.
+	_traced = "execve,connect,openat,unlink,unlinkat,rename,renameat2,clone,clone3,fork,vfork"
 	// _quietPaths are opened by every program; the guest drops them. /proc
 	// is filtered file by file, so reads of another process's environ show.
 	_quietPaths = `openat\([^"]*"(/usr/|/lib|/sys/|/dev/|/etc/ld\.so|/etc/localtime|/etc/ssl/openssl\.cnf|/home/runner/work/node_modules/|/tmp/node-compile-cache/` +
@@ -31,6 +33,7 @@ const (
 
 var (
 	_tracePID     = regexp.MustCompile(`^\d+\s+`)
+	_traceClone   = regexp.MustCompile(`^(?:clone3?|v?fork)\(.*\) = (\d+)$`)
 	_traceExec    = regexp.MustCompile(`^execve\("((?:[^"\\]|\\.)*)", \[(.*?)\]`)
 	_traceConnect = regexp.MustCompile(`^connect\(\d+, \{(.*)\}, \d+\) = (.*)$`)
 	_traceOpen    = regexp.MustCompile(`^openat\([^,]+, "((?:[^"\\]|\\.)*)", ([A-Z_|]+).*\) = (.*)$`)
@@ -49,6 +52,7 @@ type entryRun struct {
 	network  []traceEvent
 	files    []traceEvent
 	dns      []dnsName
+	hidden   int // events from the entry point's harness programs, not judged
 }
 
 // traceEvent is one thing an entry point did, from one strace line.
@@ -59,6 +63,9 @@ type traceEvent struct {
 	target string   // rename destination
 	argv   []string // proc
 	result string   // "ok", an errno name, or "attempted" for a non-blocking connect
+	child  int      // clone: the new process
+	pid    int
+	prog   string // the program the process was running (for proc: the one it started)
 }
 
 func (e traceEvent) String() string {
@@ -129,7 +136,8 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			// read of it comes from a dependency.
 			eps = append(eps, entryPoint{
 				Kind: "npm", Name: "rebuild", Source: "package.json", Command: "npm rebuild --foreground-scripts",
-				Env: []string{"npm_config_userconfig=/dev/null"},
+				Env:     []string{"npm_config_userconfig=/dev/null"},
+				Harness: []string{"npm"},
 			})
 		}
 	}
@@ -217,13 +225,16 @@ env -i HOME=/home/runner USER=runner LOGNAME=runner PATH=/usr/local/bin:/usr/bin
 	AWS_ACCESS_KEY_ID="AKIASBOX$(echo "$canary" | tr a-f A-F)" AWS_SECRET_ACCESS_KEY="sbox${canary}Kf9wQ2xLr7Tz4Vb1Nm8Pc3Hd6Js5" \
 	npm_config_offline=true UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never \
 	npm_config_update_notifier=false npm_config_audit=false npm_config_fund=false NODE_DISABLE_COMPILE_CACHE=1 %s\
-	timeout -k 2 %d strace -f -qq -s 200 -u runner -e trace=%s -o /run/sbox/trace.%d sh -c %s <%s 2>&1
+	timeout -k 2 %d strace -ff -qq -s 200 -u runner -e trace=%s -o /run/sbox/trace.%d sh -c %s <%s 2>&1
 status=$?
 pkill -KILL -u runner 2>/dev/null
 echo
 echo "SBOX-$nonce RESULT %d $status"
-grep -avE '%s' /run/sbox/trace.%d | head -n %d | sed "s/^/SBOX-$nonce TRACE %d /"
-`, n, n, envAssignments(ep.Env), secs, _traced, n, shellJoin([]string{cmd}), stdin, n, _quietPaths, n, _maxTraceLines, n)
+for f in /run/sbox/trace.%d.*; do
+	[ -f "$f" ] || continue
+	grep -avE '%s' "$f" | sed "s/^/SBOX-$nonce TRACE %d ${f##*.} /"
+done | head -n %d
+`, n, n, envAssignments(ep.Env), secs, _traced, n, shellJoin([]string{cmd}), stdin, n, n, _quietPaths, n, _maxTraceLines)
 	}
 	return b.String(), files
 }
@@ -247,7 +258,7 @@ func collectRuns(eps []entryPoint, markers []string, nonce string) []entryRun {
 	}
 	sentinel := regexp.MustCompile(`^entry-(\d+)-` + regexp.QuoteMeta(nonce) + `\.sbox\.invalid$`)
 	current := 0
-	seen := make(map[string]bool)
+	traces := make([]processTraces, len(runs))
 	for _, m := range markers {
 		if rest, ok := strings.CutPrefix(m, "DNS "); ok {
 			qtype, name, _ := strings.Cut(rest, " ")
@@ -270,9 +281,98 @@ func collectRuns(eps []entryPoint, markers []string, nonce string) []entryRun {
 			r.ran = true
 			r.exitCode, _ = strconv.Atoi(rest)
 		case "TRACE":
-			ev, ok := parseTrace(rest)
-			key := num + " " + ev.String()
-			if !ok || seen[key] {
+			pidText, line, _ := strings.Cut(rest, " ")
+			if pid, err := strconv.Atoi(pidText); err == nil {
+				traces[n-1].add(pid, line)
+			}
+		}
+	}
+	for i := range runs {
+		attribute(&runs[i], traces[i])
+	}
+	return runs
+}
+
+// processTraces holds one entry point's trace lines per process, in order.
+type processTraces struct {
+	lines map[int][]string
+	order []int // processes in the order their lines arrived
+}
+
+func (t *processTraces) add(pid int, line string) {
+	if t.lines == nil {
+		t.lines = make(map[int][]string)
+	}
+	if _, ok := t.lines[pid]; !ok {
+		t.order = append(t.order, pid)
+	}
+	t.lines[pid] = append(t.lines[pid], line)
+}
+
+// attribute rebuilds the process tree from clone and execve, gives every
+// event the program its process was running (inherited from the parent at
+// clone time until the process execs), and keeps the events that aren't
+// from the entry point's harness programs. A shell the harness spawns, and
+// everything under it, is judged.
+func attribute(r *entryRun, t processTraces) {
+	events := make(map[int][]traceEvent, len(t.lines))
+	parent := make(map[int]int)
+	for _, pid := range t.order {
+		for _, line := range t.lines[pid] {
+			ev, ok := parseTrace(line)
+			if !ok {
+				continue
+			}
+			ev.pid = pid
+			events[pid] = append(events[pid], ev)
+			if ev.kind == "clone" {
+				parent[ev.child] = pid
+			}
+		}
+	}
+
+	start := make(map[int]string)
+	resolving := make(map[int]bool)
+	var programAtStart func(pid int) string
+	programAtStart = func(pid int) string {
+		if prog, ok := start[pid]; ok {
+			return prog
+		}
+		p, ok := parent[pid]
+		if !ok || resolving[pid] {
+			return ""
+		}
+		resolving[pid] = true
+		prog := programAtStart(p)
+		for _, ev := range events[p] {
+			if ev.kind == "proc" {
+				prog = programName(ev)
+			}
+			if ev.kind == "clone" && ev.child == pid {
+				break
+			}
+		}
+		start[pid] = prog
+		return prog
+	}
+
+	seen := make(map[string]bool)
+	for _, pid := range t.order {
+		prog := programAtStart(pid)
+		for _, ev := range events[pid] {
+			if ev.kind == "proc" {
+				prog = programName(ev)
+			}
+			ev.prog = prog
+			if ev.kind == "clone" {
+				continue
+			}
+			if slices.Contains(r.ep.Harness, prog) {
+				r.hidden++
+				continue
+			}
+			key := ev.kind + " " + ev.String()
+			if seen[key] {
 				continue
 			}
 			seen[key] = true
@@ -286,13 +386,28 @@ func collectRuns(eps []entryPoint, markers []string, nonce string) []entryRun {
 			}
 		}
 	}
-	return runs
+}
+
+// _interpreters run a script named by their first argument; the script is
+// the program that matters ("node /usr/local/bin/npm" is npm).
+var _interpreters = map[string]bool{"node": true, "nodejs": true, "python": true, "python3": true, "python3.12": true}
+
+func programName(ev traceEvent) string {
+	name := path.Base(ev.path)
+	if _interpreters[name] && len(ev.argv) > 1 && !strings.HasPrefix(ev.argv[1], "-") {
+		return path.Base(ev.argv[1])
+	}
+	return name
 }
 
 // parseTrace turns one strace line into an event. Failed execve calls are
 // PATH lookups, not processes.
 func parseTrace(line string) (traceEvent, bool) {
 	line = _tracePID.ReplaceAllString(line, "")
+	if m := _traceClone.FindStringSubmatch(line); m != nil {
+		child, _ := strconv.Atoi(m[1])
+		return traceEvent{kind: "clone", child: child}, true
+	}
 	if m := _traceExec.FindStringSubmatch(line); m != nil {
 		if !strings.HasSuffix(line, "= 0") {
 			return traceEvent{}, false
@@ -394,6 +509,9 @@ func writeScanReport(w io.Writer, pre *prefetchResult, runs []entryRun, findings
 		writeList(&b, "processes", eventStrings(r.procs))
 		writeList(&b, "network", networkItems(r))
 		writeList(&b, "files", eventStrings(r.files))
+		if r.hidden > 0 {
+			fmt.Fprintf(&b, "     %-10s %d events from %s itself, not judged\n", "", r.hidden, strings.Join(r.ep.Harness, ", "))
+		}
 		writeFindings(&b, findings[i])
 	}
 	counts := countSeverities(all)

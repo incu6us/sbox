@@ -152,7 +152,8 @@ func TestScanScript(t *testing.T) {
 	script, files := scanScript(eps, 20*time.Second)
 
 	for _, want := range []string{
-		`strace -f -qq -s 200 -u runner`,
+		`strace -ff -qq -s 200 -u runner`,
+		`sed "s/^/SBOX-$nonce TRACE 1 ${f##*.} /"`,
 		`-o /run/sbox/trace.1 sh -c 'node "${CLAUDE_PLUGIN_ROOT}/it'\''s.js"' </drive/sbox/in/stdin.1`,
 		`sh -c '(cat /drive/sbox/in/stdin.2; sleep 18) | '\''npx'\'' '\''pkg'\''' </dev/null`,
 		`pkill -KILL -u runner`,
@@ -179,5 +180,76 @@ func TestDNSLoggerSelftest(t *testing.T) {
 	out, err := exec.Command(python, "-I", "scripts/sbox-dns.py", "--selftest").CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "ok" {
 		t.Errorf("sbox-dns.py --selftest: %v: %s", err, out)
+	}
+}
+
+func TestAttribute(t *testing.T) {
+	t.Parallel()
+
+	// An agent (pid 10) with a worker thread (11) runs a tool: a shell (12)
+	// that runs cat (13). Only the shell's subtree is judged.
+	var tr processTraces
+	for _, l := range []struct {
+		pid  int
+		line string
+	}{
+		{10, `execve("/usr/local/bin/claude", ["claude", "-p", "x"], 0x1 /* 5 vars */) = 0`},
+		{10, `clone3({flags=CLONE_VM|CLONE_THREAD, exit_signal=0}, 88) = 11`},
+		{10, `openat(AT_FDCWD, "/home/runner/.claude/settings.json", O_RDONLY) = 3`},
+		{11, `openat(AT_FDCWD, "/home/runner/.claude.json", O_WRONLY|O_CREAT, 0600) = 4`},
+		{10, `clone(child_stack=NULL, flags=SIGCHLD) = 12`},
+		{12, `execve("/bin/bash", ["bash", "-c", "cat ~/.aws/credentials"], 0x1 /* 5 vars */) = 0`},
+		{12, `vfork() = 13`},
+		{13, `execve("/usr/bin/cat", ["cat", "/home/runner/.aws/credentials"], 0x1 /* 5 vars */) = 0`},
+		{13, `openat(AT_FDCWD, "/home/runner/.aws/credentials", O_RDONLY) = 3`},
+	} {
+		tr.add(l.pid, l.line)
+	}
+
+	r := entryRun{ep: entryPoint{Harness: []string{"claude"}}}
+	attribute(&r, tr)
+
+	if got := eventStrings(r.procs); !slices.Equal(got, []string{"bash -c cat ~/.aws/credentials", "cat /home/runner/.aws/credentials"}) {
+		t.Errorf("procs = %v", got)
+	}
+	if got := eventStrings(r.files); !slices.Equal(got, []string{"read /home/runner/.aws/credentials"}) {
+		t.Errorf("files = %v", got)
+	}
+	if r.files[0].prog != "cat" {
+		t.Errorf("credential read attributed to %q, want cat", r.files[0].prog)
+	}
+	if r.hidden != 3 { // claude's exec, its config read, the thread's write
+		t.Errorf("hidden = %d, want 3", r.hidden)
+	}
+
+	// Without a harness, everything is judged.
+	r = entryRun{}
+	attribute(&r, tr)
+	if len(r.files) != 3 || r.hidden != 0 {
+		t.Errorf("no harness: files %v hidden %d, want 3 files, 0 hidden", eventStrings(r.files), r.hidden)
+	}
+}
+
+func TestProgramName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		argv []string
+		want string
+	}{
+		{path: "/usr/local/bin/npm", argv: []string{"npm", "rebuild"}, want: "npm"},
+		{path: "/usr/local/bin/node", argv: []string{"node", "/usr/local/bin/npm", "rebuild"}, want: "npm"},
+		{path: "/usr/local/bin/node", argv: []string{"node", "install.js"}, want: "install.js"},
+		{path: "/usr/local/bin/node", argv: []string{"node", "-e", "x"}, want: "node"},
+		{path: "/bin/sh", argv: []string{"sh", "-c", "x"}, want: "sh"},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.argv, " "), func(t *testing.T) {
+			t.Parallel()
+			if got := programName(traceEvent{path: tt.path, argv: tt.argv}); got != tt.want {
+				t.Errorf("programName = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

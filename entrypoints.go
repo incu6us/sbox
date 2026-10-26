@@ -22,6 +22,7 @@ type entryPoint struct {
 	Runner  string   // mcp: npx or uvx, when the server is a downloaded package
 	Package string   // mcp: the package that runner launches
 	Env     []string // extra NAME=value settings for this entry point
+	Harness []string // programs that are sbox's harness, not the skill: their own events aren't judged
 }
 
 var (

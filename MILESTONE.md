@@ -285,9 +285,18 @@ that ship real hooks.
     pinned by URL and SHA-256 (its sha512 matches the registry's integrity
     value) and extracted to `/usr/local/bin`. Doctor checks the version;
     `claude --version` runs as the runner in `sbox run`. Image: 1151 MB.
-  - ⬜ Next steps: attribute strace activity to the processes the agent
-    launches; egress to the agent's API host only; the user's own credential
-    for the agent process; the headless run, transcript and report.
+  - ✅ Step 2: process attribution. strace writes one file per process
+    (`-ff`), so concurrent syscalls no longer split into unparseable
+    "unfinished/resumed" fragments, and traces clone/fork/vfork. The host
+    rebuilds the process tree and gives every event the program its process
+    was running (inherited from the parent at clone time until it execs;
+    for node/python, the script). Entry points can name harness programs
+    whose own events aren't judged, only what they launch: `npm rebuild`
+    names npm (16 of its own events hidden on the test skill). Hooks name
+    none, so their verdicts are unchanged (ponytail PASS, probes as before).
+  - ⬜ Next steps: egress to the agent's API host only; the user's own
+    credential for the agent process; the headless run, transcript and
+    report; then a Cursor profile.
 - Firecracker snapshots for sub-second starts.
 - GitHub URLs as targets (v1: fetch locally first).
 
