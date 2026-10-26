@@ -10,7 +10,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 3 | Network: per-run isolation ✅, DNS logging ✅, other fake services ⬜ | 🟡 |
 | 4 | Guest instrumentation and skill entry points: `sbox scan` ✅, more entry points ⬜ | 🟡 |
 | 5 | Dependency prefetch | ⬜ |
-| 6 | Analysis and report | ⬜ |
+| 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ⬜ |
 | v2 | Agent mode, snapshots, GitHub URLs | ⬜ |
 
@@ -191,11 +191,28 @@ Get a skill's npm and PyPI dependencies into the run without running their
 install scripts: a separate microVM with egress limited to the package
 registries.
 
-## 6. Analysis and report ⬜
+## 6. Analysis and report ✅
 
-Turn a run's recorded activity into findings with severities, a verdict and
-JSON output, with the same exit codes as skills-audit (0 pass, 1 review,
-2 block).
+- Trace lines are parsed into typed events (process, connect, DNS, file
+  read/write/delete/rename with path and result) instead of display strings,
+  so rules look at fields.
+- `analyze.go` turns each entry point's events into findings: credential
+  reads (even of missing files), connection attempts to non-local addresses,
+  writes to agent configuration or persistence paths, programs run from temp
+  folders (HIGH); hostname lookups, network tools, sudo/su, `/proc/*/environ`
+  reads (MEDIUM); other writes under agent folders and timeouts (LOW). A
+  credential read plus any network activity in the same entry point is
+  CRITICAL.
+- Verdict and exit codes as skills-audit: BLOCK 2, REVIEW 1, PASS 0; 125
+  when sbox fails. `-json` prints the whole report.
+- The guest no longer drops all of `/proc` as noise, only known-noisy files,
+  so reads of a process's `environ` show.
+- Verified: ponytail PASS (one low: its marker file under `~/.claude`), the
+  network probe REVIEW, and a probe hook reading `~/.aws/credentials` then
+  looking up a host BLOCK with exit 2.
+- Not yet: fake credentials in the guest's home. Today a credential read hits
+  a missing file; planting fake ones with unique markers would also show
+  whether the content went anywhere.
 
 ## 7. Calibration ⬜
 

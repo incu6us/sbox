@@ -19,8 +19,14 @@ const (
 
 	// _traced are the syscalls that show what an entry point did.
 	_traced = "execve,connect,openat,unlink,unlinkat,rename,renameat2"
-	// _quietPaths are opened by every program; the guest drops them.
-	_quietPaths = `openat\([^"]*"(/usr/|/lib|/proc/|/sys/|/dev/|/etc/ld\.so|/etc/localtime|/etc/ssl/openssl\.cnf|/home/runner/work/node_modules/)`
+	// _quietPaths are opened by every program; the guest drops them. /proc
+	// is filtered file by file, so reads of another process's environ show.
+	_quietPaths = `openat\([^"]*"(/usr/|/lib|/sys/|/dev/|/etc/ld\.so|/etc/localtime|/etc/ssl/openssl\.cnf|/home/runner/work/node_modules/` +
+		`|/proc/(self|thread-self|[0-9]+)/(maps|stat|status|cgroup|mountinfo|limits|auxv|smaps|fd|task|exe|mounts)` +
+		`|/proc/(meminfo|cpuinfo|stat|filesystems|sys/|loadavg|version|mounts))`
+
+	scanBlock  = 2 // exit codes, as skills-audit: pass 0, review 1, block 2
+	scanReview = 1
 )
 
 var (
@@ -39,10 +45,40 @@ type entryRun struct {
 	ep       entryPoint
 	ran      bool
 	exitCode int
-	procs    []string
-	network  []string
-	files    []string
+	procs    []traceEvent
+	network  []traceEvent
+	files    []traceEvent
 	dns      []dnsName
+}
+
+// traceEvent is one thing an entry point did, from one strace line.
+type traceEvent struct {
+	kind   string   // proc, net, file
+	op     string   // net: connect, dns; file: read, write, delete, rename
+	path   string   // program, address or file
+	target string   // rename destination
+	argv   []string // proc
+	result string   // "ok", an errno name, or "attempted" for a non-blocking connect
+}
+
+func (e traceEvent) String() string {
+	switch e.kind {
+	case "proc":
+		return strings.Join(e.argv, " ")
+	case "net":
+		if e.op == "dns" { // the queried name travels in the packet, not the syscall
+			return "DNS lookup via " + e.path + " (hostname not recorded)"
+		}
+		return e.path + " → " + e.result
+	}
+	s := e.op + " " + e.path
+	if e.op == "rename" {
+		s += " → " + e.target
+	}
+	if e.result != "ok" {
+		s += " (" + e.result + ")"
+	}
+	return s
 }
 
 // scanMain implements `sbox scan [-timeout d] [-v] <dir>`: runs every
@@ -53,6 +89,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	flags.SetOutput(stderr)
 	perEntry := flags.Duration("timeout", _defaultEntryTimeout, "stop each entry point after this long")
 	verbose := flags.Bool("v", false, "also show the entry points' own output")
+	asJSON := flags.Bool("json", false, "print the report as JSON")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir>\n\n")
 		flags.PrintDefaults()
@@ -75,7 +112,9 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		_, _ = fmt.Fprintln(stdout, "no automatic entry points (hooks, MCP servers, install scripts) found")
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), dir)
+	if !*asJSON {
+		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), dir)
+	}
 
 	script, files := scanScript(eps, *perEntry)
 	live := io.Discard
@@ -95,7 +134,29 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		_, _ = fmt.Fprintln(stderr, "sbox: the scan timed out; the report covers what finished")
 	}
 
-	writeScanReport(stdout, collectRuns(eps, res.markers, res.nonce))
+	runs := collectRuns(eps, res.markers, res.nonce)
+	findings := make([][]finding, len(runs))
+	var all []finding
+	for i, r := range runs {
+		findings[i] = analyze(r)
+		all = append(all, findings[i]...)
+	}
+	verdict := verdictFor(all)
+	if *asJSON {
+		err = writeScanJSON(stdout, dir, runs, findings, verdict, all)
+	} else {
+		writeScanReport(stdout, runs, findings, verdict, all)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
+	switch verdict {
+	case verdictBlock:
+		return scanBlock
+	case verdictReview:
+		return scanReview
+	}
 	return exitOK
 }
 
@@ -170,68 +231,71 @@ func collectRuns(eps []entryPoint, markers []string, nonce string) []entryRun {
 			r.ran = true
 			r.exitCode, _ = strconv.Atoi(rest)
 		case "TRACE":
-			category, item := parseTrace(rest)
-			key := num + category + item
-			if item == "" || seen[key] {
+			ev, ok := parseTrace(rest)
+			key := num + " " + ev.String()
+			if !ok || seen[key] {
 				continue
 			}
 			seen[key] = true
-			switch category {
+			switch ev.kind {
 			case "proc":
-				r.procs = append(r.procs, item)
+				r.procs = append(r.procs, ev)
 			case "net":
-				r.network = append(r.network, item)
+				r.network = append(r.network, ev)
 			case "file":
-				r.files = append(r.files, item)
+				r.files = append(r.files, ev)
 			}
 		}
 	}
 	return runs
 }
 
-// parseTrace turns one strace line into a category and a short
-// description. Failed execve calls are PATH lookups, not processes.
-func parseTrace(line string) (category, item string) {
+// parseTrace turns one strace line into an event. Failed execve calls are
+// PATH lookups, not processes.
+func parseTrace(line string) (traceEvent, bool) {
 	line = _tracePID.ReplaceAllString(line, "")
 	if m := _traceExec.FindStringSubmatch(line); m != nil {
 		if !strings.HasSuffix(line, "= 0") {
-			return "", ""
+			return traceEvent{}, false
 		}
 		var argv []string
 		for _, a := range _quoted.FindAllStringSubmatch(m[2], -1) {
-			arg, err := strconv.Unquote(`"` + a[1] + `"`) // strace escapes like C
-			if err != nil {
-				arg = a[1]
-			}
-			argv = append(argv, arg)
+			argv = append(argv, unescape(a[1]))
 		}
-		return "proc", strings.Join(argv, " ")
+		return traceEvent{kind: "proc", path: unescape(m[1]), argv: argv}, true
 	}
 	if m := _traceConnect.FindStringSubmatch(line); m != nil {
 		addr := sockAddr(m[1])
 		switch {
 		case addr == "unix:/var/run/nscd/socket": // glibc probes for nscd on every lookup
-			return "", ""
+			return traceEvent{}, false
 		case strings.HasSuffix(addr, ":53"):
-			// The queried name travels in the packet, not the syscall.
-			return "net", "DNS lookup via " + addr + " (hostname not recorded)"
+			return traceEvent{kind: "net", op: "dns", path: addr, result: outcome(m[2])}, true
 		}
-		return "net", addr + " → " + outcome(m[2])
+		return traceEvent{kind: "net", op: "connect", path: addr, result: outcome(m[2])}, true
 	}
 	if m := _traceOpen.FindStringSubmatch(line); m != nil {
-		mode := "read"
+		op := "read"
 		if strings.Contains(m[2], "O_WRONLY") || strings.Contains(m[2], "O_RDWR") || strings.Contains(m[2], "O_CREAT") {
-			mode = "write"
+			op = "write"
 		}
-		return "file", mode + " " + m[1] + outcomeSuffix(m[3])
+		return traceEvent{kind: "file", op: op, path: unescape(m[1]), result: outcome(m[3])}, true
 	}
 	if m := _traceUnlink.FindStringSubmatch(line); m != nil {
-		return "file", "delete " + m[1] + outcomeSuffix(m[2])
+		return traceEvent{kind: "file", op: "delete", path: unescape(m[1]), result: outcome(m[2])}, true
 	}
 	if m := _traceRename.FindStringSubmatch(line); m != nil {
-		return "file", "rename " + m[1] + " → " + m[2] + outcomeSuffix(m[3])
+		return traceEvent{kind: "file", op: "rename", path: unescape(m[1]), target: unescape(m[2]), result: outcome(m[3])}, true
 	}
-	return "", ""
+	return traceEvent{}, false
+}
+
+// unescape reverses strace's C-style string escaping.
+func unescape(s string) string {
+	if u, err := strconv.Unquote(`"` + s + `"`); err == nil {
+		return u
+	}
+	return s
 }
 
 // sockAddr renders strace's sockaddr as host:port or unix:path.
@@ -271,14 +335,7 @@ func outcome(r string) string {
 	return "ok"
 }
 
-func outcomeSuffix(r string) string {
-	if o := outcome(r); o != "ok" {
-		return " (" + o + ")"
-	}
-	return ""
-}
-
-func writeScanReport(w io.Writer, runs []entryRun) {
+func writeScanReport(w io.Writer, runs []entryRun, findings [][]finding, verdict string, all []finding) {
 	var b strings.Builder
 	for i, r := range runs {
 		fmt.Fprintf(&b, "\n%d/%d  %s\n     $ %s\n", i+1, len(runs), r.ep, printable(r.ep.Command))
@@ -292,20 +349,38 @@ func writeScanReport(w io.Writer, runs []entryRun) {
 		default:
 			fmt.Fprintf(&b, "     exit %d\n", r.exitCode)
 		}
-		writeList(&b, "processes", r.procs)
+		writeList(&b, "processes", eventStrings(r.procs))
 		writeList(&b, "network", networkItems(r))
-		writeList(&b, "files", r.files)
+		writeList(&b, "files", eventStrings(r.files))
+		for j, f := range findings[i] {
+			label := ""
+			if j == 0 {
+				label = "findings"
+			}
+			fmt.Fprintf(&b, "     %-10s %-8s %s\n", label, f.Severity, printable(f.Detail))
+		}
 	}
+	counts := countSeverities(all)
+	fmt.Fprintf(&b, "\nverdict: %s  (%d critical, %d high, %d medium, %d low)\n", verdict,
+		counts[sevCritical], counts[sevHigh], counts[sevMedium], counts[sevLow])
 	_, _ = io.WriteString(w, b.String())
+}
+
+func eventStrings(events []traceEvent) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.String()
+	}
+	return out
 }
 
 // networkItems lists connection attempts and, when the DNS logger saw
 // lookups, the names instead of strace's anonymous "DNS lookup" lines.
 func networkItems(r entryRun) []string {
 	if len(r.dns) == 0 {
-		return r.network
+		return eventStrings(r.network)
 	}
-	items := slices.DeleteFunc(slices.Clone(r.network), func(s string) bool { return strings.HasPrefix(s, "DNS lookup via") })
+	items := eventStrings(slices.DeleteFunc(slices.Clone(r.network), func(e traceEvent) bool { return e.op == "dns" }))
 	for _, d := range r.dns {
 		items = append(items, "DNS "+d.String()+" → NXDOMAIN")
 	}

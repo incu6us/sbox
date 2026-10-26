@@ -28,7 +28,7 @@ sbox setup
 sbox setup
 sbox doctor
 sbox run [-timeout <duration>] [-v] <dir> -- <command> [args...]
-sbox scan [-timeout <duration>] [-v] <dir>
+sbox scan [-timeout <duration>] [-v] [-json] <dir>
 ```
 
 ### `sbox setup`
@@ -133,32 +133,67 @@ fresh microVM, as `runner`, under strace:
 | `setup.py` | root | `python3 setup.py egg_info` |
 
 Dependency folders are skipped. For each entry point the report shows its exit
-status and what it did: processes started, network connections attempted
-(with destination), and files read, written, deleted or renamed outside system
-paths. Example, for a plugin's SessionStart hook:
+status, what it did (processes started, network connections attempted with
+their destination, hostnames looked up, files read, written, deleted or
+renamed outside system paths) and the findings, then a verdict:
 
 ```
-1/2  hook SessionStart (hooks/hooks.json)
-     $ command -v node >/dev/null 2>&1 && node "${CLAUDE_PLUGIN_ROOT}/hooks/activate.js" || exit 0
+1/1  hook SessionStart (hooks/hooks.json)
+     $ curl -s https://example.com …
      exit 0
-     processes  node /home/runner/work/hooks/activate.js
-     network    none
-     files      read /home/runner/.config/plugin/config.json (ENOENT)
-                write /home/runner/.claude/.plugin-active
+     processes  curl -s -m 3 https://example.com
+     network    93.184.215.14:80 → attempted
+                DNS example.com (A, AAAA) → NXDOMAIN
+     files      read /home/runner/.curlrc (ENOENT)
+     findings   HIGH     tries to connect to 93.184.215.14:80
+                MEDIUM   looks up example.com
+                MEDIUM   runs curl
+
+verdict: REVIEW  (0 critical, 1 high, 2 medium, 0 low)
 ```
+
+#### Findings
+
+| Rule | Severity | When an entry point… |
+|---|---|---|
+| `possible-exfiltration` | CRITICAL | reads credentials **and** tries the network |
+| `credential-read` | HIGH | reads `~/.ssh`, `~/.aws`, gcloud/azure/kube/docker/gh config, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.gnupg`, shell history or `~/.env`, even if missing |
+| `connect` | HIGH | tries to connect to a non-local address |
+| `agent-config-write` | HIGH | writes agent configuration: `settings.json`, `CLAUDE.md`, `AGENTS.md`, `.mcp.json`, skills, commands, rules, hooks |
+| `persistence` | HIGH | writes shell startup files, `authorized_keys`, autostart, systemd or cron |
+| `temp-exec` | HIGH | runs a program from `/tmp`, `/var/tmp`, `/dev/shm` or `~/.cache` |
+| `dns-lookup` | MEDIUM | looks up a hostname |
+| `network-tool` | MEDIUM | runs curl, wget, nc, socat, ssh, scp, rsync… |
+| `escalation` | MEDIUM | runs sudo, su, doas or pkexec |
+| `environ-read` | MEDIUM | reads a process environment through `/proc` |
+| `agent-dir-write` | LOW | writes anything else under `~/.claude`, `~/.cursor`, `~/.codex` |
+| `timeout` | LOW | is still running at the timeout |
+
+Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
+**REVIEW**, otherwise **PASS**. `-json` prints the same report as one object
+(`target`, `verdict`, `counts`, and per entry point `kind`, `name`, `source`,
+`command`, `ran`, `exit_code`, `processes`, `network`, `files`, `dns`,
+`findings`).
 
 | Flag | Meaning |
 |---|---|
 | `-timeout <duration>` | Stop each entry point after this long. Default `20s`. |
 | `-v` | Also show the entry points' own output. |
+| `-json` | Print the report as JSON. |
 
 How it stays trustworthy: strace runs as root and writes each trace to a
 root-only directory, so an entry point can't edit the record of what it did.
 Every `runner` process is killed before the next entry point starts. The
 network is blocked as for `sbox run`, so connections show up as attempts, and
 hostname lookups show the names, attributed to the entry point that made them
-(see [DNS](#dns)). Exit codes: `0` the scan completed, `125` sbox failed.
-Verdicts come in milestone 6.
+(see [DNS](#dns)).
+
+| Exit code | Meaning |
+|---|---|
+| `0` | PASS |
+| `1` | REVIEW |
+| `2` | BLOCK |
+| `125` | sbox failed: bad usage, VM not set up, or the microVM stopped before the scan started |
 
 ### DNS
 

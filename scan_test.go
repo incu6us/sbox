@@ -85,9 +85,16 @@ func TestParseTrace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			category, item := parseTrace(tt.give)
-			if category != tt.wantCategory || item != tt.wantItem {
-				t.Errorf("parseTrace = %q, %q; want %q, %q", category, item, tt.wantCategory, tt.wantItem)
+			ev, ok := parseTrace(tt.give)
+			if !ok {
+				ev = traceEvent{}
+			}
+			item := ""
+			if ok {
+				item = ev.String()
+			}
+			if ev.kind != tt.wantCategory || item != tt.wantItem {
+				t.Errorf("parseTrace = %q, %q; want %q, %q", ev.kind, item, tt.wantCategory, tt.wantItem)
 			}
 		})
 	}
@@ -113,7 +120,7 @@ func TestCollectRuns(t *testing.T) {
 	}
 	runs := collectRuns(eps, markers, "n0nce")
 
-	if !runs[0].ran || runs[0].exitCode != 0 || !slices.Equal(runs[0].procs, []string{"sh -c x"}) {
+	if !runs[0].ran || runs[0].exitCode != 0 || !slices.Equal(eventStrings(runs[0].procs), []string{"sh -c x"}) {
 		t.Errorf("run 1 = %+v, want ran, exit 0, one process", runs[0])
 	}
 	if runs[1].ran {
