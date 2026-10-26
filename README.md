@@ -28,7 +28,7 @@ sbox setup
 sbox setup
 sbox doctor
 sbox run [-timeout <duration>] [-v] <dir> -- <command> [args...]
-sbox scan [-timeout <duration>] [-v] [-json] <dir>
+sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
 ```
 
 ### `sbox setup`
@@ -132,6 +132,11 @@ fresh microVM, as `runner`, under strace:
 | npm install scripts | root `package.json` (`preinstall`, `install`, `postinstall`, `prepare`) | `npm run-script <hook>` |
 | `setup.py` | root | `python3 setup.py egg_info` |
 
+When the skill has npm dependencies (and doesn't bundle `node_modules`), a
+`requirements*.txt`, or MCP servers launched with `npx`/`uvx`, the scan first
+downloads them (see [Dependencies](#dependencies)), and adds an
+`npm rebuild` entry point that runs the dependencies' install scripts.
+
 Dependency folders are skipped. For each entry point the report shows its exit
 status, what it did (processes started, network connections attempted with
 their destination, hostnames looked up, files read, written, deleted or
@@ -182,6 +187,8 @@ Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 | `-timeout <duration>` | Stop each entry point after this long. Default `20s`. |
 | `-v` | Also show the entry points' own output. |
 | `-json` | Print the report as JSON. |
+| `-no-prefetch` | Don't download dependencies first. |
+| `-prefetch-timeout <duration>` | Stop the dependency download after this long. Default `3m`. |
 
 How it stays trustworthy: strace runs as root and writes each trace to a
 root-only directory, so an entry point can't edit the record of what it did.
@@ -196,6 +203,37 @@ hostname lookups show the names, attributed to the entry point that made them
 | `1` | REVIEW |
 | `2` | BLOCK |
 | `125` | sbox failed: bad usage, VM not set up, or the microVM stopped before the scan started |
+
+### Dependencies
+
+Before the scan, a separate prefetch microVM downloads what the skill needs,
+with package-manager scripts and source builds disabled:
+
+| What | How |
+|---|---|
+| npm dependencies | `npm ci` (with a lockfile) or `npm install`, `--ignore-scripts` |
+| Python requirements | `pip download --only-binary=:all:` per `requirements*.txt`: wheels only, so no `setup.py` runs |
+| `npx` MCP servers | fetched into the npm cache, scripts disabled |
+| `uvx` MCP servers | `uv tool install` with builds disabled |
+
+Its only way out is a registry-only proxy: CONNECT tunnels to
+`registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org` on port 443, with
+no TLS interception. Everything else is refused and reported, including git
+and URL dependencies and custom registries set in a skill's `.npmrc`. The
+proxy runs in the VM's main network namespace on a unix socket; a relay on
+172.16.0.1:3128 inside the run's namespace forwards to it, so the namespace
+still has no route out. Both are stopped before the scan's microVM boots.
+
+The scan's microVM gets the downloads on a read-only drive, overlaid with a
+writable layer (`node_modules`, the npm and uv caches) and wheels installed
+offline. Entry points run with npm and uv in offline mode. The `npm rebuild`
+entry point is where dependencies' install scripts (`postinstall` and
+friends) run, under strace like everything else; npm itself runs there
+without a user config, so a read of `~/.npmrc` comes from a dependency.
+
+The report adds a dependencies section: each step's result, the hosts
+fetched from, and refused fetches (`prefetch-refused`, MEDIUM). A failed step
+or a prefetch timeout is LOW: the entry points run without it.
 
 ### Fake credentials
 
@@ -246,5 +284,6 @@ golangci-lint run ./...
 
 VM-side scripts live in `scripts/` and are embedded in the binary:
 `provision.sh` (setup), `doctor.sh` (doctor's VM checks), `sbox-run.sh` (one
-microVM), `guest-init.sh` (runs inside each microVM), `sbox-dns.py` (the DNS
-logger; `python3 scripts/sbox-dns.py --selftest`).
+job: prefetch and main microVM), `guest-init.sh` (runs inside each microVM),
+`sbox-dns.py` (the DNS logger) and `sbox-proxy.py` (the registry-only proxy and
+its relay); both Python scripts have `--selftest`.

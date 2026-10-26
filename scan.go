@@ -21,7 +21,7 @@ const (
 	_traced = "execve,connect,openat,unlink,unlinkat,rename,renameat2"
 	// _quietPaths are opened by every program; the guest drops them. /proc
 	// is filtered file by file, so reads of another process's environ show.
-	_quietPaths = `openat\([^"]*"(/usr/|/lib|/sys/|/dev/|/etc/ld\.so|/etc/localtime|/etc/ssl/openssl\.cnf|/home/runner/work/node_modules/` +
+	_quietPaths = `openat\([^"]*"(/usr/|/lib|/sys/|/dev/|/etc/ld\.so|/etc/localtime|/etc/ssl/openssl\.cnf|/home/runner/work/node_modules/|/tmp/node-compile-cache/` +
 		`|/proc/(self|thread-self|[0-9]+)/(maps|stat|status|cgroup|mountinfo|limits|auxv|smaps|fd|task|exe|mounts)` +
 		`|/proc/(meminfo|cpuinfo|stat|filesystems|sys/|loadavg|version|mounts))`
 
@@ -90,6 +90,8 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	perEntry := flags.Duration("timeout", _defaultEntryTimeout, "stop each entry point after this long")
 	verbose := flags.Bool("v", false, "also show the entry points' own output")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
+	noPrefetch := flags.Bool("no-prefetch", false, "don't download dependencies first")
+	preLimit := flags.Duration("prefetch-timeout", 3*time.Minute, "stop the dependency download after this long")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir>\n\n")
 		flags.PrintDefaults()
@@ -112,17 +114,36 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		_, _ = fmt.Fprintln(stdout, "no automatic entry points (hooks, MCP servers, install scripts) found")
 		return exitOK
 	}
+
+	var steps []prefetchStep
+	if !*noPrefetch {
+		steps = planPrefetch(dir, eps)
+	}
+	job := guestJob{}
+	if len(steps) > 0 {
+		job.prefetch, job.preLimit = prefetchScript(steps), *preLimit
+		if hasNPMDependencies(dir) {
+			// The dependencies' install scripts run here, under strace. npm
+			// itself is sbox's harness, not the skill's code: without a user
+			// config it doesn't read ~/.npmrc (fake token and all), so any
+			// read of it comes from a dependency.
+			eps = append(eps, entryPoint{
+				Kind: "npm", Name: "rebuild", Source: "package.json", Command: "npm rebuild --foreground-scripts",
+				Env: []string{"npm_config_userconfig=/dev/null"},
+			})
+		}
+	}
 	if !*asJSON {
 		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), dir)
 	}
-
 	script, files := scanScript(eps, *perEntry)
+	job.scan, job.files = script, files
 	live := io.Discard
 	if *verbose {
 		live = stdout
 	}
 	vmTimeout := time.Duration(len(eps))*(*perEntry+5*time.Second) + 30*time.Second
-	res, err := runVM(ctx, dir, guestJob{scan: script, files: files}, vmTimeout, false, live, stderr)
+	res, err := runVM(ctx, dir, job, vmTimeout, false, live, stderr)
 	switch {
 	case err != nil:
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -137,15 +158,20 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	runs := collectRuns(eps, res.markers, res.nonce)
 	findings := make([][]finding, len(runs))
 	var all []finding
+	var pre *prefetchResult
+	if len(steps) > 0 {
+		pre = collectPrefetch(steps, res.markers)
+		all = append(all, pre.Findings...)
+	}
 	for i, r := range runs {
 		findings[i] = analyze(r, res.canary)
 		all = append(all, findings[i]...)
 	}
 	verdict := verdictFor(all)
 	if *asJSON {
-		err = writeScanJSON(stdout, dir, runs, findings, verdict, all)
+		err = writeScanJSON(stdout, dir, pre, runs, findings, verdict, all)
 	} else {
-		writeScanReport(stdout, runs, findings, verdict, all)
+		writeScanReport(stdout, pre, runs, findings, verdict, all)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -189,15 +215,26 @@ env -i HOME=/home/runner USER=runner LOGNAME=runner PATH=/usr/local/bin:/usr/bin
 	CLAUDE_PLUGIN_ROOT=/home/runner/work CLAUDE_PROJECT_DIR=/home/runner/work CURSOR_PROJECT_DIR=/home/runner/work \
 	ANTHROPIC_API_KEY="sk-ant-api03-sbox${canary}Rt5Yu6" GITHUB_TOKEN="ghp_sbox${canary}Mn3Bv4Cx5" \
 	AWS_ACCESS_KEY_ID="AKIASBOX$(echo "$canary" | tr a-f A-F)" AWS_SECRET_ACCESS_KEY="sbox${canary}Kf9wQ2xLr7Tz4Vb1Nm8Pc3Hd6Js5" \
+	npm_config_offline=true UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never \
+	npm_config_update_notifier=false npm_config_audit=false npm_config_fund=false NODE_DISABLE_COMPILE_CACHE=1 %s\
 	timeout -k 2 %d strace -f -qq -s 200 -u runner -e trace=%s -o /run/sbox/trace.%d sh -c %s <%s 2>&1
 status=$?
 pkill -KILL -u runner 2>/dev/null
 echo
 echo "SBOX-$nonce RESULT %d $status"
 grep -avE '%s' /run/sbox/trace.%d | head -n %d | sed "s/^/SBOX-$nonce TRACE %d /"
-`, n, n, secs, _traced, n, shellJoin([]string{cmd}), stdin, n, _quietPaths, n, _maxTraceLines, n)
+`, n, n, envAssignments(ep.Env), secs, _traced, n, shellJoin([]string{cmd}), stdin, n, _quietPaths, n, _maxTraceLines, n)
 	}
 	return b.String(), files
+}
+
+// envAssignments quotes extra NAME=value settings for the env -i line.
+func envAssignments(env []string) string {
+	var b strings.Builder
+	for _, e := range env {
+		b.WriteString(shellJoin([]string{e}) + " ")
+	}
+	return b.String()
 }
 
 // collectRuns matches the guest's RESULT and TRACE markers to entry points,
@@ -337,8 +374,11 @@ func outcome(r string) string {
 	return "ok"
 }
 
-func writeScanReport(w io.Writer, runs []entryRun, findings [][]finding, verdict string, all []finding) {
+func writeScanReport(w io.Writer, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding) {
 	var b strings.Builder
+	if pre != nil {
+		writePrefetchReport(&b, pre)
+	}
 	for i, r := range runs {
 		fmt.Fprintf(&b, "\n%d/%d  %s\n     $ %s\n", i+1, len(runs), r.ep, printable(r.ep.Command))
 		if !r.ran {
@@ -354,18 +394,22 @@ func writeScanReport(w io.Writer, runs []entryRun, findings [][]finding, verdict
 		writeList(&b, "processes", eventStrings(r.procs))
 		writeList(&b, "network", networkItems(r))
 		writeList(&b, "files", eventStrings(r.files))
-		for j, f := range findings[i] {
-			label := ""
-			if j == 0 {
-				label = "findings"
-			}
-			fmt.Fprintf(&b, "     %-10s %-8s %s\n", label, f.Severity, printable(f.Detail))
-		}
+		writeFindings(&b, findings[i])
 	}
 	counts := countSeverities(all)
 	fmt.Fprintf(&b, "\nverdict: %s  (%d critical, %d high, %d medium, %d low)\n", verdict,
 		counts[sevCritical], counts[sevHigh], counts[sevMedium], counts[sevLow])
 	_, _ = io.WriteString(w, b.String())
+}
+
+func writeFindings(b *strings.Builder, findings []finding) {
+	for j, f := range findings {
+		label := ""
+		if j == 0 {
+			label = "findings"
+		}
+		fmt.Fprintf(b, "     %-10s %-8s %s\n", label, f.Severity, printable(f.Detail))
+	}
 }
 
 func eventStrings(events []traceEvent) []string {

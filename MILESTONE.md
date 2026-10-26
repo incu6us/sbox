@@ -9,7 +9,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 2 | microVM runner: `sbox run` | ✅ |
 | 3 | Network: per-run isolation ✅, DNS logging ✅, other fake services ⬜ | 🟡 |
 | 4 | Guest instrumentation and skill entry points: `sbox scan` ✅, more entry points ⬜ | 🟡 |
-| 5 | Dependency prefetch | ⬜ |
+| 5 | Dependency prefetch | ✅ |
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | ⬜ |
@@ -185,11 +185,37 @@ accepting connections) stays out until a scan shows it's needed.
 - Run the scripts a skill's `SKILL.md` tells the agent to run (`scripts/`),
   with representative arguments.
 
-## 5. Dependency prefetch ⬜
+## 5. Dependency prefetch ✅
 
-Get a skill's npm and PyPI dependencies into the run without running their
-install scripts: a separate microVM with egress limited to the package
-registries.
+- `sbox-run` runs two microVMs when the run carries `sbox/prefetch.sh`: a
+  prefetch VM with an empty writable 4 GB sparse drive, then the main VM with
+  that drive read-only. Same namespace, tap and DNS logger.
+- Egress for the prefetch VM only: `scripts/sbox-proxy.py serve` (VM main
+  namespace, unix socket, as `sbox-vm`) tunnels CONNECT to
+  `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org` on 443, no TLS
+  interception, logs ALLOW/DENY; `relay` mode inside the run's namespace
+  forwards 172.16.0.1:3128 to the socket. Both are killed before the main VM
+  boots. The proxy log is printed with the nonce after the prefetch VM exits.
+- `prefetch.go` plans the steps: `npm ci`/`npm install` with scripts off (if
+  dependencies aren't bundled), `pip download --only-binary=:all:` per
+  requirements file, `npm exec` for npx MCP packages, `uv tool install` with
+  builds off for uvx. The steps run as the runner through the proxy.
+- The guest init reads `sbox.phase` from the kernel command line. Main phase:
+  overlays `node_modules`, the npm cache and the uv cache (read-only drive plus
+  tmpfs upper layer, since `npm rebuild` writes), installs wheels offline.
+  Entry points run with npm and uv offline, npm's update notifier, audit and
+  fund off, and Node's compile cache off.
+- A new `npm rebuild` entry point runs dependencies' install scripts under
+  strace. npm runs there without a user config, so it doesn't read the fake
+  `~/.npmrc` token: the first test run flagged npm's own config read and
+  update check as CRITICAL; with that fixed, a read of `~/.npmrc` there comes
+  from a dependency.
+- Report: a dependencies section (steps, fetched hosts, refused fetches as
+  `prefetch-refused` MEDIUM, failures and timeouts LOW), and `prefetch` in JSON.
+- Verified: a skill with `is-number` and `six==1.16.0` prefetches both (only
+  the three registry hosts contacted), its hook imports both, PASS; a skill
+  with a `github:` dependency has the fetch refused and reported, REVIEW. No
+  helpers, namespaces, jails or run folders left afterwards.
 
 ## 6. Analysis and report ✅
 

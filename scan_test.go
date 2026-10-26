@@ -147,6 +147,7 @@ func TestScanScript(t *testing.T) {
 	eps := []entryPoint{
 		{Kind: "hook", Name: "SessionStart", Command: `node "${CLAUDE_PLUGIN_ROOT}/it's.js"`, Stdin: "{}\n"},
 		{Kind: "mcp", Name: "files", Command: "'npx' 'pkg'", Stdin: "init\n"},
+		{Kind: "npm", Name: "rebuild", Command: "npm rebuild", Env: []string{"npm_config_userconfig=/dev/null"}},
 	}
 	script, files := scanScript(eps, 20*time.Second)
 
@@ -155,6 +156,7 @@ func TestScanScript(t *testing.T) {
 		`-o /run/sbox/trace.1 sh -c 'node "${CLAUDE_PLUGIN_ROOT}/it'\''s.js"' </drive/sbox/in/stdin.1`,
 		`sh -c '(cat /drive/sbox/in/stdin.2; sleep 18) | '\''npx'\'' '\''pkg'\''' </dev/null`,
 		`pkill -KILL -u runner`,
+		`NODE_DISABLE_COMPILE_CACHE=1 'npm_config_userconfig=/dev/null' \`,
 		`getent hosts "entry-2-$nonce.sbox.invalid"`,
 		`echo "SBOX-$nonce RESULT 2 $status"`,
 	} {

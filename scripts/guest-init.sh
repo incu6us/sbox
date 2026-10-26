@@ -6,6 +6,15 @@
 # can't print a fake result.
 nonce=$(cat /drive/sbox/nonce)
 canary=$(cat /drive/sbox/canary)
+phase=main
+grep -q 'sbox.phase=prefetch' /proc/cmdline && phase=prefetch
+
+poweroff() {
+	sync
+	# No systemd, so no reboot(8): ask the kernel directly. Firecracker exits on reboot.
+	echo 1 >/proc/sys/kernel/sysrq
+	echo b >/proc/sysrq-trigger
+}
 for d in /tmp /var/tmp /run /home/runner; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done
@@ -50,6 +59,44 @@ echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 cp -a /drive/skill /home/runner/work
 chown -R runner:runner /home/runner
 
+# Prefetch phase: download dependencies onto the empty writable drive, with
+# package-manager scripts disabled, through the registry-only proxy.
+if [ "$phase" = prefetch ]; then
+	mount /dev/vdc /mnt && chown runner:runner /mnt
+	echo "SBOX-$nonce PREFETCH-BEGIN"
+	cd /home/runner/work
+	nonce="$nonce" sh /drive/sbox/prefetch.sh </dev/null 2>&1
+	echo
+	echo "SBOX-$nonce PREFETCH-END $?"
+	cd /
+	umount /mnt
+	poweroff
+	exit 0
+fi
+
+# Main phase with prefetched dependencies: the drive is read-only, so each
+# folder is overlaid with a writable tmpfs layer (npm rebuild writes build
+# output, npx and uv write to their caches). Wheels install offline, which
+# runs no package code.
+overlay() { # lower target
+	[ -d "$1" ] || return 0
+	n=$(echo "$2" | tr / _)
+	mkdir -p "/run/ovl/$n/upper" "/run/ovl/$n/work" "$2"
+	mount -t overlay overlay -o "lowerdir=$1,upperdir=/run/ovl/$n/upper,workdir=/run/ovl/$n/work" "$2"
+	chown runner:runner "$2"
+}
+if [ -b /dev/vdc ]; then
+	mount -o ro /dev/vdc /mnt
+	[ -e /home/runner/work/node_modules ] || overlay /mnt/node_modules /home/runner/work/node_modules
+	overlay /mnt/npm-cache /home/runner/.npm
+	overlay /mnt/uv-cache /home/runner/.cache/uv
+	chown runner:runner /home/runner/.cache 2>/dev/null
+	if ls /mnt/wheels/*.whl >/dev/null 2>&1; then
+		setpriv --reuid=runner --regid=runner --init-groups --reset-env \
+			pip install --quiet --user --break-system-packages --no-index --no-deps /mnt/wheels/*.whl >/dev/null 2>&1
+	fi
+fi
+
 echo "SBOX-$nonce START"
 cd /home/runner/work
 if [ -f /drive/sbox/scan.sh ]; then
@@ -62,7 +109,4 @@ fi
 status=$?
 echo # the command's output may not end with a newline
 echo "SBOX-$nonce EXIT $status"
-sync
-# No systemd, so no reboot(8): ask the kernel directly. Firecracker exits on reboot.
-echo 1 >/proc/sys/kernel/sysrq
-echo b >/proc/sysrq-trigger
+poweroff

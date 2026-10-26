@@ -184,7 +184,7 @@ func countSeverities(findings []finding) map[severity]int {
 }
 
 // writeScanJSON prints the scan as one JSON object.
-func writeScanJSON(w io.Writer, dir string, runs []entryRun, findings [][]finding, verdict string, all []finding) error {
+func writeScanJSON(w io.Writer, dir string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding) error {
 	type dnsJSON struct {
 		Name  string   `json:"name"`
 		Types []string `json:"types"`
@@ -203,11 +203,12 @@ func writeScanJSON(w io.Writer, dir string, runs []entryRun, findings [][]findin
 		Findings  []finding `json:"findings"`
 	}
 	report := struct {
-		Target  string         `json:"target"`
-		Verdict string         `json:"verdict"`
-		Counts  map[string]int `json:"counts"`
-		Entries []entryJSON    `json:"entries"`
-	}{Target: dir, Verdict: verdict, Counts: make(map[string]int), Entries: []entryJSON{}}
+		Target   string          `json:"target"`
+		Verdict  string          `json:"verdict"`
+		Counts   map[string]int  `json:"counts"`
+		Prefetch *prefetchResult `json:"prefetch"`
+		Entries  []entryJSON     `json:"entries"`
+	}{Target: dir, Verdict: verdict, Counts: make(map[string]int), Prefetch: pre, Entries: []entryJSON{}}
 	for sev, n := range countSeverities(all) {
 		report.Counts[sev.String()] = n
 	}

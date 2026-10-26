@@ -81,9 +81,11 @@ func dnsLookups(markers []string) []dnsName {
 // script as root (it drops to the runner for what it runs), with input
 // files for it under sbox/in/.
 type guestJob struct {
-	command []string
-	scan    string
-	files   map[string]string
+	command  []string
+	scan     string
+	files    map[string]string
+	prefetch string        // optional: runs first, in a microVM with registry-only egress
+	preLimit time.Duration // the prefetch microVM's timeout
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -156,10 +158,13 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce, canary)) }()
 
 	// The VM side enforces the timeout; the host one only catches a hung VM.
-	ctx, cancel := context.WithTimeout(ctx, timeout+30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout+job.preLimit+60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "limactl", "shell", "--workdir", "/", _vmName,
-		"sudo", _runScriptPath, id, strconv.Itoa(int(timeout.Seconds())))
+	args := []string{"shell", "--workdir", "/", _vmName, "sudo", _runScriptPath, id, strconv.Itoa(int(timeout.Seconds()))}
+	if job.prefetch != "" {
+		args = append(args, strconv.Itoa(int(job.preLimit.Seconds())))
+	}
+	cmd := exec.CommandContext(ctx, "limactl", args...)
 	cmd.Stdin = pr
 	cmd.Stderr = errOut
 	console, err := cmd.StdoutPipe()
@@ -303,6 +308,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 		{"sbox/init.sh", _guestInit, 0o700},
 		{"sbox/nonce", nonce, 0o400},
 		{"sbox/canary", canary, 0o400},
+	}
+	if job.prefetch != "" {
+		files = append(files, file{"sbox/prefetch.sh", job.prefetch, 0o700})
 	}
 	if job.scan != "" {
 		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})

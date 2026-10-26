@@ -14,11 +14,14 @@ import (
 // entryPoint is something a skill or plugin runs without the agent deciding
 // to: a hook, an MCP server, an install script.
 type entryPoint struct {
-	Kind    string // hook, mcp, npm, setup.py
-	Name    string // event, server or script name
-	Source  string // file it was declared in, relative to the skill
-	Command string // shell command, run from the skill's root
-	Stdin   string // fed to the command
+	Kind    string   // hook, mcp, npm, setup.py
+	Name    string   // event, server or script name
+	Source  string   // file it was declared in, relative to the skill
+	Command string   // shell command, run from the skill's root
+	Stdin   string   // fed to the command
+	Runner  string   // mcp: npx or uvx, when the server is a downloaded package
+	Package string   // mcp: the package that runner launches
+	Env     []string // extra NAME=value settings for this entry point
 }
 
 var (
@@ -128,7 +131,8 @@ func configEntry(rel string, entry map[string]any, keys []string, matcher string
 			}
 		}
 		full := shellJoin(append([]string{cmd}, args...))
-		return entryPoint{Kind: "mcp", Name: name, Source: rel, Command: full, Stdin: mcpHandshake()}, true
+		runner, pkg := runnerPackage(cmd, args)
+		return entryPoint{Kind: "mcp", Name: name, Source: rel, Command: full, Stdin: mcpHandshake(), Runner: runner, Package: pkg}, true
 	}
 	return entryPoint{}, false
 }
