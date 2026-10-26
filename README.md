@@ -18,8 +18,8 @@ macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no hos
 ## Install
 
 ```sh
-go build -o sbox .
-./sbox setup
+go install github.com/incu6us/sbox@latest   # or, from a clone: go build -o sbox .
+sbox setup
 ```
 
 ## Commands
