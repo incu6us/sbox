@@ -39,7 +39,41 @@ type runResult struct {
 	started  bool
 	exitCode int // the command's, valid when started && !timedOut
 	timedOut bool
-	markers  []string // other nonce-marked lines from the guest, prefix removed
+	markers  []string // other nonce-marked lines from the guest and VM side, prefix removed
+	nonce    string
+}
+
+// dnsName is a hostname looked up during a run, with the record types asked for.
+type dnsName struct {
+	name  string
+	types []string
+}
+
+func (d dnsName) String() string { return d.name + " (" + strings.Join(d.types, ", ") + ")" }
+
+// addDNS records a lookup, merging repeat lookups of the same name.
+func addDNS(list []dnsName, qtype, name string) []dnsName {
+	for i := range list {
+		if list[i].name == name {
+			if !slices.Contains(list[i].types, qtype) {
+				list[i].types = append(list[i].types, qtype)
+			}
+			return list
+		}
+	}
+	return append(list, dnsName{name: name, types: []string{qtype}})
+}
+
+// dnsLookups collects the DNS logger's lines ("DNS <type> <name>").
+func dnsLookups(markers []string) []dnsName {
+	var list []dnsName
+	for _, m := range markers {
+		if rest, ok := strings.CutPrefix(m, "DNS "); ok {
+			qtype, name, _ := strings.Cut(rest, " ")
+			list = addDNS(list, qtype, name)
+		}
+	}
+	return list
 }
 
 // guestJob is what the guest runs: a command as the runner, or a scan
@@ -78,6 +112,13 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitInfra
 	}
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
+	if names := dnsLookups(res.markers); len(names) > 0 {
+		list := make([]string, len(names))
+		for i, n := range names {
+			list[i] = printable(n.String())
+		}
+		_, _ = fmt.Fprintf(stderr, "sbox: DNS lookups (answered NXDOMAIN): %s\n", strings.Join(list, ", "))
+	}
 	switch {
 	case res.timedOut:
 		_, _ = fmt.Fprintf(stderr, "sbox: timed out after %s\n", *timeout)
@@ -125,6 +166,7 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	}
 
 	res := streamConsole(console, out, verbose, nonce)
+	res.nonce = nonce
 	err = cmd.Wait()
 	var exitErr *exec.ExitError
 	switch {

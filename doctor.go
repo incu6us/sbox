@@ -18,6 +18,7 @@ ping -c1 -W2 172.16.0.1 >/dev/null 2>&1 && echo "PROBE net-host=ok" || echo "PRO
 ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 && echo "PROBE net-internet=reachable" || echo "PROBE net-internet=blocked"
 echo "PROBE uid=$(id -u)"
 touch /usr/.sbox-probe 2>/dev/null && echo "PROBE rootfs=writable" || echo "PROBE rootfs=readonly"
+getent hosts sbox-probe.example >/dev/null 2>&1
 `
 
 // check is one doctor result.
@@ -89,7 +90,13 @@ func probe(ctx context.Context) []check {
 	if len(kv) == 0 {
 		return []check{{name: "run probe", detail: fmt.Sprintf("no probe output: %q", truncate(buf.String(), 300))}}
 	}
-	return judgeProbe(kv)
+	dns := check{name: "run: DNS lookups logged", detail: "sbox-probe.example not in the DNS log: is sbox-dns.py running?"}
+	for _, d := range dnsLookups(res.markers) {
+		if d.name == "sbox-probe.example" {
+			dns.ok, dns.detail = true, d.String()
+		}
+	}
+	return append(judgeProbe(kv), dns)
 }
 
 func truncate(s string, n int) string {

@@ -7,7 +7,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 0 | Feasibility spike: Firecracker on Apple Silicon | ✅ |
 | 1 | `sbox setup` / `sbox doctor`, pinned downloads, guest image | ✅ |
 | 2 | microVM runner: `sbox run` | ✅ |
-| 3 | Network: per-run isolation ✅, fake internet services ⬜ | 🟡 |
+| 3 | Network: per-run isolation ✅, DNS logging ✅, other fake services ⬜ | 🟡 |
 | 4 | Guest instrumentation and skill entry points: `sbox scan` ✅, more entry points ⬜ | 🟡 |
 | 5 | Dependency prefetch | ⬜ |
 | 6 | Analysis and report | ⬜ |
@@ -111,18 +111,42 @@ Commit `32e9417`.
   diagnostics, because exec copies stderr from its own goroutine and a shared
   `bytes.Buffer` lost data.
 
-### 3b. Fake internet services ⬜
+### 3b. DNS logging ✅
+
+- `scripts/sbox-dns.py` (Python 3 standard library; the VM has Python, and a
+  Go helper would need cross-compiling on the user's machine): answers every
+  query with NXDOMAIN and logs type and name, one line per query. Never
+  forwards, never returns an address. Malformed, compressed or truncated
+  questions are dropped; non-printable label bytes are escaped so a crafted
+  name can't forge a log line; at most 10,000 lines.
+- `sbox-run` starts it inside the run's namespace on 172.16.0.1:53 as
+  `sbox-vm` (port 53 allowed by a per-namespace sysctl), with its stdio
+  detached. After the microVM exits it prints the log marked with the
+  run's nonce, read from the drive it built.
+- The guest init bind-mounts a `resolv.conf` pointing at 172.16.0.1 (timeout
+  1 s, 1 attempt) from tmpfs over the read-only one.
+- `sbox scan` looks up `entry-N-<nonce>.sbox.invalid` before each entry point
+  and attributes the lookups that follow to it; entry points can't forge a
+  sentinel without the nonce. The report shows `DNS <name> (<types>) →
+  NXDOMAIN` in place of strace's anonymous DNS lines.
+- `sbox run` prints the names in its summary. Doctor's probe checks that a
+  lookup reaches the log.
+- Fixed while building: the logger was started through a shell function, so
+  cleanup killed the wrong PID, and the surviving logger held stdout open and
+  hung the run. It now starts directly with detached stdio, and cleanup
+  kills every process left in the namespace before deleting it.
+
+### 3c. Other fake services ⬜
 
 Services inside each run's namespace that answer the guest's network
 requests without anything leaving the machine, so a run can show which
 destinations the skill tried to reach. To be scoped and reviewed as its own
 step before implementation.
 
-Evidence from milestone 4: strace shows connection attempts to IP addresses
-with their destination, but a hostname only appears as "DNS lookup via
-127.0.0.53:53". The name travels in the packet, not the syscall. So at least
-a minimal 3b is needed: a DNS responder in the namespace that logs the names
-looked up.
+Evidence from milestone 4 led to 3b: strace shows connection attempts to
+IP addresses with their destination, but a hostname's name travels in the
+packet, not the syscall. Anything beyond DNS logging (answering lookups,
+accepting connections) stays out until a scan shows it's needed.
 
 ## 4. Guest instrumentation and skill entry points 🟡
 

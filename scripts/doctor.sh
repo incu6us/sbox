@@ -12,7 +12,7 @@ sum() { [[ -f "$1" ]] && sha256sum "$1" | cut -d' ' -f1; }
 echo "SBOX firecracker-sha=$(sum cache/firecracker.tgz)"
 echo "SBOX kernel-sha=$(sum vmlinux)"
 [[ -f rootfs.ext4 ]] && echo "SBOX rootfs=present" || echo "SBOX rootfs=missing"
-[[ -x bin/sbox-run ]] && id -u sbox-vm >/dev/null 2>&1 && echo "SBOX runner=present" || echo "SBOX runner=missing"
+[[ -x bin/sbox-run && -x bin/sbox-dns.py ]] && id -u sbox-vm >/dev/null 2>&1 && echo "SBOX runner=present" || echo "SBOX runner=missing"
 [[ -f rootfs.ext4 && -e /dev/kvm ]] || exit 0
 
 # Boot test: a read-only microVM reporting its toolchain. Networking and the

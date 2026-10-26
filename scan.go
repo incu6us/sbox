@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type entryRun struct {
 	procs    []string
 	network  []string
 	files    []string
+	dns      []dnsName
 }
 
 // scanMain implements `sbox scan [-timeout d] [-v] <dir>`: runs every
@@ -93,7 +95,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		_, _ = fmt.Fprintln(stderr, "sbox: the scan timed out; the report covers what finished")
 	}
 
-	writeScanReport(stdout, collectRuns(eps, res.markers))
+	writeScanReport(stdout, collectRuns(eps, res.markers, res.nonce))
 	return exitOK
 }
 
@@ -121,6 +123,7 @@ func scanScript(eps []entryPoint, perEntry time.Duration) (string, map[string]st
 			stdin = "/dev/null"
 		}
 		fmt.Fprintf(&b, `echo "SBOX-$nonce ENTRY %d"
+getent hosts "entry-%d-$nonce.sbox.invalid" >/dev/null 2>&1 # DNS log boundary
 env -i HOME=/home/runner USER=runner LOGNAME=runner PATH=/usr/local/bin:/usr/bin:/bin \
 	CLAUDE_PLUGIN_ROOT=/home/runner/work CLAUDE_PROJECT_DIR=/home/runner/work CURSOR_PROJECT_DIR=/home/runner/work \
 	timeout -k 2 %d strace -f -qq -s 200 -u runner -e trace=%s -o /run/sbox/trace.%d sh -c %s <%s 2>&1
@@ -129,19 +132,32 @@ pkill -KILL -u runner 2>/dev/null
 echo
 echo "SBOX-$nonce RESULT %d $status"
 grep -avE '%s' /run/sbox/trace.%d | head -n %d | sed "s/^/SBOX-$nonce TRACE %d /"
-`, n, secs, _traced, n, shellJoin([]string{cmd}), stdin, n, _quietPaths, n, _maxTraceLines, n)
+`, n, n, secs, _traced, n, shellJoin([]string{cmd}), stdin, n, _quietPaths, n, _maxTraceLines, n)
 	}
 	return b.String(), files
 }
 
-// collectRuns matches the guest's RESULT and TRACE markers to entry points.
-func collectRuns(eps []entryPoint, markers []string) []entryRun {
+// collectRuns matches the guest's RESULT and TRACE markers to entry points,
+// and the DNS log's lines to the entry point that ran after the last
+// sentinel lookup. Sentinels carry the nonce, so entry points can't fake them.
+func collectRuns(eps []entryPoint, markers []string, nonce string) []entryRun {
 	runs := make([]entryRun, len(eps))
 	for i, ep := range eps {
 		runs[i].ep = ep
 	}
+	sentinel := regexp.MustCompile(`^entry-(\d+)-` + regexp.QuoteMeta(nonce) + `\.sbox\.invalid$`)
+	current := 0
 	seen := make(map[string]bool)
 	for _, m := range markers {
+		if rest, ok := strings.CutPrefix(m, "DNS "); ok {
+			qtype, name, _ := strings.Cut(rest, " ")
+			if s := sentinel.FindStringSubmatch(name); s != nil {
+				current, _ = strconv.Atoi(s[1])
+			} else if current >= 1 && current <= len(runs) {
+				runs[current-1].dns = addDNS(runs[current-1].dns, qtype, name)
+			}
+			continue
+		}
 		kind, rest, _ := strings.Cut(m, " ")
 		num, rest, _ := strings.Cut(rest, " ")
 		n, err := strconv.Atoi(num)
@@ -277,10 +293,23 @@ func writeScanReport(w io.Writer, runs []entryRun) {
 			fmt.Fprintf(&b, "     exit %d\n", r.exitCode)
 		}
 		writeList(&b, "processes", r.procs)
-		writeList(&b, "network", r.network)
+		writeList(&b, "network", networkItems(r))
 		writeList(&b, "files", r.files)
 	}
 	_, _ = io.WriteString(w, b.String())
+}
+
+// networkItems lists connection attempts and, when the DNS logger saw
+// lookups, the names instead of strace's anonymous "DNS lookup" lines.
+func networkItems(r entryRun) []string {
+	if len(r.dns) == 0 {
+		return r.network
+	}
+	items := slices.DeleteFunc(slices.Clone(r.network), func(s string) bool { return strings.HasPrefix(s, "DNS lookup via") })
+	for _, d := range r.dns {
+		items = append(items, "DNS "+d.String()+" → NXDOMAIN")
+	}
+	return items
 }
 
 func writeList(b *strings.Builder, label string, items []string) {

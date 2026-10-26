@@ -5,7 +5,9 @@
 #
 # Network: each run gets its own network namespace holding only loopback and
 # the run's tap device. There is no veth and no route out, so the guest can
-# reach the VM side of its tap (172.16.0.1) and nothing else.
+# reach the VM side of its tap (172.16.0.1) and nothing else. sbox-dns
+# listens there, answers every lookup with NXDOMAIN and logs the names; the
+# log is printed after the VM exits, marked with the run's nonce.
 # Usage (as root): sbox-run <run-id> <timeout-seconds>
 set -euo pipefail
 
@@ -19,7 +21,12 @@ run=/var/lib/sbox/runs/$id
 root=$jail_base/firecracker/$id/root
 netns=sbox-$id
 
+dns_pid=
 cleanup() {
+	[[ -n $dns_pid ]] && kill "$dns_pid" 2>/dev/null
+	# Anything else still in the run's namespace goes too, so nothing a run
+	# starts outlives it.
+	ip netns pids "$netns" 2>/dev/null | xargs -r kill -KILL 2>/dev/null
 	ip netns del "$netns" 2>/dev/null || true
 	rm -rf "$run" "$jail_base/firecracker/$id"
 	rmdir "/sys/fs/cgroup/firecracker/$id" 2>/dev/null || true
@@ -44,6 +51,16 @@ in_ns ip link set lo up
 in_ns ip tuntap add dev tap0 mode tap user "$(id -u sbox-vm)"
 in_ns ip addr add 172.16.0.1/30 dev tap0
 in_ns ip link set tap0 up
+
+# The DNS logger runs unprivileged; port 53 is allowed in this namespace only.
+in_ns sysctl -qw net.ipv4.ip_unprivileged_port_start=53
+install -o sbox-vm -m 0600 /dev/null "$run/dns.log"
+# Started directly, not via in_ns: ip netns exec and setpriv exec the next
+# program, so $! is the logger itself and cleanup kills the right process.
+# Its stdio is detached, or it would hold this script's stdout open.
+ip netns exec "$netns" setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups \
+	python3 "$base/bin/sbox-dns.py" 172.16.0.1 53 "$run/dns.log" </dev/null >/dev/null 2>&1 &
+dns_pid=$!
 
 cat >"$root/vm.json" <<'EOF'
 {
@@ -72,6 +89,12 @@ timeout --kill-after=5 "$timeout" "$base/bin/jailer" \
 	--cgroup-version 2 \
 	--netns "/var/run/netns/$netns" \
 	-- --no-api --config-file /vm.json </dev/null || status=$?
+
+# The guest is gone, so it can't interleave forged lines; the nonce comes
+# from the drive this script built.
+nonce=$(cat "$run/drive/sbox/nonce")
+sed "s/^/SBOX-$nonce DNS /" "$run/dns.log"
+
 if [[ $status == 124 || $status == 137 ]]; then
 	exit 124
 fi

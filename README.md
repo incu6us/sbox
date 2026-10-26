@@ -67,6 +67,7 @@ Checks the whole chain in about 7 seconds and prints one line per check:
 | `run: read-only root` | the guest can't modify the shared image |
 | `run: guest reaches VM side` | the guest reaches 172.16.0.1 on its tap |
 | `run: cut off from internet` | the guest can't reach the internet |
+| `run: DNS lookups logged` | a lookup in the guest reaches the DNS log |
 
 Each failure says what to do (usually `sbox setup`). Exit codes: `0` all
 checks pass, `1` a check failed, `2` bad usage.
@@ -154,10 +155,31 @@ paths. Example, for a plugin's SessionStart hook:
 How it stays trustworthy: strace runs as root and writes each trace to a
 root-only directory, so an entry point can't edit the record of what it did.
 Every `runner` process is killed before the next entry point starts. The
-network is blocked as for `sbox run`, so connections show up as attempts; a
-hostname lookup currently shows as "DNS lookup" without the name (milestone
-3b). Exit codes: `0` the scan completed, `125` sbox failed. Verdicts come in
-milestone 6.
+network is blocked as for `sbox run`, so connections show up as attempts, and
+hostname lookups show the names, attributed to the entry point that made them
+(see [DNS](#dns)). Exit codes: `0` the scan completed, `125` sbox failed.
+Verdicts come in milestone 6.
+
+### DNS
+
+Each run's namespace has a DNS logger on 172.16.0.1, and the guest's
+`resolv.conf` points at it. It answers every lookup with NXDOMAIN and records
+the name and record type. It never forwards and never returns an address, so
+a lookup fails exactly as it would without it and nothing leaves the
+machine. `sbox run` lists the names in its summary; `sbox scan` shows them per
+entry point:
+
+```
+     network    93.184.215.14:80 → attempted
+                DNS example.com (A, AAAA) → NXDOMAIN
+```
+
+The log lives on the VM side, outside the guest, and is sent after the
+microVM exits, marked with the run's nonce, so the guest can't forge it.
+`sbox scan` looks up a sentinel name containing the nonce before each entry
+point, to attribute every lookup to the entry point that made it. The logger
+runs as the unprivileged `sbox-vm` user, and is killed with everything else
+in the namespace when the run ends.
 
 ## Managing the VM
 
@@ -176,4 +198,5 @@ golangci-lint run ./...
 
 VM-side scripts live in `scripts/` and are embedded in the binary:
 `provision.sh` (setup), `doctor.sh` (doctor's VM checks), `sbox-run.sh` (one
-microVM), `guest-init.sh` (runs inside each microVM).
+microVM), `guest-init.sh` (runs inside each microVM), `sbox-dns.py` (the DNS
+logger; `python3 scripts/sbox-dns.py --selftest`).

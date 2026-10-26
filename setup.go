@@ -15,9 +15,17 @@ var (
 	_doctorScript string
 	//go:embed scripts/sbox-run.sh
 	_runScript string
+	//go:embed scripts/sbox-dns.py
+	_dnsScript string
 )
 
 const _runScriptPath = "/opt/sbox/bin/sbox-run"
+
+// _vmTools are installed into the VM by setup, after provisioning.
+var _vmTools = []struct{ path, body string }{
+	{_runScriptPath, _runScript},
+	{"/opt/sbox/bin/sbox-dns.py", _dnsScript},
+}
 
 // artifact is a pinned download, checked against its SHA-256 before use.
 type artifact struct {
@@ -98,9 +106,11 @@ func setup(ctx context.Context, out io.Writer) error {
 	if err := vmScript(ctx, out, _provisionScript, true, env); err != nil {
 		return fmt.Errorf("provision: %w", err)
 	}
-	install := fmt.Sprintf("cat >%[1]s.tmp && chmod 0755 %[1]s.tmp && mv %[1]s.tmp %[1]s", _runScriptPath)
-	if err := vmScriptInput(ctx, out, install, _runScript); err != nil {
-		return fmt.Errorf("install sbox-run: %w", err)
+	for _, tool := range _vmTools {
+		install := fmt.Sprintf("cat >%[1]s.tmp && chmod 0755 %[1]s.tmp && mv %[1]s.tmp %[1]s", tool.path)
+		if err := vmScriptInput(ctx, out, install, tool.body); err != nil {
+			return fmt.Errorf("install %s: %w", tool.path, err)
+		}
 	}
 
 	_, _ = fmt.Fprintln(out)

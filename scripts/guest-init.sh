@@ -17,6 +17,10 @@ if ip link show eth0 >/dev/null 2>&1; then
 	ip link set eth0 up
 	ip route add default via 172.16.0.1
 fi
+# Lookups go to the DNS logger on the VM side of the tap. The root is
+# read-only, so the new resolv.conf is bind-mounted from tmpfs.
+printf 'nameserver 172.16.0.1\noptions timeout:1 attempts:1\n' >/run/sbox-resolv.conf
+mount --bind /run/sbox-resolv.conf /etc/resolv.conf
 # Unprivileged ICMP sockets, so the runner can ping (normally set by systemd).
 echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 cp -a /drive/skill /home/runner/work

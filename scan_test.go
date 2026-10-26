@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -103,14 +104,33 @@ func TestCollectRuns(t *testing.T) {
 		`TRACE 1 9 execve("/bin/sh", ["sh", "-c", "x"], 0x1) = 0`, // duplicate
 		"TRACE 7 out of range",
 		"ENTRY 2",
+		"DNS A entry-1-n0nce.sbox.invalid",
+		"DNS A example.com",
+		"DNS AAAA example.com",
+		"DNS A entry-2-forged.sbox.invalid", // wrong nonce: an ordinary lookup
+		"DNS A entry-2-n0nce.sbox.invalid",
+		"DNS A api.other.io",
 	}
-	runs := collectRuns(eps, markers)
+	runs := collectRuns(eps, markers, "n0nce")
 
 	if !runs[0].ran || runs[0].exitCode != 0 || !slices.Equal(runs[0].procs, []string{"sh -c x"}) {
 		t.Errorf("run 1 = %+v, want ran, exit 0, one process", runs[0])
 	}
 	if runs[1].ran {
 		t.Errorf("run 2 = %+v, want not ran (no RESULT)", runs[1])
+	}
+	wantDNS := [][]string{
+		{"example.com (A, AAAA)", "entry-2-forged.sbox.invalid (A)"},
+		{"api.other.io (A)"},
+	}
+	for i, want := range wantDNS {
+		var got []string
+		for _, d := range runs[i].dns {
+			got = append(got, d.String())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("run %d DNS = %v, want %v", i+1, got, want)
+		}
 	}
 }
 
@@ -128,6 +148,7 @@ func TestScanScript(t *testing.T) {
 		`-o /run/sbox/trace.1 sh -c 'node "${CLAUDE_PLUGIN_ROOT}/it'\''s.js"' </drive/sbox/in/stdin.1`,
 		`sh -c '(cat /drive/sbox/in/stdin.2; sleep 18) | '\''npx'\'' '\''pkg'\''' </dev/null`,
 		`pkill -KILL -u runner`,
+		`getent hosts "entry-2-$nonce.sbox.invalid"`,
 		`echo "SBOX-$nonce RESULT 2 $status"`,
 	} {
 		if !strings.Contains(script, want) {
@@ -136,5 +157,18 @@ func TestScanScript(t *testing.T) {
 	}
 	if files["stdin.1"] != "{}\n" || files["stdin.2"] != "init\n" {
 		t.Errorf("files = %v", files)
+	}
+}
+
+func TestDNSLoggerSelftest(t *testing.T) {
+	t.Parallel()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not installed")
+	}
+	out, err := exec.Command(python, "-I", "scripts/sbox-dns.py", "--selftest").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Errorf("sbox-dns.py --selftest: %v: %s", err, out)
 	}
 }
