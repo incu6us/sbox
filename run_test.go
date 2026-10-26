@@ -149,3 +149,17 @@ func TestWriteRunTar(t *testing.T) {
 		}
 	}
 }
+
+func TestEgressLog(t *testing.T) {
+	t.Parallel()
+
+	allowed, refused := egressLog([]string{
+		"EGRESS ALLOW api.anthropic.com:443",
+		"EGRESS ALLOW api.anthropic.com:443",
+		"EGRESS DENY example.com:443",
+		"DNS A x.example",
+	})
+	if !slices.Equal(allowed, []string{"api.anthropic.com:443 ×2"}) || !slices.Equal(refused, []string{"example.com:443 ×1"}) {
+		t.Errorf("allowed %v, refused %v", allowed, refused)
+	}
+}

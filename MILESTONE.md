@@ -294,9 +294,16 @@ that ship real hooks.
     whose own events aren't judged, only what they launch: `npm rebuild`
     names npm (16 of its own events hidden on the test skill). Hooks name
     none, so their verdicts are unchanged (ponytail PASS, probes as before).
-  - ⬜ Next steps: egress to the agent's API host only; the user's own
-    credential for the agent process; the headless run, transcript and
-    report; then a Cursor profile.
+  - ✅ Step 3: egress for the main microVM. A run can declare `host:port`
+    entries (`sbox/egress` on its drive); `sbox-run` then starts the same
+    allowlist proxy and relay as prefetch for the main microVM, with exactly
+    those hosts, and prints the log with the nonce afterwards. The guest sets
+    `HTTPS_PROXY` for the command only then. `sbox run -egress` exposes it.
+    Verified: with `api.anthropic.com:443` allowed, that host answers and
+    example.com is refused; without it, nothing is reachable; prefetch
+    unchanged; nothing left behind.
+  - ⬜ Next steps: the user's own credential for the agent process; the
+    headless run, transcript and report; then a Cursor profile.
 - Firecracker snapshots for sub-second starts.
 - GitHub URLs as targets (v1: fetch locally first).
 

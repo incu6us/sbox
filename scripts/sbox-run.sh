@@ -15,6 +15,9 @@
 # that tunnels to the package registries alone. The relay and proxy are
 # stopped before the main microVM boots with that drive attached read-only.
 #
+# Egress: if the run carries sbox/egress (host:port per line), the main
+# microVM gets the same relay and proxy, tunnelling to those hosts only.
+#
 # Usage (as root): sbox-run <run-id> <timeout-seconds> [prefetch-timeout-seconds]
 set -euo pipefail
 
@@ -114,39 +117,62 @@ EOF
 	return "$status"
 }
 
-deps=none
-if [[ -f $run/drive/sbox/prefetch.sh && $prefetch_timeout -gt 0 ]]; then
-	truncate -s 4G "$run/deps.ext4"
-	mkfs.ext4 -q -F "$run/deps.ext4"
-	chown sbox-vm "$run/deps.ext4"
-
-	# Registry-only proxy in the VM's main namespace, on a unix socket, and a
-	# relay to it inside the run's namespace.
+# start_egress <log> [host:port ...]: an allowlist proxy in the VM's main
+# namespace on a unix socket (default allowlist: the package registries),
+# and a relay to it on 172.16.0.1:3128 inside the run's namespace.
+start_egress() {
+	local log=$1
+	shift
 	install -d -o sbox-vm -m 0700 "$run/proxy"
-	install -o sbox-vm -m 0600 /dev/null "$run/proxy.log"
-	"${as_vm_user[@]}" python3 "$base/bin/sbox-proxy.py" serve "$run/proxy/sock" "$run/proxy.log" </dev/null >/dev/null 2>&1 &
+	rm -f "$run/proxy/sock"
+	install -o sbox-vm -m 0600 /dev/null "$log"
+	"${as_vm_user[@]}" python3 "$base/bin/sbox-proxy.py" serve "$run/proxy/sock" "$log" "$@" </dev/null >/dev/null 2>&1 &
 	proxy_pid=$!
 	for _ in $(seq 50); do [[ -S $run/proxy/sock ]] && break; sleep 0.1; done
 	ip netns exec "$netns" "${as_vm_user[@]}" \
 		python3 "$base/bin/sbox-proxy.py" relay 172.16.0.1 3128 "$run/proxy/sock" </dev/null >/dev/null 2>&1 &
 	relay_pid=$!
 	pids+=("$proxy_pid" "$relay_pid")
+}
 
+stop_egress() {
+	kill "$relay_pid" "$proxy_pid" 2>/dev/null || true
+	wait "$relay_pid" "$proxy_pid" 2>/dev/null || true
+}
+
+deps=none
+if [[ -f $run/drive/sbox/prefetch.sh && $prefetch_timeout -gt 0 ]]; then
+	truncate -s 4G "$run/deps.ext4"
+	mkfs.ext4 -q -F "$run/deps.ext4"
+	chown sbox-vm "$run/deps.ext4"
+
+	start_egress "$run/prefetch.log"
 	pre_status=0
 	boot "$id-pre" "$prefetch_timeout" prefetch rw || pre_status=$?
+	stop_egress # no way out for the main microVM, unless it declares egress
 
-	# No way out for the main microVM.
-	kill "$relay_pid" "$proxy_pid" 2>/dev/null
-	wait "$relay_pid" "$proxy_pid" 2>/dev/null || true
 	[[ $pre_status == 124 || $pre_status == 137 ]] && echo "SBOX-$nonce PREFETCH-TIMEOUT"
-	sed "s/^/SBOX-$nonce FETCH /" "$run/proxy.log"
+	sed "s/^/SBOX-$nonce FETCH /" "$run/prefetch.log"
 	deps=ro
 fi
+
+egress=()
+if [[ -s $run/drive/sbox/egress ]]; then
+	while read -r entry; do
+		[[ $entry =~ ^[a-z0-9.-]+:[0-9]{1,5}$ ]] && egress+=("$entry")
+	done <"$run/drive/sbox/egress"
+fi
+((${#egress[@]})) && start_egress "$run/egress.log" "${egress[@]}"
 
 # Exit 124 on timeout, 0 otherwise: the console (stdout) belongs to the
 # guest, so the timeout is reported out of its reach.
 status=0
 boot "$id" "$timeout" main "$deps" || status=$?
+
+if ((${#egress[@]})); then
+	stop_egress
+	sed "s/^/SBOX-$nonce EGRESS /" "$run/egress.log"
+fi
 
 # The guests are gone, so they can't interleave forged lines.
 sed "s/^/SBOX-$nonce DNS /" "$run/dns.log"

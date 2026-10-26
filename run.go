@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,6 +66,41 @@ func addDNS(list []dnsName, qtype, name string) []dnsName {
 	return append(list, dnsName{name: name, types: []string{qtype}})
 }
 
+var _egressEntry = regexp.MustCompile(`^[a-z0-9.-]+:[0-9]{1,5}$`)
+
+// egressLog counts the main microVM's proxy log ("EGRESS ALLOW|DENY target").
+func egressLog(markers []string) (allowed, refused []string) {
+	counts := make(map[string]int)
+	var order []string
+	for _, m := range markers {
+		rest, ok := strings.CutPrefix(m, "EGRESS ")
+		if !ok {
+			continue
+		}
+		if counts[rest] == 0 {
+			order = append(order, rest)
+		}
+		counts[rest]++
+	}
+	for _, key := range order {
+		verdict, target, _ := strings.Cut(key, " ")
+		item := fmt.Sprintf("%s ×%d", printable(target), counts[key])
+		if verdict == "ALLOW" {
+			allowed = append(allowed, item)
+		} else {
+			refused = append(refused, item)
+		}
+	}
+	return allowed, refused
+}
+
+func listOrNone(items []string) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
+}
+
 // dnsLookups collects the DNS logger's lines ("DNS <type> <name>").
 func dnsLookups(markers []string) []dnsName {
 	var list []dnsName
@@ -86,6 +122,7 @@ type guestJob struct {
 	files    map[string]string
 	prefetch string        // optional: runs first, in a microVM with registry-only egress
 	preLimit time.Duration // the prefetch microVM's timeout
+	egress   []string      // optional: host:port the main microVM may reach through the proxy
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -94,6 +131,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sbox run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	timeout := flags.Duration("timeout", _defaultTimeout, "stop the microVM after this long")
+	egress := flags.String("egress", "", "comma-separated `host:port` list the command may reach through a proxy (HTTPS_PROXY)")
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox run [flags] <dir> -- <command> [args...]\n\n")
@@ -108,13 +146,27 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitInfra
 	}
 
+	job := guestJob{command: rest[2:]}
+	if *egress != "" {
+		for _, e := range strings.Split(*egress, ",") {
+			if !_egressEntry.MatchString(e) {
+				_, _ = fmt.Fprintf(stderr, "sbox: -egress %q: want host:port, lowercase\n", e)
+				return exitInfra
+			}
+			job.egress = append(job.egress, e)
+		}
+	}
+
 	start := time.Now()
-	res, err := runVM(ctx, rest[0], guestJob{command: rest[2:]}, *timeout, *verbose, stdout, stderr)
+	res, err := runVM(ctx, rest[0], job, *timeout, *verbose, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
 	}
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
+	if allowed, refused := egressLog(res.markers); len(allowed)+len(refused) > 0 {
+		_, _ = fmt.Fprintf(stderr, "sbox: egress allowed: %s; refused: %s\n", listOrNone(allowed), listOrNone(refused))
+	}
 	if names := dnsLookups(res.markers); len(names) > 0 {
 		list := make([]string, len(names))
 		for i, n := range names {
@@ -311,6 +363,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if job.prefetch != "" {
 		files = append(files, file{"sbox/prefetch.sh", job.prefetch, 0o700})
+	}
+	if len(job.egress) > 0 {
+		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})
 	}
 	if job.scan != "" {
 		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})

@@ -2,14 +2,14 @@
 """Registry-only egress for sbox's dependency prefetch.
 
 serve: an HTTPS CONNECT proxy on a unix socket, in the VM's main network
-       namespace. It tunnels only to the package registries on port 443 (no
-       TLS interception) and logs every request as "ALLOW host:port" or
-       "DENY host:port".
+       namespace. It tunnels only to the hosts given, or by default the
+       package registries, on the ports given (no TLS interception), and logs
+       every request as "ALLOW host:port" or "DENY host:port".
 relay: inside a run's network namespace, forwards TCP connections on
        <address>:<port> to that unix socket. Unix sockets live on the
        filesystem, so the run's namespace still has no route out.
 
-Usage: sbox-proxy.py serve <socket> <log file>
+Usage: sbox-proxy.py serve <socket> <log file> [host:port ...]
        sbox-proxy.py relay <address> <port> <socket>
 """
 import os
@@ -111,6 +111,16 @@ def handle(client, log_file):
     splice(client, upstream)
 
 
+def parse_allowlist(entries):
+    """Parse host:port entries; anything malformed is skipped."""
+    allowed = set()
+    for entry in entries:
+        host, _, port = entry.lower().rpartition(":")
+        if host and port.isdigit() and all(c.isalnum() or c in ".-" for c in host):
+            allowed.add((host, int(port)))
+    return allowed
+
+
 def serve(sock_path, log_path):
     if os.path.exists(sock_path):
         os.unlink(sock_path)
@@ -146,6 +156,7 @@ def selftest():
     assert parse_connect(b"CONNECT github.com:443 HTTP/1.1\r\n\r\n") not in ALLOWED
     assert parse_connect(b"CONNECT registry.npmjs.org:80 HTTP/1.1\r\n\r\n") not in ALLOWED
     assert parse_connect(b"CONNECT junk\r\n\r\n") is None
+    assert parse_allowlist(["API.anthropic.com:443", "bad host:1", "x.io:", "a.b:80"]) == {("api.anthropic.com", 443), ("a.b", 80)}
     print("ok")
 
 
@@ -153,7 +164,9 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--selftest"]:
         selftest()
-    elif len(args) == 3 and args[0] == "serve":
+    elif len(args) >= 3 and args[0] == "serve":
+        if len(args) > 3:
+            ALLOWED = parse_allowlist(args[3:])
         serve(args[1], args[2])
     elif len(args) == 4 and args[0] == "relay":
         relay(args[1], int(args[2]), args[3])

@@ -104,7 +104,10 @@ if [ -f /drive/sbox/scan.sh ]; then
 	# runner under strace. It prints its own markers, so it gets the nonce.
 	nonce="$nonce" canary="$canary" sh /drive/sbox/scan.sh </dev/null 2>&1
 else
-	setpriv --reuid=runner --regid=runner --init-groups --reset-env sh /drive/sbox/cmd.sh </dev/null 2>&1
+	proxy_env=""
+	[ -s /drive/sbox/egress ] && proxy_env="HTTPS_PROXY=http://172.16.0.1:3128 https_proxy=http://172.16.0.1:3128"
+	# shellcheck disable=SC2086 # proxy_env is two assignments or nothing
+	setpriv --reuid=runner --regid=runner --init-groups --reset-env env $proxy_env sh /drive/sbox/cmd.sh </dev/null 2>&1
 fi
 status=$?
 echo # the command's output may not end with a newline

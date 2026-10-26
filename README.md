@@ -27,7 +27,7 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-timeout <duration>] [-v] <dir> -- <command> [args...]
+sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
 ```
 
@@ -88,6 +88,7 @@ command, passed through exactly (quotes, spaces and `$` arrive intact).
 |---|---|
 | `-timeout <duration>` | Stop the microVM after this long (Go duration: `30s`, `5m`). Default `1m`, minimum `1s`. |
 | `-v` | Also show kernel and Firecracker output, marked `·`. Useful when a run fails to start. |
+| `-egress <host:port,...>` | Let the command reach these hosts, and nothing else, through a CONNECT proxy outside the guest (`HTTPS_PROXY` is set for it). The summary lists allowed and refused connections. Without it, the guest has no way out. |
 
 Guest output is shown live, marked `│`, then a summary line on stderr
 (`sbox: exit 3 in 1.4s`).
