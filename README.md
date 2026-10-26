@@ -13,7 +13,7 @@ macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no hos
 
 - Apple Silicon M3 or later, macOS 15+ (nested virtualization)
 - Lima 2.x: `brew install lima`
-- Go 1.24+ to build
+- Go 1.27.2+ to build
 
 ## Install
 
