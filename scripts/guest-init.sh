@@ -9,6 +9,16 @@ for d in /tmp /var/tmp /run /home/runner; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done
 chmod 0755 /home/runner
+
+# Network: the VM side of the tap is the only thing reachable.
+ip link set lo up
+if ip link show eth0 >/dev/null 2>&1; then
+	ip addr add 172.16.0.2/30 dev eth0
+	ip link set eth0 up
+	ip route add default via 172.16.0.1
+fi
+# Unprivileged ICMP sockets, so the runner can ping (normally set by systemd).
+echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 cp -a /drive/skill /home/runner/work
 chown -R runner:runner /home/runner
 

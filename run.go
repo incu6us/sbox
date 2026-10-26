@@ -60,7 +60,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	start := time.Now()
-	res, err := runVM(ctx, rest[0], rest[2:], *timeout, *verbose, stdout)
+	res, err := runVM(ctx, rest[0], rest[2:], *timeout, *verbose, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
@@ -79,8 +79,9 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // runVM sends the directory and command into a fresh microVM and streams
-// the guest's output to out.
-func runVM(ctx context.Context, dir string, command []string, timeout time.Duration, verbose bool, out io.Writer) (runResult, error) {
+// the guest's output to out, the VM side's diagnostics to errOut. They must
+// be separate writers: exec copies errOut from its own goroutine.
+func runVM(ctx context.Context, dir string, command []string, timeout time.Duration, verbose bool, out, errOut io.Writer) (runResult, error) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return runResult{}, fmt.Errorf("%s: not a directory", dir)
 	}
@@ -102,7 +103,7 @@ func runVM(ctx context.Context, dir string, command []string, timeout time.Durat
 	cmd := exec.CommandContext(ctx, "limactl", "shell", "--workdir", "/", _vmName,
 		"sudo", _runScriptPath, id, strconv.Itoa(int(timeout.Seconds())))
 	cmd.Stdin = pr
-	cmd.Stderr = out
+	cmd.Stderr = errOut
 	console, err := cmd.StdoutPipe()
 	if err != nil {
 		return runResult{}, err

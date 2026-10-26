@@ -15,15 +15,10 @@ echo "SBOX kernel-sha=$(sum vmlinux)"
 [[ -x bin/sbox-run ]] && id -u sbox-vm >/dev/null 2>&1 && echo "SBOX runner=present" || echo "SBOX runner=missing"
 [[ -f rootfs.ext4 && -e /dev/kvm ]] || exit 0
 
-# Boot test: a read-only microVM on a tap device. The guest must reach the
-# VM side of the tap and nothing beyond it.
-tap=sbox-doctor
+# Boot test: a read-only microVM reporting its toolchain. Networking and the
+# runner are checked separately, through a real `sbox run`.
 cfg=$(mktemp) log=$(mktemp)
-sudo ip tuntap del "$tap" mode tap 2>/dev/null
-sudo ip tuntap add "$tap" mode tap
-sudo ip addr add 172.16.0.1/30 dev "$tap"
-sudo ip link set "$tap" up
-trap 'sudo ip tuntap del "$tap" mode tap 2>/dev/null; rm -f "$cfg" "$log"' EXIT
+trap 'rm -f "$cfg" "$log"' EXIT
 
 cat >"$cfg" <<EOF
 {
@@ -32,7 +27,6 @@ cat >"$cfg" <<EOF
     "boot_args": "keep_bootcon console=ttyS0 reboot=k panic=1 ro init=/sbin/sbox-hello"
   },
   "drives": [{"drive_id": "rootfs", "path_on_host": "/opt/sbox/rootfs.ext4", "is_root_device": true, "is_read_only": true}],
-  "network-interfaces": [{"iface_id": "eth0", "host_dev_name": "$tap", "guest_mac": "06:00:ac:10:00:02"}],
   "machine-config": {"vcpu_count": 1, "mem_size_mib": 512}
 }
 EOF

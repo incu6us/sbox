@@ -1,8 +1,8 @@
 # sbox
 
 Runs AI agent skills inside a Firecracker microVM with fake secrets and a
-fake internet, and reports what they try to do. Work in progress: milestones
-1–2 (VM, Firecracker, guest image, doctor, microVM runner) are done.
+fake internet, and reports what they try to do. Work in progress: see
+[MILESTONE.md](MILESTONE.md) for what's done and what's next.
 
 ```
 macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no host mounts)
@@ -20,7 +20,10 @@ go build -o sbox .
 `run` exits with the command's status, 124 on timeout, 125 when sbox fails.
 
 Each run gets a fresh microVM, started by Firecracker's jailer as the
-unprivileged `sbox-vm` user in its own chroot and cgroup, with no network:
+unprivileged `sbox-vm` user in its own chroot, cgroup and network namespace:
+
+- the namespace holds only the run's tap device: the guest reaches the VM side
+  (172.16.0.1) and nothing else, with no route out
 
 - root filesystem read-only (shared image); scratch (`/tmp`, `/home/runner`) in tmpfs
 - the directory is copied to `/home/runner/work`; the command runs there as `runner` (uid 1000)
@@ -34,8 +37,9 @@ unprivileged `sbox-vm` user in its own chroot and cgroup, with no network:
 the guest's Ubuntu packages come from the signed archive via mmdebstrap. Bump
 `ROOTFS_REVISION` in `scripts/provision.sh` when the image recipe changes.
 
-`doctor` boots a read-only microVM on a tap device and requires that the guest
-reaches the VM side of the tap **and cannot reach the internet**.
+`doctor` boots a microVM to check the toolchain, then does a real `sbox run`
+and requires that the command runs as uid 1000 on a read-only root, reaches
+the VM side of its tap, **and cannot reach the internet**.
 
 Needs: Apple Silicon M3 or later, macOS 15+, `brew install lima` (2.x).
 The VM uses 4 CPUs and 6 GiB while running: `limactl stop sbox` frees them.

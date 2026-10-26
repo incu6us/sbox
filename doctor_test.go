@@ -3,6 +3,7 @@ package main
 import (
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -45,19 +46,17 @@ func TestJudge(t *testing.T) {
 		return parseKV(`noise from the shell
 SBOX provisioned=yes
 SBOX kvm=present
-SBOX firecracker=` + _firecrackerVersion + `
-SBOX firecracker-sha=` + pinnedSHA("FIRECRACKER") + `
-SBOX kernel-sha=` + pinnedSHA("KERNEL") + `
+SBOX firecracker=`+_firecrackerVersion+`
+SBOX firecracker-sha=`+pinnedSHA("FIRECRACKER")+`
+SBOX kernel-sha=`+pinnedSHA("KERNEL")+`
 SBOX rootfs=present
 SBOX runner=present
 SBOX boot-exit=0
 SBOX boot-ms=2600
-  SBOX node=` + _nodeVersion + `
-SBOX uv=` + _uvVersion + `
+  SBOX node=`+_nodeVersion+`
+SBOX uv=`+_uvVersion+`
 SBOX python=3.12.3
-SBOX strace=6.8
-SBOX net-host=ok
-SBOX net-internet=blocked`)
+SBOX strace=6.8`, "SBOX ")
 	}
 
 	tests := []struct {
@@ -66,7 +65,6 @@ SBOX net-internet=blocked`)
 		wantFail string // check that must fail; "" means all pass
 	}{
 		{name: "healthy"},
-		{name: "internet reachable", change: map[string]string{"net-internet": "reachable"}, wantFail: "guest cut off from internet"},
 		{name: "tampered kernel", change: map[string]string{"kernel-sha": "abc"}, wantFail: "kernel checksum"},
 		{name: "no kvm", change: map[string]string{"kvm": "missing"}, wantFail: "kvm"},
 		{name: "boot failed", change: map[string]string{"boot-exit": "1", "node": ""}, wantFail: "microVM boot"},
@@ -95,7 +93,38 @@ SBOX net-internet=blocked`)
 
 func TestJudgeUnprovisioned(t *testing.T) {
 	t.Parallel()
-	if got := judge(parseKV("SBOX provisioned=no")); len(got) != 1 || got[0].ok {
+	if got := judge(parseKV("SBOX provisioned=no", "SBOX ")); len(got) != 1 || got[0].ok {
 		t.Errorf("judge = %+v, want a single failing provisioned check", got)
+	}
+}
+
+func TestJudgeProbe(t *testing.T) {
+	t.Parallel()
+
+	healthy := "│ PROBE net-host=ok\n│ PROBE net-internet=blocked\n│ PROBE uid=1000\n│ PROBE rootfs=readonly\n"
+	tests := []struct {
+		name     string
+		give     string
+		wantFail string
+	}{
+		{name: "isolated", give: healthy},
+		{name: "internet reachable", give: strings.Replace(healthy, "blocked", "reachable", 1), wantFail: "run: cut off from internet"},
+		{name: "runs as root", give: strings.Replace(healthy, "uid=1000", "uid=0", 1), wantFail: "run: unprivileged guest user"},
+		{name: "no output", give: "", wantFail: "run: guest reaches VM side"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var fails []string
+			for _, c := range judgeProbe(parseKV(tt.give, "PROBE ")) {
+				if !c.ok {
+					fails = append(fails, c.name)
+				}
+			}
+			if (tt.wantFail == "") != (len(fails) == 0) || (tt.wantFail != "" && !slices.Contains(fails, tt.wantFail)) {
+				t.Errorf("failed checks %v, want %q", fails, tt.wantFail)
+			}
+		})
 	}
 }
