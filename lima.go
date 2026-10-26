@@ -97,3 +97,11 @@ func vmScript(ctx context.Context, out io.Writer, script string, root bool, env 
 	cmd.Stdout, cmd.Stderr = out, out
 	return cmd.Run()
 }
+
+// vmScriptInput runs a one-line root command in the VM with input on stdin.
+func vmScriptInput(ctx context.Context, out io.Writer, command, input string) error {
+	cmd := exec.CommandContext(ctx, "limactl", "shell", "--workdir", "/", _vmName, "sudo", "sh", "-c", command)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdout, cmd.Stderr = out, out
+	return cmd.Run()
+}

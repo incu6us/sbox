@@ -13,7 +13,11 @@ var (
 	_provisionScript string
 	//go:embed scripts/doctor.sh
 	_doctorScript string
+	//go:embed scripts/sbox-run.sh
+	_runScript string
 )
+
+const _runScriptPath = "/opt/sbox/bin/sbox-run"
 
 // artifact is a pinned download, checked against its SHA-256 before use.
 type artifact struct {
@@ -93,6 +97,10 @@ func setup(ctx context.Context, out io.Writer) error {
 	}
 	if err := vmScript(ctx, out, _provisionScript, true, env); err != nil {
 		return fmt.Errorf("provision: %w", err)
+	}
+	install := fmt.Sprintf("cat >%[1]s.tmp && chmod 0755 %[1]s.tmp && mv %[1]s.tmp %[1]s", _runScriptPath)
+	if err := vmScriptInput(ctx, out, install, _runScript); err != nil {
+		return fmt.Errorf("install sbox-run: %w", err)
 	}
 
 	_, _ = fmt.Fprintln(out)

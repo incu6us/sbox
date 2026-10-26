@@ -95,6 +95,7 @@ func judge(kv map[string]string) []check {
 		want("firecracker checksum", "firecracker-sha", pinnedSHA("FIRECRACKER"), "run sbox setup"),
 		want("kernel checksum", "kernel-sha", pinnedSHA("KERNEL"), "run sbox setup"),
 		want("rootfs", "rootfs", "present", "run sbox setup"),
+		want("runner", "runner", "present", "run sbox setup"),
 	}
 	if _, booted := kv["boot-exit"]; !booted {
 		return checks

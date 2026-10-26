@@ -49,6 +49,7 @@ SBOX firecracker=` + _firecrackerVersion + `
 SBOX firecracker-sha=` + pinnedSHA("FIRECRACKER") + `
 SBOX kernel-sha=` + pinnedSHA("KERNEL") + `
 SBOX rootfs=present
+SBOX runner=present
 SBOX boot-exit=0
 SBOX boot-ms=2600
   SBOX node=` + _nodeVersion + `
@@ -98,4 +99,3 @@ func TestJudgeUnprovisioned(t *testing.T) {
 		t.Errorf("judge = %+v, want a single failing provisioned check", got)
 	}
 }
-

@@ -5,7 +5,7 @@
 set -euo pipefail
 
 DIR=/opt/sbox
-ROOTFS_REVISION=2 # bump when the rootfs recipe below changes
+ROOTFS_REVISION=3 # bump when the rootfs recipe below changes
 GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils
 
 mkdir -p "$DIR/cache" "$DIR/bin"
@@ -31,6 +31,9 @@ fetch() { # name url sha256
 step "packages"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mmdebstrap e2fsprogs acl iproute2 >/dev/null
+# The jailer drops Firecracker to this user.
+id -u sbox-vm >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin sbox-vm
+mkdir -p /var/lib/sbox/runs /srv/sbox-jail
 
 fetch firecracker.tgz "$FIRECRACKER_URL" "$FIRECRACKER_SHA256"
 fetch vmlinux "$KERNEL_URL" "$KERNEL_SHA256"
@@ -62,6 +65,19 @@ tar -xJf cache/node.tar.xz -C "$root/usr/local" --strip-components=1 \
 	--exclude='*/include' --exclude='*/share/doc' --exclude='*/share/man'
 tar -xzf cache/uv.tar.gz -C "$root/usr/local/bin" --strip-components=1
 chroot "$root" useradd --create-home --uid 1000 --shell /bin/bash runner
+mkdir -p "$root/drive"
+
+# Stub init: mounts the run's drive and hands over to the init it carries,
+# so run logic can change without rebuilding this image.
+cat >"$root/sbin/sbox-init" <<'INIT'
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sys /sys
+mount -o ro /dev/vdb /drive && exec /bin/sh /drive/sbox/init.sh
+echo "SBOX-ERROR no run drive"
+reboot -f
+INIT
+chmod 0755 "$root/sbin/sbox-init"
 
 cat >"$root/sbin/sbox-hello" <<'EOF'
 #!/bin/sh
