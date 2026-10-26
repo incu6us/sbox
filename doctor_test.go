@@ -55,6 +55,7 @@ SBOX boot-exit=0
 SBOX boot-ms=2600
   SBOX node=`+_nodeVersion+`
 SBOX uv=`+_uvVersion+`
+SBOX claude=`+_claudeVersion+`
 SBOX python=3.12.3
 SBOX strace=6.8`, "SBOX ")
 	}

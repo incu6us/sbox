@@ -5,7 +5,7 @@
 set -euo pipefail
 
 DIR=/opt/sbox
-ROOTFS_REVISION=4 # bump when the rootfs recipe below changes
+ROOTFS_REVISION=5 # bump when the rootfs recipe below changes
 GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils
 
 mkdir -p "$DIR/cache" "$DIR/bin"
@@ -39,6 +39,7 @@ fetch firecracker.tgz "$FIRECRACKER_URL" "$FIRECRACKER_SHA256"
 fetch vmlinux "$KERNEL_URL" "$KERNEL_SHA256"
 fetch node.tar.xz "$NODE_URL" "$NODE_SHA256"
 fetch uv.tar.gz "$UV_URL" "$UV_SHA256"
+fetch claude-code.tgz "$CLAUDE_URL" "$CLAUDE_SHA256"
 
 step "firecracker"
 tmp=$(mktemp -d)
@@ -50,7 +51,7 @@ install -m 0644 cache/vmlinux vmlinux
 
 # The guest image: Ubuntu minbase from the signed archive, node and uv from
 # the pinned tarballs, an unprivileged runner user, and the doctor's hello init.
-stamp="rootfs.r${ROOTFS_REVISION}-${NODE_SHA256:0:12}-${UV_SHA256:0:12}"
+stamp="rootfs.r${ROOTFS_REVISION}-${NODE_SHA256:0:12}-${UV_SHA256:0:12}-${CLAUDE_SHA256:0:12}"
 if [[ -f rootfs.ext4 && -f "$stamp" ]]; then
 	step "rootfs up to date"
 	exit 0
@@ -64,6 +65,7 @@ mmdebstrap --quiet --variant=minbase --components=main,universe --include="$GUES
 tar -xJf cache/node.tar.xz -C "$root/usr/local" --strip-components=1 \
 	--exclude='*/include' --exclude='*/share/doc' --exclude='*/share/man'
 tar -xzf cache/uv.tar.gz -C "$root/usr/local/bin" --strip-components=1
+tar -xzf cache/claude-code.tgz -C "$root/usr/local/bin" --strip-components=1 package/claude
 chroot "$root" useradd --create-home --uid 1000 --shell /bin/bash runner
 mkdir -p "$root/drive"
 
@@ -97,6 +99,7 @@ echo "SBOX node=$(node --version 2>&1)"
 echo "SBOX python=$(python3 --version 2>&1 | cut -d' ' -f2)"
 echo "SBOX uv=$(uv --version 2>&1 | cut -d' ' -f2)"
 echo "SBOX strace=$(strace -V 2>&1 | head -1 | awk '{print $NF}')"
+echo "SBOX claude=$(HOME=/tmp claude --version 2>&1 | head -1 | awk '{print $1}')"
 # No systemd, so no reboot(8): ask the kernel. Firecracker exits on reboot.
 echo 1 >/proc/sys/kernel/sysrq
 echo b >/proc/sysrq-trigger

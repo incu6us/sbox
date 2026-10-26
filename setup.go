@@ -39,11 +39,13 @@ type artifact struct {
 
 // Pinned versions. Firecracker, Node and uv sums are the ones each project
 // publishes. Firecracker's CI publishes none for its guest kernels: that sum
-// was taken from the first download, on 2026-10-26.
+// was taken from the first download, on 2026-10-26. Claude Code's is the
+// SHA-256 of the npm tarball whose sha512 integrity matches the registry's.
 const (
 	_firecrackerVersion = "v1.17.0"
 	_nodeVersion        = "v24.21.0"
 	_uvVersion          = "0.13.0"
+	_claudeVersion      = "2.1.296"
 )
 
 var _artifacts = []artifact{
@@ -66,6 +68,12 @@ var _artifacts = []artifact{
 		env:    "UV",
 		url:    "https://github.com/astral-sh/uv/releases/download/0.13.0/uv-aarch64-unknown-linux-gnu.tar.gz",
 		sha256: "3ccfb6af6e242433eb552f7d9676abd5412c6595c497e990d9c8cb7b5bd4d2c3",
+	},
+	{
+		// The linux-arm64 platform package: just the native claude binary, no install scripts.
+		env:    "CLAUDE",
+		url:    "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.296.tgz",
+		sha256: "56abbe1cfc85e5b37afeef5ae8b4856ddc32bbe443b82689a3b5f99992045cd1",
 	},
 }
 

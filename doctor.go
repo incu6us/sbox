@@ -178,6 +178,7 @@ func judge(kv map[string]string) []check {
 		check{name: "boot time", ok: true, detail: kv["boot-ms"] + " ms"},
 		want("guest node", "node", _nodeVersion, "run sbox setup"),
 		want("guest uv", "uv", _uvVersion, "run sbox setup"),
+		want("guest claude", "claude", _claudeVersion, "run sbox setup"),
 		check{name: "guest python", ok: kv["python"] != "", detail: kv["python"]},
 		check{name: "guest strace", ok: kv["strace"] != "", detail: kv["strace"]},
 	)

@@ -12,7 +12,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 5 | Dependency prefetch | ✅ |
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
-| v2 | Agent mode, snapshots, GitHub URLs | ⬜ |
+| v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
 
 ## Architecture
 
@@ -277,10 +277,17 @@ that ship real hooks.
   binaries by absolute path, which don't exist in the guest. A `-file` mode
   that copies a single config file is the way to cover them if needed.
 
-## v2 ⬜
+## v2 🟡
 
-- Agent mode: a headless agent using the skill inside the microVM. The API
-  key is added by a proxy outside the guest and never enters it.
+- Agent mode (Claude Code first, then Cursor), built in small steps:
+  - ✅ Step 1: Claude Code 2.1.296 in the guest image. The linux-arm64 npm
+    platform package (just the native `claude` binary, no install scripts) is
+    pinned by URL and SHA-256 (its sha512 matches the registry's integrity
+    value) and extracted to `/usr/local/bin`. Doctor checks the version;
+    `claude --version` runs as the runner in `sbox run`. Image: 1151 MB.
+  - ⬜ Next steps: attribute strace activity to the processes the agent
+    launches; egress to the agent's API host only; the user's own credential
+    for the agent process; the headless run, transcript and report.
 - Firecracker snapshots for sub-second starts.
 - GitHub URLs as targets (v1: fetch locally first).
 
