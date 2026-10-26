@@ -134,13 +134,13 @@ registries.
 ## 6. Analysis and report ⬜
 
 Turn a run's recorded activity into findings with severities, a verdict and
-JSON output, with the same exit codes as skill-audit (0 pass, 1 review,
+JSON output, with the same exit codes as skills-audit (0 pass, 1 review,
 2 block).
 
 ## 7. Calibration ⬜
 
 Run sbox on the installed skills and plugins (the 53 targets from
-`skill-audit -installed`), especially those with hooks and MCP servers, and
+`skills-audit -installed`), especially those with hooks and MCP servers, and
 tune it until the noise is acceptable.
 
 ## v2 ⬜
