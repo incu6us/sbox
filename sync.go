@@ -375,7 +375,7 @@ func projectSession(ctx context.Context, dir, project string, stderr io.Writer, 
 			return s.ID, func() {}, exitOK
 		}
 	}
-	id, fresh, code := startSession(ctx, dir, project, []string{"sleep", "infinity"}, stderr, vm)
+	id, fresh, code := startSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, stderr, vm)
 	if code != exitOK {
 		return "", nil, code
 	}

@@ -5,7 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +96,7 @@ func TestAttachOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	var errOut bytes.Buffer
-	id, _, code := startSession(ctx, dir, "", []string{"sleep", "infinity"}, &errOut, sboxRun)
+	id, _, code := startSession(ctx, dir, "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
 	if code != exitOK {
 		t.Fatalf("start: exit %d: %s", code, errOut.String())
 	}
@@ -120,7 +122,7 @@ func TestAttachTerminalOnVM(t *testing.T) {
 		t.Skip("the sbox VM is not ready: run sbox setup")
 	}
 	var errOut bytes.Buffer
-	id, _, code := startSession(ctx, t.TempDir(), "", []string{"sleep", "infinity"}, &errOut, sboxRun)
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
 	if code != exitOK {
 		t.Fatalf("start: exit %d: %s", code, errOut.String())
 	}
@@ -161,7 +163,7 @@ func TestDevStateIsKeptOnVM(t *testing.T) {
 	session := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		id, _, code := startSession(ctx, dir, project, []string{"sleep", "infinity"}, &errOut, sboxRun)
+		id, _, code := startSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
 		if code != exitOK {
 			t.Fatalf("start: exit %d: %s", code, errOut.String())
 		}
@@ -205,7 +207,7 @@ func TestSyncOnVM(t *testing.T) {
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, ""); code != exitOK {
 			t.Fatalf("dev %q: exit %d: %s", script, code, errOut.String())
 		}
 		return out.String()
@@ -235,5 +237,52 @@ func TestSyncOnVM(t *testing.T) {
 	}
 	if got := dev("cat mac.txt added.txt"); !strings.Contains(got, "from the mac") || !strings.Contains(got, "new") {
 		t.Errorf("the guest sees %q, want mac.txt pushed and added.txt kept", got)
+	}
+}
+
+// TestPortsAndServicesOnVM serves a page from the guest on a forwarded
+// port and fetches it on the Mac, and reaches a service on the Mac from
+// the guest as host.sbox.
+func TestPortsAndServicesOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	service := echoServer(t) // on the Mac's 127.0.0.1
+	port := freePort(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("hello from the guest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	job := guestJob{
+		command:  []string{"python3", "-m", "http.server", strconv.Itoa(port)},
+		ports:    []int{port},
+		services: []int{service},
+	}
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, dir, "", job, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+
+	var page string
+	for i := 0; i < 60 && !strings.Contains(page, "hello"); i++ { // Lima notices the port within seconds
+		if resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/index.html", port)); err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			page = string(body)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !strings.Contains(page, "hello from the guest") {
+		t.Errorf("the guest's page on the Mac's localhost:%d = %q", port, page)
+	}
+
+	var out bytes.Buffer
+	script := fmt.Sprintf(`import socket; s = socket.create_connection(("host.sbox", %d), timeout=5); s.sendall(b"ping\n"); print(s.recv(100).decode())`, service)
+	if code := attachMain(ctx, []string{id, "--", "python3", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun); code != exitOK ||
+		!strings.Contains(out.String(), "ping") {
+		t.Errorf("the Mac's service from the guest: exit %d, output %q, stderr %s", code, out.String(), errOut.String())
 	}
 }

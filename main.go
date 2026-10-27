@@ -66,7 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "sync":
 		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
 	case "dev":
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir())
+		home, _ := os.UserHomeDir()
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), filepath.Join(home, ".config", "sbox", "config.yaml"))
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":

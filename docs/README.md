@@ -30,8 +30,8 @@ Kept for when scanning is picked up again; nothing here blocks dev mode.
 
 Conventions shared by every plan:
 
-- Go standard library only, plus `gopkg.in/yaml.v3` once the config file
-  lands (see [config.md](config.md)); VM-side helpers are Python 3 standard
+- Go standard library, plus `gopkg.in/yaml.v3` for the config file (see
+  [config.md](config.md)); VM-side helpers are Python 3 standard
   library scripts in `scripts/`, embedded in the binary and installed by
   `sbox setup`.
 - Anything the guest reports is untrusted: results travel in nonce-marked
@@ -48,7 +48,7 @@ Conventions shared by every plan:
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
   - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions (`-patch`, auto-push and the notice left)
-  - [ ] 5 ports and services
+  - [x] 5 ports and services (doctor's forwarding check left)
   - [ ] 5b raw TCP egress (ssh, databases)
   - [ ] 5c reattach and detach
   - [ ] 5d toolchains via `image.packages`, `pids.max`
@@ -61,7 +61,7 @@ Conventions shared by every plan:
   - [x] 2 `limactlPath()`
   - [x] 3 pinned Lima download
   - [x] 4 verified on a Mac without Lima
-- [ ] 2. Config ([config.md](config.md)): remaining commits 3, 5, 6, 7
+- [ ] 2. Config ([config.md](config.md)): the loader is in, with `ports` and `services`; the other keys and commits 1, 3 to 7 remain
 - [ ] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3
 - [ ] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4
 - [ ] 5. Snapshots ([snapshots.md](snapshots.md)): commit 0, then decide

@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅, ports ✅ | 🟡 |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -27,7 +27,7 @@ macOS host
                                        jail /srv/sbox-jail/firecracker/<id>, cgroup v2
 ```
 
-Go, standard library only. VM-side scripts live in `scripts/` and are embedded
+Go, standard library plus `gopkg.in/yaml.v3` for the config file. VM-side scripts live in `scripts/` and are embedded
 in the binary.
 
 ---
@@ -384,6 +384,23 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     diff, `-apply` brings them across, a second run finds nothing.
   - Left for later: `-patch`, pushing Mac edits automatically when
     `sbox dev` reuses a home, a change-count notice in the terminal.
+
+- ✅ Step 5: ports and services, from the config file. `ports: [3000]`
+  puts the guest's port 3000 on the Mac's `localhost:3000`;
+  `services: [5432]` lets the guest reach the Mac's `localhost:5432` as
+  `host.sbox:5432`. Each is a relay and an expose (`sbox-proxy.py`) joined
+  by a unix socket, one in the session's namespace and one outside, so the
+  namespace still has no route out; Lima forwards the VM's localhost ports
+  to the Mac, and reaches the Mac as `host.lima.internal`. A port already
+  listening in the VM is refused at start.
+  - The config loader arrives here with just these two keys: the user's
+    `~/.config/sbox/config.yaml` and the project's `sbox.yaml`, lists
+    appended, unknown keys refused, YAML via `gopkg.in/yaml.v3` (the first
+    dependency).
+  - Verified on the real VM: a page served by the guest fetched from the
+    Mac's localhost, and an echo service on the Mac reached from the guest
+    as `host.sbox`.
+  - Not done: doctor's forwarding check (the `vm`-tagged test covers it).
 
 ## Prerequisites ✅
 
