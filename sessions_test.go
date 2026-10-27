@@ -75,6 +75,7 @@ type fakeVM struct {
 	stdin          []byte
 	stdout, stderr string
 	answer         func(args []string) string // stdout computed from the call, instead of stdout
+	errFor         func(args []string) error  // error computed from the call, instead of err
 	err            error
 }
 
@@ -92,6 +93,9 @@ func (f *fakeVM) run(_ context.Context, in io.Reader, out, errOut io.Writer, arg
 		_, _ = io.WriteString(out, f.stdout)
 	}
 	_, _ = io.WriteString(errOut, f.stderr)
+	if f.errFor != nil {
+		return f.errFor(args)
+	}
 	return f.err
 }
 
@@ -230,6 +234,8 @@ type fakeGuest struct {
 	paused, stopped bool
 	ignorePause     bool // a broken pause: the count keeps moving
 	silent          bool // the guest prints no counter
+	late            bool // the first log read comes before the first tick
+	logs            int
 }
 
 func (g *fakeGuest) wait(d time.Duration) {
@@ -247,7 +253,8 @@ func (g *fakeGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, args 
 		g.id = args[1]
 		_, _ = fmt.Fprintf(out, "READY %s\n", g.id)
 	case "log":
-		if !g.silent {
+		g.logs++
+		if !g.silent && (!g.late || g.logs > 1) {
 			_, _ = fmt.Fprintf(out, "noise\r\ntick %d\r\n", g.ticks) // CR LF, as the serial console sends
 		}
 	case "pause":
@@ -280,6 +287,10 @@ func TestSessionProbe(t *testing.T) {
 	if bad := failing(sessionProbe(context.Background(), good.run, good.wait)); len(bad) != 0 || !good.stopped {
 		t.Errorf("a well-behaved session: failing %q, stopped %v; want none failing and the session stopped", bad, good.stopped)
 	}
+	late := &fakeGuest{late: true}
+	if bad := failing(sessionProbe(context.Background(), late.run, late.wait)); len(bad) != 0 {
+		t.Errorf("a guest whose first tick comes after the first read: failing %q, want none", bad)
+	}
 	silent := &fakeGuest{silent: true}
 	if bad := failing(sessionProbe(context.Background(), silent.run, silent.wait)); len(bad) != 3 {
 		t.Errorf("a session with no counter output: failing %q, want the three counter checks", bad)
@@ -287,5 +298,91 @@ func TestSessionProbe(t *testing.T) {
 	broken := &fakeGuest{ignorePause: true}
 	if bad := failing(sessionProbe(context.Background(), broken.run, broken.wait)); !slices.Equal(bad, []string{"session: pause freezes the guest"}) || !broken.stopped {
 		t.Errorf("a session that ignores pause: failing %q, stopped %v; want only the pause check failing", bad, broken.stopped)
+	}
+}
+
+// exitStatus returns a real *exec.ExitError carrying code.
+func exitStatus(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("sh -c 'exit %d': %v", code, err)
+	}
+	return err
+}
+
+func TestAttachMain(t *testing.T) {
+	t.Parallel()
+	const id = "0123456789abcdef"
+	tests := []struct {
+		name      string
+		args      []string
+		vm        fakeVM
+		wantCode  int
+		wantCalls [][]string
+	}{
+		{name: "login shell", args: []string{id}, wantCalls: [][]string{{"attach", id}}},
+		{name: "command", args: []string{id, "--", "npm", "test"}, wantCalls: [][]string{{"attach", id, "--", "npm", "test"}}},
+		{name: "the guest command's exit code", args: []string{id, "--", "false"}, vm: fakeVM{err: exitStatus(t, 3)},
+			wantCode: 3, wantCalls: [][]string{{"attach", id, "--", "false"}}},
+		{name: "no id", wantCode: exitUsage},
+		{name: "bad id", args: []string{"NOT-HEX"}, wantCode: exitUsage},
+		{name: "no command after --", args: []string{id, "--"}, wantCode: exitUsage},
+		{name: "junk after the id", args: []string{id, "npm"}, wantCode: exitUsage},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := strings.NewReader("typed\n")
+			var stdout, stderr bytes.Buffer
+			code := attachMain(context.Background(), tt.args, stdin, &stdout, &stderr, tt.vm.run)
+			if code != tt.wantCode || !slices.EqualFunc(tt.vm.calls, tt.wantCalls, slices.Equal) {
+				t.Errorf("exit %d, calls %q, stderr %q; want exit %d, calls %q", code, tt.vm.calls, stderr.String(), tt.wantCode, tt.wantCalls)
+			}
+			if len(tt.wantCalls) > 0 && string(tt.vm.stdin) != "typed\n" {
+				t.Errorf("the guest got stdin %q, want what was typed", tt.vm.stdin)
+			}
+		})
+	}
+}
+
+func TestDevMain(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ready := func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}
+	exit3 := exitStatus(t, 3)
+
+	vm := fakeVM{answer: ready, errFor: func(args []string) error {
+		if args[0] == "attach" {
+			return exit3
+		}
+		return nil
+	}}
+	var stdout, stderr bytes.Buffer
+	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run)
+	if code != 3 || len(vm.calls) != 3 {
+		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and start, attach, stop", code, vm.calls, stderr.String())
+	}
+	id := vm.calls[0][1]
+	want := [][]string{{"start", id}, {"attach", id, "--", "claude"}, {"stop", id}}
+	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
+		t.Errorf("calls %q, want %q", vm.calls, want)
+	}
+
+	shell := fakeVM{answer: ready}
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run); code != exitOK ||
+		len(shell.calls) != 3 || !slices.Equal(shell.calls[1], []string{"attach", shell.calls[0][1]}) {
+		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
+	}
+
+	failed := fakeVM{stdout: "no ready line\n"}
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run); code != exitFail || len(failed.calls) != 1 {
+		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
 	}
 }

@@ -27,6 +27,7 @@
 #                  sbox-run ps
 #                  sbox-run stop <session-id>
 #                  sbox-run pause|resume|log <session-id>
+#                  sbox-run attach <session-id> [-- <command...>]
 set -euo pipefail
 
 # Roots can be moved for tests; sudo resets the environment, so callers
@@ -146,8 +147,32 @@ session_vm_state() {
 	echo "$to" >"$dir/state"
 }
 
+# session_attach opens SSH into a running session's guest from inside its
+# namespace, with the guest's host key pinned. The command (by default a
+# login shell) starts in the project folder; a terminal on stdin gets one
+# in the guest too.
+session_attach() {
+	local id=${1:-} dir cmd="bash -l" tty=()
+	dir=$(session_dir "$id")
+	shift
+	if [[ ${1:-} == -- ]]; then shift; fi
+	if ! kill -0 "$(cat "$dir/pid")" 2>/dev/null || [[ $(cat "$dir/state") != running ]]; then
+		echo "sbox-run: session $id is not running" >&2
+		exit 1
+	fi
+	if (($#)); then
+		cmd=$(printf '%q ' "$@")
+		cmd=${cmd% }
+	fi
+	if [[ -t 0 ]]; then tty=(-t); fi
+	exec ip netns exec "sbox-$id" ssh ${tty[@]+"${tty[@]}"} -i "$dir/key" \
+		-o UserKnownHostsFile="$dir/known_hosts" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes \
+		-o ConnectionAttempts=10 -o LogLevel=ERROR runner@172.16.0.2 "cd /home/runner/work && exec $cmd"
+}
+
 case ${1:-} in
 ps) session_ps; exit 0 ;;
+attach) shift; session_attach "$@" ;;
 log) dir=$(session_dir "${2:-}"); cat "$dir/console.log"; exit 0 ;;
 pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
 resume) session_vm_state "${2:-}" paused running Resumed; exit 0 ;;
@@ -176,6 +201,19 @@ trap cleanup EXIT
 mkdir -p "$run/drive"
 tar -x -C "$run/drive" --no-same-owner --no-same-permissions
 nonce=$(cat "$run/drive/sbox/nonce")
+
+# A session's guest runs sshd. The keys are made here: the client's private
+# key stays root-only in the session folder, the guest gets its public key
+# and a host key, and that host key is pinned in the session's known_hosts.
+if [[ ${SBOX_SESSION:-} == 1 ]]; then
+	sdir=$sessions/$id
+	mkdir -p "$sdir" "$run/drive/sbox/ssh"
+	rm -f "$sdir/key" "$sdir/key.pub"
+	ssh-keygen -q -t ed25519 -N '' -C sbox -f "$sdir/key"
+	ssh-keygen -q -t ed25519 -N '' -C sbox-guest -f "$run/drive/sbox/ssh/host_ed25519"
+	cp "$sdir/key.pub" "$run/drive/sbox/ssh/authorized_keys"
+	echo "sbox-guest $(cat "$run/drive/sbox/ssh/host_ed25519.pub")" >"$sdir/known_hosts"
+fi
 
 # The run's drive: the skill plus the guest init and job, read-only in the guest.
 size_mb=$(($(du -sm "$run/drive" | cut -f1) * 13 / 10 + 32))

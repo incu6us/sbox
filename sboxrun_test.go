@@ -19,7 +19,7 @@ import (
 var _fakes = map[string]string{
 	"ip":         `log ip "$@"`,
 	"id":         `echo 999`,
-	"mkfs.ext4":  `log mkfs.ext4 "$@"`,
+	"mkfs.ext4":  `log mkfs.ext4 "$@"; if [ -n "$FAKE_DRIVE_COPY" ] && [ "$2" = -d ]; then cp -R "$3" "$FAKE_DRIVE_COPY"; fi`,
 	"setpriv":    `log setpriv "$@"`,
 	"chown":      `log chown "$@"`,
 	"truncate":   `for a; do last=$a; done; : >"$last"`,
@@ -402,5 +402,89 @@ func TestSboxRunLog(t *testing.T) {
 	}
 	if _, stderr, code := e.run(nil, "log", "5555555555555555"); code != 1 || !strings.Contains(stderr, "no session") {
 		t.Errorf("log of a missing session: exit %d, stderr %q; want exit 1, no session", code, stderr)
+	}
+}
+
+func TestSboxRunSessionModeMakesSSHKeys(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	drive := filepath.Join(t.TempDir(), "drive")
+	e.extra = []string{"SBOX_SESSION=1", "FAKE_DRIVE_COPY=" + drive}
+	const id = "6666666666666666"
+
+	if stdout, stderr, code := e.run(runTar(t, "n0nce"), id, "0"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	session := filepath.Join(e.state, "sessions", id)
+	key, err := os.Stat(filepath.Join(session, "key"))
+	if err != nil || key.Mode().Perm() != 0o600 {
+		t.Fatalf("client key: %v, %v; want a 0600 file in the session folder", err, key)
+	}
+	pub := e.sessionFile(id, "key.pub")
+	authorized, err := os.ReadFile(filepath.Join(drive, "sbox", "ssh", "authorized_keys"))
+	if err != nil || strings.TrimSpace(string(authorized)) != pub {
+		t.Errorf("drive authorized_keys %q (%v), want the client's public key %q", authorized, err, pub)
+	}
+	hostKey, err := os.Stat(filepath.Join(drive, "sbox", "ssh", "host_ed25519"))
+	if err != nil || hostKey.Mode().Perm() != 0o600 {
+		t.Errorf("guest host key on the drive: %v, %v; want a 0600 file", err, hostKey)
+	}
+	hostPub, err := os.ReadFile(filepath.Join(drive, "sbox", "ssh", "host_ed25519.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := e.sessionFile(id, "known_hosts"), "sbox-guest "+strings.TrimSpace(string(hostPub)); got != want {
+		t.Errorf("known_hosts %q, want the guest's host key pinned as %q", got, want)
+	}
+}
+
+func TestSboxRunOneShotHasNoSSH(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	drive := filepath.Join(t.TempDir(), "drive")
+	e.extra = []string{"FAKE_DRIVE_COPY=" + drive}
+
+	if stdout, stderr, code := e.run(runTar(t, "n0nce"), "7777777777777777", "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(drive, "sbox", "ssh")); !os.IsNotExist(err) {
+		t.Errorf("a one-shot run's drive has SSH keys (stat: %v)", err)
+	}
+}
+
+func TestSboxRunAttach(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "8888888888888888"
+	e.startSession(id)
+	session := filepath.Join(e.state, "sessions", id)
+	ssh := "netns exec sbox-" + id + " ssh -i " + session + "/key -o UserKnownHostsFile=" + session + "/known_hosts" +
+		" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes -o ConnectionAttempts=10 -o LogLevel=ERROR runner@172.16.0.2 "
+
+	tests := []struct {
+		args []string
+		want string // the logged ip call
+	}{
+		{args: []string{"attach", id, "--", "sh", "-c", "echo hi"}, want: ssh + `cd /home/runner/work && exec sh -c echo\ hi`},
+		{args: []string{"attach", id}, want: ssh + "cd /home/runner/work && exec bash -l"},
+	}
+	for _, tt := range tests {
+		before := len(e.calls("ip"))
+		if stdout, stderr, code := e.run(nil, tt.args...); code != 0 {
+			t.Errorf("%v: exit %d, stdout %q, stderr %q", tt.args, code, stdout, stderr)
+		}
+		if calls := e.calls("ip")[before:]; len(calls) != 1 || calls[0] != tt.want {
+			t.Errorf("%v: ip calls %q, want [%q]", tt.args, calls, tt.want)
+		}
+	}
+
+	if _, stderr, code := e.run(nil, "attach", "9999999999999999"); code != 1 || !strings.Contains(stderr, "no session") {
+		t.Errorf("attach to a missing session: exit %d, stderr %q; want exit 1, no session", code, stderr)
+	}
+	if _, _, code := e.run(nil, "pause", id); code != 0 {
+		t.Fatal("pause failed")
+	}
+	if _, stderr, code := e.run(nil, "attach", id); code != 1 || !strings.Contains(stderr, "not running") {
+		t.Errorf("attach to a paused session: exit %d, stderr %q; want exit 1, not running", code, stderr)
 	}
 }

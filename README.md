@@ -31,7 +31,9 @@ sbox doctor
 sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
 
+sbox dev <dir> [-- <command> [args...]]
 sbox start <dir> -- <command> [args...]
+sbox attach <session-id> [-- <command> [args...]]
 sbox ps
 sbox stop|pause|resume|log <session-id>
 ```
@@ -83,9 +85,15 @@ checks pass, `1` a check failed, `2` bad usage.
 
 ### Sessions
 
+`sbox dev <dir>` opens a shell in a new microVM with the directory copied
+in, at `/home/runner/work`, and stops the microVM when you exit. Pass a
+command to run that instead: `sbox dev ./myapp -- claude`. The terminal is
+real (colours, Ctrl-C, full-screen programs); it runs over SSH inside the
+VM, with a key made per session and the guest's host key pinned.
+
 `sbox start <dir> -- <command>` runs the same job as `sbox run`, but the
 microVM keeps running after the command returns. It prints the session id
-once the guest is up.
+once the guest is up; `sbox attach <id>` opens a terminal in it.
 
 ```sh
 id=$(sbox start ./myapp -- npm run dev)

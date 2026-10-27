@@ -6,6 +6,9 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,5 +79,56 @@ func TestSessionLifecycleOnVM(t *testing.T) {
 	sessionCmd(t, "stop", id)
 	if ps := sessionCmd(t, "ps"); strings.Contains(ps, id) {
 		t.Errorf("sbox ps after stop:\n%s\nstill lists %s", ps, id)
+	}
+}
+
+// TestAttachOnVM attaches to a session over SSH, runs a command in the
+// project folder as the runner, and gets its output and exit code back.
+func TestAttachOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello from the host\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	id, code := startSession(ctx, dir, []string{"sleep", "infinity"}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+
+	var out bytes.Buffer
+	code = attachMain(ctx, []string{id, "--", "sh", "-c", "cat hello.txt; id -u; pwd; exit 7"}, strings.NewReader(""), &out, &errOut, sboxRun)
+	if code != 7 {
+		t.Errorf("attach: exit %d, want the guest command's 7; stderr: %s", code, errOut.String())
+	}
+	for _, want := range []string{"hello from the host", "1000", "/home/runner/work"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("attach output %q lacks %q", out.String(), want)
+		}
+	}
+}
+
+// TestAttachTerminalOnVM attaches from a terminal (script(1) provides one)
+// and checks the guest command gets a terminal too.
+func TestAttachTerminalOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	var errOut bytes.Buffer
+	id, code := startSession(ctx, t.TempDir(), []string{"sleep", "infinity"}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+
+	out, err := exec.Command("script", "-q", "/dev/null", limactlBin(), "shell", "--workdir", "/", _vmName,
+		"sudo", _runScriptPath, "attach", id, "--", "sh", "-c", "tty; stty size").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "/dev/pts/") {
+		t.Errorf("attach from a terminal: %v, output %q; want a /dev/pts terminal in the guest", err, out)
 	}
 }
