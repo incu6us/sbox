@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -80,5 +83,38 @@ func TestPreflight(t *testing.T) {
 	out.Reset()
 	if preflight(&out, bad) || !strings.Contains(out.String(), "M3 or later") {
 		t.Errorf("preflight on an M1: true or no reason:\n%s", out.String())
+	}
+}
+
+func TestFindLimactl(t *testing.T) {
+	t.Parallel()
+
+	onPath := func(string) (string, error) { return "/opt/homebrew/bin/limactl", nil }
+	notOnPath := func(string) (string, error) { return "", exec.ErrNotFound }
+
+	empty := t.TempDir()
+	withPinned := t.TempDir()
+	pinned := filepath.Join(withPinned, ".local", "share", "sbox", "lima", "bin", "limactl")
+	if err := os.MkdirAll(filepath.Dir(pinned), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pinned, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		home     string
+		lookPath func(string) (string, error)
+		want     string
+	}{
+		{name: "sbox's own copy wins", home: withPinned, lookPath: onPath, want: pinned},
+		{name: "then PATH", home: empty, lookPath: onPath, want: "/opt/homebrew/bin/limactl"},
+		{name: "none", home: empty, lookPath: notOnPath, want: ""},
+	}
+	for _, tt := range tests {
+		if got := findLimactl(tt.home, tt.lookPath); got != tt.want {
+			t.Errorf("%s: findLimactl = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }

@@ -34,12 +34,12 @@ func doctor(ctx context.Context, out io.Writer) (bool, error) {
 	var checks []check
 	defer func() { printChecks(out, checks) }()
 
-	ver, err := exec.CommandContext(ctx, "limactl", "--version").Output()
+	ver, err := exec.CommandContext(ctx, limactlBin(), "--version").Output()
 	if err != nil {
-		checks = append(checks, check{name: "limactl", detail: "not installed: brew install lima"})
+		checks = append(checks, check{name: "limactl", detail: "not installed: run sbox setup"})
 		return false, nil
 	}
-	checks = append(checks, check{name: "limactl", ok: true, detail: strings.TrimSpace(string(ver))})
+	checks = append(checks, check{name: "limactl", ok: true, detail: strings.TrimSpace(string(ver)) + " (" + limactlBin() + ")"})
 
 	vm, err := vmStatus(ctx)
 	switch {

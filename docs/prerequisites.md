@@ -44,7 +44,7 @@ from `PATH`, and its version. The hint for a missing one becomes `sbox setup`.
 - [x] **1. Preflight.** `preflight.go`: chip, macOS version, disk; the
     command outputs are parsed by functions with table tests on captured
     strings (M1, M3, M5, an Intel string, macOS 14 and 26).
-- [ ] **2. `limactlPath()`.** Resolution order with tests on a temp home
+- [x] **2. `limactlPath()`.** Resolution order with tests on a temp home
     and a fake `PATH`; every call site switched to it.
 - [ ] **3. Pinned Lima download.** The artifact entry, download with
     checksum, safe extraction (the same rules as the GitHub targets plan),
