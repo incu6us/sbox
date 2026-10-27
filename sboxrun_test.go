@@ -710,3 +710,33 @@ func TestSboxRunStartRefusesAPortInUse(t *testing.T) {
 		t.Errorf("session folder left behind (stat: %v)", err)
 	}
 }
+
+func TestSboxRunEgressPatternsAndRawTCP(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000003"
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, egress: []string{"*.github.com:443", "api.anthropic.com:443", "github.com:*", "github.com:22"}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	py := "setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin")
+	inNS := "netns exec sbox-" + id + " " + py
+	for _, want := range []struct{ prog, call string }{
+		{"setpriv", strings.TrimPrefix(py, "setpriv ") + "/sbox-proxy.py serve " + run + "/proxy/sock " + run +
+			"/egress.log *.github.com:443 api.anthropic.com:443 github.com:* github.com:22"},
+		{"ip", inNS + "/sbox-dns.py 172.16.0.1 53 " + run + "/dns.log github.com"},
+		// Only sbox's helpers listen in the namespace; a raw port like 22 must be bindable by them.
+		{"ip", "netns exec sbox-" + id + " sysctl -qw net.ipv4.ip_unprivileged_port_start=0"},
+		{"ip", inNS + "/sbox-proxy.py relay 172.16.0.1 22 " + run + "/fwd/raw-22.sock"},
+		{"setpriv", strings.TrimPrefix(py, "setpriv ") + "/sbox-proxy.py expose " + run + "/fwd/raw-22.sock github.com 22"},
+	} {
+		if !slices.Contains(e.calls(want.prog), want.call) {
+			t.Errorf("%s calls %q lack %q", want.prog, e.calls(want.prog), want.call)
+		}
+	}
+}

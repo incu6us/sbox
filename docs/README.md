@@ -49,7 +49,7 @@ Conventions shared by every plan:
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
   - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions (`-patch`, auto-push and the notice left)
   - [x] 5 ports and services (doctor's forwarding check left)
-  - [ ] 5b raw TCP egress (ssh, databases)
+  - [x] 5b egress from the config, wildcards, raw TCP (ssh, databases)
   - [ ] 5c reattach and detach
   - [ ] 5d toolchains via `image.packages`, `pids.max`
   - [ ] 5e setup and start hooks, `dev.env`
@@ -61,7 +61,7 @@ Conventions shared by every plan:
   - [x] 2 `limactlPath()`
   - [x] 3 pinned Lima download
   - [x] 4 verified on a Mac without Lima
-- [ ] 2. Config ([config.md](config.md)): the loader is in, with `ports` and `services`; the other keys and commits 1, 3 to 7 remain
+- [ ] 2. Config ([config.md](config.md)): the loader is in, with `ports`, `services` and `egress` (commit 1 done); the other keys and commits 3 to 7 remain
 - [ ] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3
 - [ ] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4
 - [ ] 5. Snapshots ([snapshots.md](snapshots.md)): commit 0, then decide

@@ -100,3 +100,13 @@ func TestProxyExposeAndRelay(t *testing.T) {
 		t.Errorf("through relay and expose: %q, want the echo", got)
 	}
 }
+
+func TestPythonSelftests(t *testing.T) {
+	t.Parallel()
+	for _, script := range []string{"scripts/sbox-proxy.py", "scripts/sbox-dns.py"} {
+		out, err := exec.Command("python3", script, "--selftest").CombinedOutput()
+		if err != nil || string(out) != "ok\n" {
+			t.Errorf("%s --selftest: %v\n%s", script, err, out)
+		}
+	}
+}

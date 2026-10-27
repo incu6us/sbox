@@ -107,7 +107,18 @@ project's folder, and `~/.config/sbox/config.yaml` for every project
 ```yaml
 ports: [3000, 5173]   # the guest's dev servers, on the Mac's localhost
 services: [5432]      # the Mac's Postgres, reached in the guest as host.sbox:5432
+egress:               # hosts the guest may reach; nothing else is reachable
+  - api.anthropic.com # port 443 when left out
+  - "*.github.com"    # any name under github.com (not github.com itself)
+  - github.com:22     # raw TCP: git over SSH
 ```
+
+Egress entries on port 443 (or `:*`) go through an HTTPS proxy that
+tunnels to the listed hosts only; the guest's `HTTPS_PROXY` points at it,
+in the command and in every terminal. An exact host on another port, like
+`github.com:22`, is raw TCP: the guest's lookup of that name is answered
+with the VM side of its network, where a relay carries the connection to
+that host alone, so one host per such port.
 
 Nothing else crosses: the guest's network still has no route out, and
 each forwarded port is a pair of relays joined by a unix socket in the

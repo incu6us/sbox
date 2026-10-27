@@ -59,3 +59,41 @@ func TestLoadConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigEgress(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := write(t, "egress: [api.anthropic.com]\n")
+	project := write(t, "egress: [\"*.github.com\", github.com, \"github.com:22\", \"Example.org:*\", api.anthropic.com]\n")
+	cfg, err := loadConfig(user, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"*.github.com:443", "api.anthropic.com:443", "example.org:*", "github.com:22", "github.com:443"}
+	if !slices.Equal(cfg.Egress, want) {
+		t.Errorf("egress = %q, want %q", cfg.Egress, want)
+	}
+	if got := cfg.rawEgress(); !slices.Equal(got, []string{"github.com:22"}) {
+		t.Errorf("rawEgress = %q, want the exact host on a port other than 443", got)
+	}
+
+	for _, tt := range []struct{ name, body, wantErr string }{
+		{"a URL", "egress: [\"https://github.com\"]\n", "https://github.com"},
+		{"wildcard inside", "egress: [\"a.*.com\"]\n", "a.*.com"},
+		{"port zero", "egress: [\"a.com:0\"]\n", "a.com:0"},
+		{"two hosts on one raw port", "egress: [\"github.com:22\", \"gitlab.com:22\"]\n", "one host per port"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
+			}
+		})
+	}
+}

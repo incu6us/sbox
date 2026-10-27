@@ -204,7 +204,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return vmFailed(stderr, err)
 		}
 	}
-	job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services}
+	job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress}
 	id, fresh, code := startSession(ctx, args[0], project, job, stderr, vm)
 	if code != exitOK {
 		return code

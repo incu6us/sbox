@@ -2,10 +2,13 @@
 """DNS logger for one sbox run.
 
 Answers every query with NXDOMAIN and logs its type and name, one line per
-query. It never forwards and never returns an address, so lookups fail as
-they would without it and nothing leaves the run's network namespace.
+query. It never forwards, so lookups fail as they would without it and
+nothing leaves the run's network namespace. The exception is the names
+given after the log file, a session's raw TCP egress hosts: they resolve to
+the logger's own address, the VM side of the tap, where a relay carries the
+connection to that host alone.
 
-Usage: sbox-dns.py <address> <port> <log file>
+Usage: sbox-dns.py <address> <port> <log file> [name ...]
 """
 import socket
 import struct
@@ -55,7 +58,19 @@ def answer(qid, flags, question):
     return struct.pack("!HHHHHH", qid, rflags, 1, 0, 0, 0) + question
 
 
-def serve(address, port, log_path):
+def reply(qid, flags, name, qtype, question, names, address):
+    """The answer for one query: for a listed name, an A record with
+    address (or no data for other types); NXDOMAIN for any other name."""
+    if name.lower() not in names:
+        return answer(qid, flags, question)
+    rflags = 0x8000 | (flags & 0x7900) | 0x0080  # QR, opcode and RD copied, RA
+    if qtype != 1:
+        return struct.pack("!HHHHHH", qid, rflags, 1, 0, 0, 0) + question
+    record = struct.pack("!HHHIH", 0xC00C, 1, 1, 5, 4) + socket.inet_aton(address)  # name: the question's
+    return struct.pack("!HHHHHH", qid, rflags, 1, 1, 0, 0) + question + record
+
+
+def serve(address, port, log_path, names=frozenset()):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((address, port))
     logged = 0
@@ -69,7 +84,7 @@ def serve(address, port, log_path):
             if logged < MAX_LOGGED:
                 log.write("%s %s\n" % (TYPES.get(qtype, str(qtype)), name or "."))
                 logged += 1
-            sock.sendto(answer(qid, flags, question), peer)
+            sock.sendto(reply(qid, flags, name, qtype, question, names, address), peer)
 
 
 def selftest():
@@ -83,13 +98,25 @@ def selftest():
     assert parse(q[:-3]) is None  # truncated question
     evil = struct.pack("!HHHHHH", 1, 0, 1, 0, 0, 0) + b"\x03a\nb\x00" + struct.pack("!HH", 1, 1)
     assert parse(evil)[2] == "a\\x0ab"  # a newline can't forge a log line
+
+    # Names allowed raw TCP egress resolve to the VM side of the tap.
+    names = {"github.com"}
+    a = struct.pack("!HHHHHH", 9, 0x0100, 1, 0, 0, 0) + b"\x06GitHub\x03com\x00" + struct.pack("!HH", 1, 1)
+    qid, flags, name, qtype, question = parse(a)
+    r = reply(qid, flags, name, qtype, question, names, "172.16.0.1")
+    assert struct.unpack("!HHHHHH", r[:12]) == (9, 0x8180, 1, 1, 0, 0), struct.unpack("!HHHHHH", r[:12])
+    assert r.endswith(struct.pack("!HHIH", 1, 1, 5, 4) + socket.inet_aton("172.16.0.1"))
+    aaaa = parse(a[:-4] + struct.pack("!HH", 28, 1))
+    assert struct.unpack("!HHHHHH", reply(*aaaa, names, "172.16.0.1")[:12]) == (9, 0x8180, 1, 0, 0, 0)  # no data, not NXDOMAIN
+    other = parse(q)
+    assert reply(*other, names, "172.16.0.1") == answer(other[0], other[1], other[4])  # still NXDOMAIN
     print("ok")
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--selftest"]:
         selftest()
-    elif len(sys.argv) == 4:
-        serve(sys.argv[1], int(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) >= 4:
+        serve(sys.argv[1], int(sys.argv[2]), sys.argv[3], {n.lower() for n in sys.argv[4:]})
     else:
         sys.exit(__doc__)

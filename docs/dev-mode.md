@@ -454,10 +454,19 @@ writes a commented starter file and `sbox config` prints the effective one.
       (a guest page on the Mac's localhost; a Mac echo service from the
       guest)
     - [ ] doctor's forwarding check
-- [ ] **5b. Raw TCP egress.** `sbox-dns.py --answer` for allowed non-443
-    hosts, a relay per such port, the one-host-per-port preflight check,
-    `EGRESS` lines for raw connections. Probe: `git ls-remote` over SSH to
-    an allowed host works; to another host, the lookup is NXDOMAIN.
+- [x] **5b. Egress, with raw TCP.** `egress` in the config (a name or
+    `*.domain`, `:port` or `:*`, 443 when left out) goes through the HTTPS
+    proxy, which now matches those patterns. An exact host on a port other
+    than 443 is raw TCP: the DNS logger answers that name with 172.16.0.1
+    (an empty answer for AAAA, NXDOMAIN for every other name), and a
+    relay/expose pair carries the connection to that host alone; one host
+    per raw port. SSH logins get the proxy settings through sshd `SetEnv`.
+    - [x] tested with fakes and both Python self-tests (now run by
+      `go test`), then on the real VM: `api.github.com` answers,
+      `example.com` is refused, `github.com:22` gives GitHub's SSH banner
+    - Found on the real VM: inside the namespace unprivileged binds
+      started at 53 (for the DNS logger), so the relay couldn't bind 22;
+      it is 0 there now, since only sbox's helpers listen in it
 - [ ] **5c. Reattach and detach.** Session lookup by project hash, attach
     to running or paused, the detach question, `-fresh` semantics.
 - [ ] **5d. Toolchains.** `image.packages` through setup and the stamp,

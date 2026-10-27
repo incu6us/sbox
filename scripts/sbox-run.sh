@@ -314,11 +314,30 @@ in_ns ip link set tap0 up
 # Their stdio is detached, or they would hold this script's stdout open.
 as_vm_user=(setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups)
 
-# DNS logger; port 53 is allowed in this namespace only.
-in_ns sysctl -qw net.ipv4.ip_unprivileged_port_start=53
+# Egress: host:port entries, the host a name or *.domain, the port a number
+# or *. An exact host on a port other than 443 is raw TCP: the DNS logger
+# answers its name with 172.16.0.1, where a relay carries the connection to
+# that host alone. The rest go through the HTTPS proxy.
+egress=() raw=()
+egress_entry='^(\*\.)?[a-z0-9.-]+:([0-9]{1,5}|\*)$'
+if [[ -s $run/drive/sbox/egress ]]; then
+	while read -r entry; do
+		[[ $entry =~ $egress_entry ]] || continue
+		egress+=("$entry")
+		host=${entry%:*} port=${entry##*:}
+		if [[ $host != \*.* && $port =~ ^[0-9]+$ && $port != 443 ]]; then raw+=("$entry"); fi
+	done <"$run/drive/sbox/egress"
+fi
+raw_hosts=()
+for entry in ${raw[@]+"${raw[@]}"}; do raw_hosts+=("${entry%:*}"); done
+
+# Unprivileged binds on any port, in this namespace only: the DNS logger
+# (53), and relays for raw TCP egress (22, say) and services. Only sbox's
+# helpers listen here; the guest is on the other side of the tap.
+in_ns sysctl -qw net.ipv4.ip_unprivileged_port_start=0
 install -o sbox-vm -m 0600 /dev/null "$run/dns.log"
 ip netns exec "$netns" "${as_vm_user[@]}" \
-	python3 "$base/bin/sbox-dns.py" 172.16.0.1 53 "$run/dns.log" </dev/null >/dev/null 2>&1 &
+	python3 "$base/bin/sbox-dns.py" 172.16.0.1 53 "$run/dns.log" ${raw_hosts[@]+"${raw_hosts[@]}"} </dev/null >/dev/null 2>&1 &
 pids+=($!)
 
 # boot <jail id> <timeout> <phase> <deps drive mode: none|ro|rw>
@@ -418,12 +437,6 @@ if [[ -f $run/drive/sbox/prefetch.sh && $prefetch_timeout -gt 0 ]]; then
 	deps=ro
 fi
 
-egress=()
-if [[ -s $run/drive/sbox/egress ]]; then
-	while read -r entry; do
-		[[ $entry =~ ^[a-z0-9.-]+:[0-9]{1,5}$ ]] && egress+=("$entry")
-	done <"$run/drive/sbox/egress"
-fi
 ((${#egress[@]})) && start_egress "$run/egress.log" "${egress[@]}"
 
 # Forwarded ports and services: each is a relay and an expose joined by a
@@ -433,9 +446,16 @@ fi
 # 172.16.0.1 (host.sbox in the guest) to the Mac, as Lima's
 # host.lima.internal.
 proxy=$base/bin/sbox-proxy.py
-if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services ]]; then
+if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services || ${#raw[@]} -gt 0 ]]; then
 	install -d -o sbox-vm -m 0700 "$run/fwd"
 fi
+for entry in ${raw[@]+"${raw[@]}"}; do
+	host=${entry%:*} port=${entry##*:}
+	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$run/fwd/raw-$port.sock" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+	"${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/raw-$port.sock" "$host" "$port" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+done
 for port in $(cat "$run/drive/sbox/ports" 2>/dev/null); do
 	[[ $port =~ ^[0-9]{1,5}$ ]] || continue
 	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/port-$port.sock" 172.16.0.2 "$port" </dev/null >/dev/null 2>&1 &
