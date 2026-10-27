@@ -32,15 +32,16 @@ message and exit 125:
   `sysctl -n machdep.cpu.brand_string` and `sw_vers -productVersion`. The
   VM's own `/dev/kvm` check in doctor stays the authority; this only turns
   a confusing late failure into an early sentence.
-- Free disk for the VM disk plus the image: `syscall.Statfs` on the home
-  directory against `lima.disk_gib` plus 5 GiB.
+- Free disk: `syscall.Statfs` on the home directory, at least 10 GiB.
+  Lima's VM disk is a sparse file, so a setup uses a few GiB of real
+  space, not the whole `lima.disk_gib`.
 
 **Doctor.** The `limactl` check reports which binary it used, pinned or
 from `PATH`, and its version. The hint for a missing one becomes `sbox setup`.
 
 ## Commits
 
-- [ ] **1. Preflight.** `preflight.go`: chip, macOS version, disk; the
+- [x] **1. Preflight.** `preflight.go`: chip, macOS version, disk; the
     command outputs are parsed by functions with table tests on captured
     strings (M1, M3, M5, an Intel string, macOS 14 and 26).
 - [ ] **2. `limactlPath()`.** Resolution order with tests on a temp home

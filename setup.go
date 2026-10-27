@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 var (
@@ -89,6 +90,15 @@ func pinnedSHA(env string) string {
 // setup creates and starts the VM if needed, provisions it, and runs the
 // doctor to prove the result works.
 func setup(ctx context.Context, out io.Writer) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(out, "==> host")
+	if !preflight(out, readHostInfo(hostCommand, home)) {
+		return errors.New("this Mac can't run sbox: see the checks above")
+	}
+
 	vm, err := vmStatus(ctx)
 	if err != nil {
 		return err
