@@ -216,7 +216,7 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	if job.prefetch != "" {
 		args = append(args, strconv.Itoa(int(job.preLimit.Seconds())))
 	}
-	cmd := exec.CommandContext(ctx, "limactl", args...)
+	cmd := exec.CommandContext(ctx, limactlBin(), args...)
 	cmd.Stdin = pr
 	cmd.Stderr = errOut
 	console, err := cmd.StdoutPipe()
