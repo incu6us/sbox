@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -369,8 +370,8 @@ func TestDevMain(t *testing.T) {
 	if code != 3 || len(vm.calls) != 3 {
 		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and start, attach, stop", code, vm.calls, stderr.String())
 	}
-	id := vm.calls[0][1]
-	want := [][]string{{"start", id}, {"attach", id, "--", "claude"}, {"stop", id}}
+	id, project := vm.calls[0][1], mustProjectID(t, dir)
+	want := [][]string{{"start", id, project}, {"attach", id, "--", "claude"}, {"stop", id}}
 	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
 		t.Errorf("calls %q, want %q", vm.calls, want)
 	}
@@ -381,8 +382,65 @@ func TestDevMain(t *testing.T) {
 		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
 	}
 
+	fresh := fakeVM{answer: ready}
+	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run); code != exitOK ||
+		len(fresh.calls) != 4 || !slices.Equal(fresh.calls[0], []string{"forget", project}) || fresh.calls[1][0] != "start" {
+		t.Errorf("sbox dev -fresh: exit %d, calls %q; want forget %s, then start, attach, stop", code, fresh.calls, project)
+	}
+
 	failed := fakeVM{stdout: "no ready line\n"}
 	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run); code != exitFail || len(failed.calls) != 1 {
 		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
+	}
+}
+
+func mustProjectID(t *testing.T, dir string) string {
+	t.Helper()
+	id, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestProjectID(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, d := range []string{a, b} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(a, link); err != nil {
+		t.Fatal(err)
+	}
+
+	idA := mustProjectID(t, a)
+	if !regexp.MustCompile(`^[a-f0-9]{16}$`).MatchString(idA) {
+		t.Errorf("projectID = %q, want 16 hex digits", idA)
+	}
+	if mustProjectID(t, b) == idA {
+		t.Error("two folders share a project id")
+	}
+	if mustProjectID(t, link) != idA || mustProjectID(t, a+"/.") != idA {
+		t.Error("the same folder by another path gets another project id")
+	}
+	if _, err := projectID(filepath.Join(root, "missing")); err == nil {
+		t.Error("a missing folder got a project id")
+	}
+}
+
+func TestCleanMain(t *testing.T) {
+	t.Parallel()
+	vm := fakeVM{}
+	var stdout, stderr bytes.Buffer
+	if code := sessionMain(context.Background(), "clean", nil, &stdout, &stderr, vm.run); code != exitOK ||
+		!slices.EqualFunc(vm.calls, [][]string{{"clean"}}, slices.Equal) || !strings.Contains(stdout.String(), "removed") {
+		t.Errorf("sbox clean: exit %d, calls %q, stdout %q", code, vm.calls, stdout.String())
+	}
+	if code := sessionMain(context.Background(), "clean", []string{"x"}, &stdout, &stderr, vm.run); code != exitUsage {
+		t.Errorf("sbox clean x: exit %d, want usage", code)
 	}
 }

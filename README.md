@@ -31,11 +31,12 @@ sbox doctor
 sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
 
-sbox dev <dir> [-- <command> [args...]]
+sbox dev [-fresh] <dir> [-- <command> [args...]]
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
 sbox ps
 sbox stop|pause|resume|log <session-id>
+sbox clean
 ```
 
 ### `sbox setup`
@@ -90,6 +91,14 @@ in, at `/home/runner/work`, and stops the microVM when you exit. Pass a
 command to run that instead: `sbox dev ./myapp -- claude`. The terminal is
 real (colours, Ctrl-C, full-screen programs); it runs over SSH inside the
 VM, with a key made per session and the guest's host key pinned.
+
+The runner's home is kept per project between `sbox dev` sessions: the
+copy of the project and what was done to it, the agent's own state,
+caches, anything installed in the home. The project is copied in only the
+first time, so work done inside is never overwritten; edits you make on
+the Mac afterwards don't reach it yet. `sbox dev -fresh <dir>` starts that
+project over from the Mac's copy; `sbox clean` drops every project's
+state. Only one session runs per project at a time.
 
 `sbox start <dir> -- <command>` runs the same job as `sbox run`, but the
 microVM keeps running after the command returns. It prints the session id

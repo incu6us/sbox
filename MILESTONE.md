@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, sync ⬜ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ⬜ | 🟡 |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -356,6 +356,20 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     read could come before the first tick.
   - Measured, not built: the guest clock matched the host to the second
     after a 20 s pause, so the planned clock fix is dropped.
+
+- ✅ Step 3: state kept per project. `sbox dev` names the folder by the
+  SHA-256 of its resolved path and gives the session that project's work
+  drive (sparse 20 GiB ext4, labelled `sbox-work`, made on first use), which
+  the guest mounts as the runner's home. The project is copied in only when
+  the home has none. One live session per project; `sbox dev -fresh` and
+  `sbox clean` drop the drives.
+  - Found on the real VM: stop killed the microVM with writes still in the
+    guest's page cache, so the last seconds of work were lost. Stop now
+    flushes first, over a root key on the drive limited to
+    `command="sync"`, resuming a paused guest for it.
+  - Verified on the real VM: a home file and a project edit survive into
+    the next session; after forget, the host's copy and an empty home;
+    `sbox dev`, `-fresh` and `sbox clean` through the binary.
 
 ## Prerequisites ✅
 

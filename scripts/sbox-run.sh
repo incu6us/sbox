@@ -23,11 +23,13 @@
 # powers off. Each session has a folder under $state/sessions/<id>.
 #
 # Usage (as root): sbox-run <run-id> <timeout-seconds> [prefetch-timeout-seconds]
-#                  sbox-run start <session-id> [timeout-seconds]   (run tar on stdin)
+#                  sbox-run start <session-id> [project-id]   (run tar on stdin)
 #                  sbox-run ps
 #                  sbox-run stop <session-id>
 #                  sbox-run pause|resume|log <session-id>
 #                  sbox-run attach <session-id> [-- <command...>]
+#                  sbox-run forget <project-id>    (drop one project's work drive)
+#                  sbox-run clean                  (drop every project's)
 set -euo pipefail
 
 # Roots can be moved for tests; sudo resets the environment, so callers
@@ -60,6 +62,30 @@ teardown() {
 	rmdir "/sys/fs/cgroup/firecracker/$id" "/sys/fs/cgroup/firecracker/$id-pre" 2>/dev/null || true
 }
 
+valid_project() {
+	[[ ${1:-} =~ ^[a-f0-9]{16}$ ]] || { echo "sbox-run: bad project id" >&2; exit 2; }
+}
+
+# project_free fails when a live session uses the project's work drive.
+project_free() {
+	local old
+	for old in "$sessions"/*/; do
+		[[ -f $old/project && $(cat "$old/project") == "$1" ]] || continue
+		if kill -0 "$(cat "$old/pid")" 2>/dev/null; then
+			echo "sbox-run: project $1 is in use by session $(basename "$old")" >&2
+			exit 1
+		fi
+	done
+}
+
+# projects_forget drops the work drives of the given projects, or of all
+# of them; none may be in use.
+projects_forget() {
+	local p
+	for p in "$@"; do project_free "$p"; done
+	for p in "$@"; do rm -rf "${state:?}/projects/$p"; done
+}
+
 valid_id() {
 	[[ ${1:-} =~ ^[a-f0-9]{8,32}$ ]] || { echo "sbox-run: bad session id" >&2; exit 2; }
 }
@@ -75,11 +101,12 @@ session_dir() {
 # mode in a new process group (so stop can end all of it), and returns once
 # the guest's START marker, with the run's nonce, reaches the console log.
 # Sessions started more than a day ago are stopped first, so a forgotten
-# one doesn't hold memory forever.
+# one doesn't hold memory forever. With a project id, the session gets that
+# project's work drive, made on first use and kept between sessions.
 session_start() {
-	local id=${1:-} secs=${2:-0} dir nonce i old now
+	local id=${1:-} project=${2:-} dir nonce i old now work=""
 	valid_id "$id"
-	[[ $secs =~ ^[0-9]{1,5}$ ]] || { echo "sbox-run: bad timeout" >&2; exit 2; }
+	[[ -z $project ]] || valid_project "$project"
 	now=$(date +%s)
 	for old in "$sessions"/*/; do
 		[[ -f $old/started ]] || continue
@@ -89,12 +116,27 @@ session_start() {
 	done
 	dir=$sessions/$id
 	[[ ! -e $dir ]] || { echo "sbox-run: session $id exists" >&2; exit 1; }
+	# One live session per project: two microVMs writing one ext4 drive
+	# would corrupt it.
+	[[ -z $project ]] || project_free "$project"
 	mkdir -p "$dir"
+	if [[ -n $project ]]; then
+		work=$state/projects/$project/work.ext4
+		mkdir -p "${work%/*}"
+		if [[ ! -f $work ]]; then
+			# Sparse: only what the guest writes takes space.
+			truncate -s 20G "$work.tmp"
+			mkfs.ext4 -q -L sbox-work -F "$work.tmp"
+			mv "$work.tmp" "$work"
+		fi
+		chown sbox-vm "$work"
+		echo "$project" >"$dir/project"
+	fi
 	cat >"$dir/run.tar"
 	nonce=$(tar -xOf "$dir/run.tar" sbox/nonce)
 	date +%s >"$dir/started"
 	echo running >"$dir/state"
-	SBOX_SESSION=1 setsid "${BASH:-bash}" "$0" "$id" "$secs" <"$dir/run.tar" >"$dir/console.log" 2>&1 &
+	SBOX_SESSION=1 SBOX_WORK=$work setsid "${BASH:-bash}" "$0" "$id" 0 <"$dir/run.tar" >"$dir/console.log" 2>&1 &
 	echo $! >"$dir/pid"
 	for ((i = 0; i < 1200; i++)); do # 120 s
 		if grep -q "SBOX-$nonce START" "$dir/console.log"; then
@@ -112,14 +154,31 @@ session_start() {
 	return 1
 }
 
+# vm_api sets a session's microVM state (Paused, Resumed) through
+# Firecracker's API.
+vm_api() {
+	curl -fsS --unix-socket "$jail_base/firecracker/$1/root/run/firecracker.socket" \
+		-X PATCH -H 'Content-Type: application/json' -d "{\"state\":\"$2\"}" http://localhost/vm
+}
+
 # session_stop ends a session's process group: TERM first, so the run's own
 # cleanup stops its helpers; KILL after 10 s. The teardown then runs here
-# too, in case that cleanup never got to.
+# too, in case that cleanup never got to. Before that, the guest flushes
+# its writes to the work drive (a paused one is resumed for it), or the
+# last seconds of work would be lost with the guest's page cache.
 session_stop() {
 	local id=${1:-} dir pid i
 	dir=$(session_dir "$id")
 	pid=$(cat "$dir/pid")
 	if kill -0 "$pid" 2>/dev/null; then
+		if [[ $(cat "$dir/state") == paused ]]; then
+			vm_api "$id" Resumed && echo running >"$dir/state" || true
+		fi
+		if [[ -f $dir/root_key ]]; then
+			ip netns exec "sbox-$id" timeout 10 ssh -i "$dir/root_key" -o UserKnownHostsFile="$dir/known_hosts" \
+				-o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes -o BatchMode=yes -o LogLevel=ERROR \
+				root@172.16.0.2 </dev/null >/dev/null 2>&1 || true
+		fi
 		kill -TERM -- "-$pid" 2>/dev/null || true
 		for ((i = 0; i < 100; i++)); do
 			kill -0 "$pid" 2>/dev/null || break
@@ -141,9 +200,7 @@ session_vm_state() {
 		echo "sbox-run: session $id is not $from" >&2
 		exit 1
 	fi
-	curl -fsS --unix-socket "$jail_base/firecracker/$id/root/run/firecracker.socket" \
-		-X PATCH -H 'Content-Type: application/json' -d "{\"state\":\"$vm_state\"}" http://localhost/vm ||
-		{ echo "sbox-run: Firecracker did not change session $id to $to" >&2; exit 1; }
+	vm_api "$id" "$vm_state" || { echo "sbox-run: Firecracker did not change session $id to $to" >&2; exit 1; }
 	echo "$to" >"$dir/state"
 }
 
@@ -172,6 +229,13 @@ session_attach() {
 
 case ${1:-} in
 ps) session_ps; exit 0 ;;
+forget) valid_project "${2:-}"; projects_forget "$2"; exit 0 ;;
+clean)
+	all=()
+	for p in "$state/projects"/*/; do [[ -d $p ]] && all+=("$(basename "$p")"); done
+	((${#all[@]} == 0)) || projects_forget "${all[@]}"
+	exit 0
+	;;
 attach) shift; session_attach "$@" ;;
 log) dir=$(session_dir "${2:-}"); cat "$dir/console.log"; exit 0 ;;
 pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
@@ -208,10 +272,14 @@ nonce=$(cat "$run/drive/sbox/nonce")
 if [[ ${SBOX_SESSION:-} == 1 ]]; then
 	sdir=$sessions/$id
 	mkdir -p "$sdir" "$run/drive/sbox/ssh"
-	rm -f "$sdir/key" "$sdir/key.pub"
+	rm -f "$sdir/key" "$sdir/key.pub" "$sdir/root_key" "$sdir/root_key.pub"
 	ssh-keygen -q -t ed25519 -N '' -C sbox -f "$sdir/key"
+	ssh-keygen -q -t ed25519 -N '' -C sbox-flush -f "$sdir/root_key"
 	ssh-keygen -q -t ed25519 -N '' -C sbox-guest -f "$run/drive/sbox/ssh/host_ed25519"
-	cp "$sdir/key.pub" "$run/drive/sbox/ssh/authorized_keys"
+	cp "$sdir/key.pub" "$run/drive/sbox/ssh/authorized_keys.runner"
+	# Root's key can only run sync: stop uses it to flush the work drive.
+	echo "command=\"sync\",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding $(cat "$sdir/root_key.pub")" \
+		>"$run/drive/sbox/ssh/authorized_keys.root"
 	echo "sbox-guest $(cat "$run/drive/sbox/ssh/host_ed25519.pub")" >"$sdir/known_hosts"
 fi
 
@@ -256,6 +324,11 @@ boot() {
 		local ro=true
 		[[ $deps == rw ]] && ro=false
 		extra=", {\"drive_id\": \"deps\", \"path_on_host\": \"/deps.ext4\", \"is_root_device\": false, \"is_read_only\": $ro}"
+	fi
+	# A session's project work drive, writable; the guest finds it by label.
+	if [[ -n ${SBOX_WORK:-} && $phase == main ]]; then
+		ln "$SBOX_WORK" "$root/work.ext4"
+		extra+=", {\"drive_id\": \"work\", \"path_on_host\": \"/work.ext4\", \"is_root_device\": false, \"is_read_only\": false}"
 	fi
 	cat >"$root/vm.json" <<EOF
 {
