@@ -379,7 +379,7 @@ writes a commented starter file and `sbox config` prints the effective one.
 
 ## Commits
 
-- [ ] **1. Start, stop, ps, pause, resume.** `sbox-run.sh` gains
+- [x] **1. Start, stop, ps, pause, resume.** `sbox-run.sh` gains
     `start|stop|ps|pause|resume|log` with a session folder per id; the
     one-shot run keeps its positional form (`sbox-run <id> <timeout>`),
     since a hex id never collides with a subcommand. `start` prints
@@ -390,8 +390,8 @@ writes a commented starter file and `sbox config` prints the effective one.
     pause-resume round trip keeps a guest counter running.
     - [x] VM side, tested from Go with fakes (`sboxrun_test.go`)
     - [x] host commands, tested with a fake `sbox-run` (`sessions_test.go`)
-    - [ ] `go test -tags vm -run TestSessionLifecycleOnVM` passes on a real VM
-    - [ ] doctor's session check
+    - [x] `go test -tags vm -run TestSessionLifecycleOnVM` passes on a real VM
+    - [x] doctor's session check
 - [ ] **2. SSH.** `openssh-server` in the image (`ROOTFS_REVISION` bump),
     host keys and the session key in `guest-init.sh` (runner: full; root:
     restricted to the clock command), `sshd` as the last step of the main

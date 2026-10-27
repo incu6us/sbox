@@ -44,7 +44,7 @@ Conventions shared by every plan:
 ## Status
 
 - [ ] 1. Dev mode ([dev-mode.md](dev-mode.md))
-  - [ ] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket (code and unit tests done; real-VM test and doctor check pending)
+  - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [ ] 2 SSH into the guest, `sbox dev` terminal
   - [ ] 3 writable work drive, persistence, `-fresh`, `sbox clean`
   - [ ] 4 `sbox sync`: detection, diff, apply, patch, host-to-guest
@@ -56,11 +56,11 @@ Conventions shared by every plan:
   - [ ] 6 secrets and config keys
   - [ ] 7 session summary, `sbox log`, `-trace`
   - [ ] 8 docs and timings
-- [ ] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
+- [x] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
   - [x] 1 host preflight
   - [x] 2 `limactlPath()`
   - [x] 3 pinned Lima download
-  - [ ] 4 verified on a Mac without Lima
+  - [x] 4 verified on a Mac without Lima
 - [ ] 2. Config ([config.md](config.md)): remaining commits 3, 5, 6, 7
 - [ ] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3
 - [ ] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4

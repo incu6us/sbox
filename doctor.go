@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,6 +68,10 @@ func doctor(ctx context.Context, out io.Writer) (bool, error) {
 		return false, nil
 	}
 	checks = append(checks, probe(ctx)...)
+	if failed(checks) {
+		return false, nil
+	}
+	checks = append(checks, sessionProbe(ctx, sboxRun, time.Sleep)...)
 	return !failed(checks), nil
 }
 
@@ -97,6 +103,74 @@ func probe(ctx context.Context) []check {
 		}
 	}
 	return append(judgeProbe(kv), dns)
+}
+
+// _counter is the guest command of doctor's session probe.
+const _counter = "i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done"
+
+var _counterTick = regexp.MustCompile(`(?m)^tick (\d+)$`)
+
+// sessionProbe starts a session whose guest counts once a second, and
+// checks that it runs, that pause freezes it, that resume continues it,
+// and that stop leaves nothing in sbox ps. wait is time.Sleep outside tests.
+func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration)) []check {
+	dir, err := os.MkdirTemp("", "sbox-session-")
+	if err != nil {
+		return []check{{name: "session: start", detail: err.Error()}}
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	var out, errOut bytes.Buffer
+	if startMain(ctx, []string{dir, "--", "sh", "-c", _counter}, &out, &errOut, vm) != exitOK {
+		return []check{{name: "session: start", detail: "sbox start failed: " + truncate(errOut.String(), 300)}}
+	}
+	id := strings.TrimSpace(out.String())
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, vm)
+		}
+	}()
+	do := func(cmd string) bool {
+		return sessionMain(ctx, cmd, []string{id}, io.Discard, io.Discard, vm) == exitOK
+	}
+	tick := func() int {
+		var b bytes.Buffer
+		_ = sessionMain(ctx, "log", []string{id}, &b, io.Discard, vm)
+		m := _counterTick.FindAllStringSubmatch(b.String(), -1)
+		if len(m) == 0 {
+			return -1
+		}
+		n, _ := strconv.Atoi(m[len(m)-1][1]) // \d+ always parses
+		return n
+	}
+	counted := func(name string, from, to int, ok bool) check {
+		return check{name: name, ok: ok, detail: fmt.Sprintf("counter %d, then %d", from, to)}
+	}
+
+	a := tick()
+	wait(2 * time.Second)
+	b := tick()
+	checks := []check{counted("session: guest runs", a, b, a >= 0 && b > a)}
+
+	paused := do("pause")
+	c := tick()
+	wait(2 * time.Second)
+	d := tick()
+	checks = append(checks, counted("session: pause freezes the guest", c, d, paused && c >= 0 && d == c))
+
+	resumed := do("resume")
+	wait(2 * time.Second)
+	e := tick()
+	checks = append(checks, counted("session: resume continues it", d, e, resumed && e > d))
+
+	stop := check{name: "session: stop leaves nothing", ok: do("stop")}
+	stopped = stop.ok
+	var ps bytes.Buffer
+	_ = sessionMain(ctx, "ps", nil, &ps, io.Discard, vm)
+	if strings.Contains(ps.String(), id) {
+		stop.ok, stop.detail = false, "sbox ps still lists "+id
+	}
+	return append(checks, stop)
 }
 
 func truncate(s string, n int) string {

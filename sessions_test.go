@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -116,6 +117,8 @@ func TestSessionMain(t *testing.T) {
 		{name: "resume", cmd: "resume", args: []string{id}, wantOut: id + " resumed", wantCalls: [][]string{{"resume", id}}},
 		{name: "log escapes guest output", cmd: "log", args: []string{id}, vm: fakeVM{stdout: "hi\n\x1b[2Jx\n"},
 			wantOut: "hi\n\\x1b[2Jx\n", wantCalls: [][]string{{"log", id}}},
+		{name: "log drops the serial console's carriage returns", cmd: "log", args: []string{id}, vm: fakeVM{stdout: "tick 1\r\ntick 2\r\n"},
+			wantOut: "tick 1\ntick 2\n", wantCalls: [][]string{{"log", id}}},
 		{name: "missing id", cmd: "stop", wantCode: exitUsage, wantErr: "usage"},
 		{name: "bad id never reaches the VM", cmd: "pause", args: []string{"NOT-HEX"}, wantCode: exitUsage, wantErr: "session id"},
 		{name: "VM-side failure", cmd: "resume", args: []string{id},
@@ -216,5 +219,73 @@ func TestStartMain(t *testing.T) {
 		if code := startMain(context.Background(), args, &stdout, &stderr, vm.run); code != exitUsage || len(vm.calls) != 0 {
 			t.Errorf("args %q: exit %d, calls %q; want usage and no call", args, code, vm.calls)
 		}
+	}
+}
+
+// fakeGuest plays a session whose guest counts once a second, for the
+// doctor's probe: wait advances the count unless the session is paused.
+type fakeGuest struct {
+	id              string
+	ticks           int
+	paused, stopped bool
+	ignorePause     bool // a broken pause: the count keeps moving
+	silent          bool // the guest prints no counter
+}
+
+func (g *fakeGuest) wait(d time.Duration) {
+	if !g.paused || g.ignorePause {
+		g.ticks += int(d / time.Second)
+	}
+}
+
+func (g *fakeGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, args ...string) error {
+	if in != nil {
+		_, _ = io.Copy(io.Discard, in)
+	}
+	switch args[0] {
+	case "start":
+		g.id = args[1]
+		_, _ = fmt.Fprintf(out, "READY %s\n", g.id)
+	case "log":
+		if !g.silent {
+			_, _ = fmt.Fprintf(out, "noise\r\ntick %d\r\n", g.ticks) // CR LF, as the serial console sends
+		}
+	case "pause":
+		g.paused = true
+	case "resume":
+		g.paused = false
+	case "stop":
+		g.stopped = true
+	case "ps":
+		if !g.stopped {
+			_, _ = fmt.Fprintf(out, "%s running 1700000000\n", g.id)
+		}
+	}
+	return nil
+}
+
+func TestSessionProbe(t *testing.T) {
+	t.Parallel()
+
+	failing := func(checks []check) []string {
+		var names []string
+		for _, c := range checks {
+			if !c.ok {
+				names = append(names, c.name)
+			}
+		}
+		return names
+	}
+	good := &fakeGuest{}
+	if bad := failing(sessionProbe(context.Background(), good.run, good.wait)); len(bad) != 0 || !good.stopped {
+		t.Errorf("a well-behaved session: failing %q, stopped %v; want none failing and the session stopped", bad, good.stopped)
+	}
+	silent := &fakeGuest{silent: true}
+	if bad := failing(sessionProbe(context.Background(), silent.run, silent.wait)); len(bad) != 3 {
+		t.Errorf("a session with no counter output: failing %q, want the three counter checks", bad)
+	}
+	broken := &fakeGuest{ignorePause: true}
+	if bad := failing(sessionProbe(context.Background(), broken.run, broken.wait)); !slices.Equal(bad, []string{"session: pause freezes the guest"}) || !broken.stopped {
+		t.Errorf("a session that ignores pause: failing %q, stopped %v; want only the pause check failing", bad, broken.stopped)
 	}
 }

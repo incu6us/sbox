@@ -12,8 +12,9 @@ macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no hos
 ## Requirements
 
 - Apple Silicon M3 or later, macOS 15+ (nested virtualization)
-- Lima 2.x: `brew install lima`
+- 10 GiB free disk
 - Go 1.27.2+ to build
+- Lima: `sbox setup` installs its own pinned copy (2.2.1) when none is on `PATH`
 
 ## Install
 
@@ -29,20 +30,27 @@ sbox setup
 sbox doctor
 sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
+
+sbox start <dir> -- <command> [args...]
+sbox ps
+sbox stop|pause|resume|log <session-id>
 ```
 
 ### `sbox setup`
 
 Creates, provisions and checks everything; safe to run again at any time.
 
-1. Creates the Lima VM `sbox` if it doesn't exist (vz, nested virtualization,
+1. Checks the Mac: an Apple M3 or later, macOS 15 or later, 10 GiB free.
+   If no `limactl` is found, downloads Lima 2.2.1, checks its SHA-256, and
+   installs it in `~/.local/share/sbox/lima` (no Homebrew, no sudo).
+2. Creates the Lima VM `sbox` if it doesn't exist (vz, nested virtualization,
    4 CPUs, 6 GiB RAM, 30 GiB disk, no host folders mounted), or starts it if
    it's stopped.
-2. Provisions it as root (`scripts/provision.sh`): packages, the `sbox-vm`
+3. Provisions it as root (`scripts/provision.sh`): packages, the `sbox-vm`
    user the jailer runs Firecracker as, and into `/opt/sbox` Firecracker,
    the jailer, the guest kernel and the guest image (`rootfs.ext4`, ~830 MB).
-3. Installs `/opt/sbox/bin/sbox-run`, which runs one microVM per call.
-4. Runs `sbox doctor`.
+4. Installs `/opt/sbox/bin/sbox-run`, which runs one microVM per call.
+5. Runs `sbox doctor`.
 
 Every download is checked against a SHA-256 pinned in `setup.go` (Firecracker
 v1.17.0, guest kernel 6.1.155, Node v24.21.0, uv 0.13.0); a mismatch aborts
@@ -68,9 +76,30 @@ Checks the whole chain in about 7 seconds and prints one line per check:
 | `run: guest reaches VM side` | the guest reaches 172.16.0.1 on its tap |
 | `run: cut off from internet` | the guest can't reach the internet |
 | `run: DNS lookups logged` | a lookup in the guest reaches the DNS log |
+| `session: guest runs`, `pause freezes the guest`, `resume continues it`, `stop leaves nothing` | a session whose guest counts once a second keeps counting, stops counting while paused, continues after resume, and is gone from `sbox ps` after stop |
 
 Each failure says what to do (usually `sbox setup`). Exit codes: `0` all
 checks pass, `1` a check failed, `2` bad usage.
+
+### Sessions
+
+`sbox start <dir> -- <command>` runs the same job as `sbox run`, but the
+microVM keeps running after the command returns. It prints the session id
+once the guest is up.
+
+```sh
+id=$(sbox start ./myapp -- npm run dev)
+sbox ps                 # ID, STATE (running, paused, exited), AGE
+sbox pause "$id"        # freeze the microVM in memory
+sbox resume "$id"
+sbox log "$id"          # what the guest printed on its console
+sbox stop "$id"         # end it and remove what it left in the VM
+```
+
+A session ends when its command exits or on `sbox stop`. One started more
+than a day ago is stopped by the next `sbox start`. Pause and resume go
+through Firecracker's API; the session's memory stays allocated while
+paused.
 
 ### `sbox run`
 

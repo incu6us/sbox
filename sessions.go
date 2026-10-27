@@ -56,7 +56,7 @@ func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr 
 		var b strings.Builder
 		for _, line := range strings.SplitAfter(out.String(), "\n") {
 			text, nl := strings.CutSuffix(line, "\n")
-			b.WriteString(printable(text))
+			b.WriteString(printable(strings.TrimSuffix(text, "\r"))) // the serial console sends CR LF
 			if nl {
 				b.WriteString("\n")
 			}

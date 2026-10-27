@@ -51,7 +51,7 @@ from `PATH`, and its version. The hint for a missing one becomes `sbox setup`.
     The minimum-version check against a user's own Lima is left out until
     a version problem shows up. Tests with
     `httptest.Server` serving a small tarball.
-- [ ] **4. Verify and document.** On a Mac without Lima: `sbox setup`
+- [x] **4. Verify and document.** On a Mac without Lima: `sbox setup`
     installs it, creates the VM, doctor passes. README's Requirements drop
     "Lima installed".
 
