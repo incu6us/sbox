@@ -6,14 +6,11 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
-
-var _tick = regexp.MustCompile(`(?m)^tick (\d+)$`)
 
 // lastTick reads a session's console and returns the counter's last value.
 func lastTick(t *testing.T, id string) int {
@@ -22,7 +19,7 @@ func lastTick(t *testing.T, id string) int {
 	if code := sessionMain(context.Background(), "log", []string{id}, &out, io.Discard, sboxRun); code != exitOK {
 		t.Fatalf("sbox log: exit %d", code)
 	}
-	m := _tick.FindAllStringSubmatch(out.String(), -1)
+	m := _counterTick.FindAllStringSubmatch(out.String(), -1)
 	if len(m) == 0 {
 		t.Fatalf("no ticks in the console:\n%s", out.String())
 	}
@@ -49,8 +46,7 @@ func TestSessionLifecycleOnVM(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	counter := "i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done"
-	if code := startMain(ctx, []string{t.TempDir(), "--", "sh", "-c", counter}, &out, &errOut, sboxRun); code != exitOK {
+	if code := startMain(ctx, []string{t.TempDir(), "--", "sh", "-c", _counter}, &out, &errOut, sboxRun); code != exitOK {
 		t.Fatalf("sbox start: exit %d: %s", code, errOut.String())
 	}
 	id := strings.TrimSpace(out.String())

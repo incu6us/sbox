@@ -13,6 +13,8 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ⬜, sync ⬜ | 🟡 |
+| Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
 
@@ -316,6 +318,38 @@ that ship real hooks.
   - ⬜ Then a Cursor profile.
 - Firecracker snapshots for sub-second starts.
 - GitHub URLs as targets (v1: fetch locally first).
+
+## Dev mode 🟡
+
+The direction since 2026-10-27: sbox is for building projects with an
+agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
+
+- ✅ Step 1: sessions. `sbox start <dir> -- <cmd>` runs the same job as
+  `sbox run` in a microVM that keeps running, and prints its id once the
+  guest is up; `sbox ps`, `stop`, `pause`, `resume`, `log`. `sbox-run`
+  keeps the run on disk and runs itself on it in session mode, in its own
+  process group; Firecracker gets an API socket, and pause and resume
+  `PATCH /vm`. Stop sends TERM to the group, which reaches every helper,
+  then tears down what is left. Sessions older than a day are stopped by
+  the next start.
+  - Tested from Go with fake commands on `PATH`, then on the real VM:
+    doctor's session probe (a guest counting once a second: 1→3 running,
+    3→3 paused, 3→6 resumed, gone after stop) and
+    `go test -tags vm -run TestSessionLifecycleOnVM` (27 s) pass; nothing
+    left in the VM afterwards; ponytail scan still PASS.
+  - Fixed from the real run: the serial console sends CR LF, which the
+    fakes didn't; `sbox log` now drops the CR, as `sbox run` already did.
+
+## Prerequisites ✅
+
+- `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,
+  10 GiB free) and installs Lima 2.2.1 into `~/.local/share/sbox/lima`
+  when no `limactl` is found: pinned SHA-256 from the release's
+  `SHA256SUMS`, checked before unpacking; the extractor refuses paths and
+  links that leave the folder. Every `limactl` call prefers that copy.
+- Verified on an M4 Pro, macOS 26.6.2, with no Lima installed: setup
+  installed it, created the VM, built the image (1151 MB) and doctor
+  passed. Real disk use: about 4 GiB (Lima's VM disk is sparse).
 
 ## Known limits
 
