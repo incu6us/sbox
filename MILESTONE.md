@@ -302,8 +302,18 @@ that ship real hooks.
     Verified: with `api.anthropic.com:443` allowed, that host answers and
     example.com is refused; without it, nothing is reachable; prefetch
     unchanged; nothing left behind.
-  - ⬜ Next steps: the user's own credential for the agent process; the
-    headless run, transcript and report; then a Cursor profile.
+  - Step 4, in pieces:
+    - ✅ 4a: `transcript.go` parses Claude Code's `--output-format stream-json`
+      (init model, `tool_use` blocks with a one-line summary of each input,
+      failed `tool_result`s, the final result's status, turns and text) and
+      renders the report's agent section. Malformed lines are skipped and
+      output is escaped; the transcript comes from inside the guest, so it
+      informs the report but never decides the verdict. Tested on a saved
+      sample (`testdata/claude-stream.jsonl`); not wired into `scan` yet.
+    - ⬜ next: the agent entry point (Claude Code headless as the runner,
+      `claude` as its harness, egress to the API host), the user's
+      credential from the host environment, and wiring the transcript in.
+  - ⬜ Then a Cursor profile.
 - Firecracker snapshots for sub-second starts.
 - GitHub URLs as targets (v1: fetch locally first).
 
