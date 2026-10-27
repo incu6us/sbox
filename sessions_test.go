@@ -24,10 +24,12 @@ func TestParseSessions(t *testing.T) {
 	give := "aaaaaaaaaaaaaaaa running 1700000000\n" +
 		"junk\n" +
 		"bbbbbbbbbbbbbbbb paused notanumber\n" +
-		"cccccccccccccccc exited 1700000100\n"
+		"cccccccccccccccc exited 1700000100\n" +
+		"dddddddddddddddd running 1700000200 0123456789abcdef\n"
 	want := []session{
 		{ID: "aaaaaaaaaaaaaaaa", State: "running", Started: time.Unix(1700000000, 0)},
 		{ID: "cccccccccccccccc", State: "exited", Started: time.Unix(1700000100, 0)},
+		{ID: "dddddddddddddddd", State: "running", Started: time.Unix(1700000200, 0), Project: "0123456789abcdef"},
 	}
 	if got := parseSessions(give); !slices.Equal(got, want) {
 		t.Errorf("parseSessions = %v, want %v", got, want)
@@ -366,7 +368,7 @@ func TestDevMain(t *testing.T) {
 		return nil
 	}}
 	var stdout, stderr bytes.Buffer
-	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run)
+	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir())
 	if code != 3 || len(vm.calls) != 3 {
 		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and start, attach, stop", code, vm.calls, stderr.String())
 	}
@@ -377,19 +379,19 @@ func TestDevMain(t *testing.T) {
 	}
 
 	shell := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run); code != exitOK ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, t.TempDir()); code != exitOK ||
 		len(shell.calls) != 3 || !slices.Equal(shell.calls[1], []string{"attach", shell.calls[0][1]}) {
 		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
 	}
 
 	fresh := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run); code != exitOK ||
+	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, t.TempDir()); code != exitOK ||
 		len(fresh.calls) != 4 || !slices.Equal(fresh.calls[0], []string{"forget", project}) || fresh.calls[1][0] != "start" {
 		t.Errorf("sbox dev -fresh: exit %d, calls %q; want forget %s, then start, attach, stop", code, fresh.calls, project)
 	}
 
 	failed := fakeVM{stdout: "no ready line\n"}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run); code != exitFail || len(failed.calls) != 1 {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, t.TempDir()); code != exitFail || len(failed.calls) != 1 {
 		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
 	}
 }
@@ -442,5 +444,43 @@ func TestCleanMain(t *testing.T) {
 	}
 	if code := sessionMain(context.Background(), "clean", []string{"x"}, &stdout, &stderr, vm.run); code != exitUsage {
 		t.Errorf("sbox clean x: exit %d, want usage", code)
+	}
+}
+
+func TestDevMainRecordsTheSyncBase(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project := mustProjectID(t, dir)
+	answer := func(prefix string) func([]string) string {
+		return func(args []string) string {
+			if args[0] == "start" {
+				return prefix + "READY " + args[1] + "\n"
+			}
+			return ""
+		}
+	}
+	run := func(state string, a func([]string) string) {
+		vm := fakeVM{answer: a}
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, state); code != exitOK {
+			t.Fatalf("devMain: exit %d, %s", code, stderr.String())
+		}
+	}
+
+	state := t.TempDir()
+	run(state, func(args []string) string { return answer("NEW " + args[1] + "\n")(args) })
+	base, err := loadBase(state, project)
+	want, _ := readManifest(dir)
+	if err != nil || !maps.Equal(base, want) {
+		t.Errorf("base after a new drive: %v, %v; want the folder's manifest %v", base, err, want)
+	}
+
+	kept := t.TempDir()
+	run(kept, answer(""))
+	if _, err := loadBase(kept, project); err == nil {
+		t.Error("a kept drive wrote a base it can't know")
 	}
 }

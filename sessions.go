@@ -91,7 +91,7 @@ func startMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		_, _ = fmt.Fprintln(stderr, "usage: sbox start <dir> -- <command> [args...]")
 		return exitUsage
 	}
-	id, code := startSession(ctx, args[0], "", args[2:], stderr, vm)
+	id, _, code := startSession(ctx, args[0], "", args[2:], stderr, vm)
 	if code == exitOK {
 		_, _ = fmt.Fprintln(stdout, id)
 	}
@@ -116,18 +116,19 @@ func projectID(dir string) (string, error) {
 
 // startSession sends dir and command to a new session and returns its id
 // once the guest is up, or the exit code to fail with. With a project id,
-// the session gets that project's work drive.
-func startSession(ctx context.Context, dir, project string, command []string, stderr io.Writer, vm sboxRunFunc) (string, int) {
+// the session gets that project's work drive; fresh reports that the drive
+// was new, so the guest copied dir in.
+func startSession(ctx context.Context, dir, project string, command []string, stderr io.Writer, vm sboxRunFunc) (id string, fresh bool, code int) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		_, _ = fmt.Fprintf(stderr, "sbox: %s: not a directory\n", dir)
-		return "", exitUsage
+		return "", false, exitUsage
 	}
 	var ids [3]string // session id, nonce, canary
 	for i, n := range []int{8, 16, 6} {
 		var err error
 		if ids[i], err = randomHex(n); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
-			return "", exitFail
+			return "", false, exitFail
 		}
 	}
 	id, nonce, canary := ids[0], ids[1], ids[2]
@@ -142,13 +143,13 @@ func startSession(ctx context.Context, dir, project string, command []string, st
 	err := vm(ctx, pr, &out, stderr, call...)
 	_ = pr.Close() // unblocks the writer if sbox-run stopped reading early
 	if err != nil {
-		return "", vmFailed(stderr, err)
+		return "", false, vmFailed(stderr, err)
 	}
 	if !strings.Contains(out.String(), "READY "+id+"\n") {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s did not report ready\n", id)
-		return "", exitFail
+		return "", false, exitFail
 	}
-	return id, exitOK
+	return id, strings.Contains(out.String(), "NEW "+id+"\n"), exitOK
 }
 
 // attachArgs reports whether args after the first are empty or
@@ -176,8 +177,9 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // session on the directory that stays up, a terminal in it, and the
 // session stopped when the terminal's command exits. The project's work
 // drive (the runner's home, with the project in it) is kept between
-// sessions; -fresh discards it first.
-func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc) int {
+// sessions; -fresh discards it first. When the drive is new, what was
+// copied in becomes the sync base, kept in stateDir on the Mac.
+func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir string) int {
 	fresh := len(args) > 0 && args[0] == "-fresh"
 	if fresh {
 		args = args[1:]
@@ -196,9 +198,14 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return vmFailed(stderr, err)
 		}
 	}
-	id, code := startSession(ctx, args[0], project, []string{"sleep", "infinity"}, stderr, vm)
+	id, fresh, code := startSession(ctx, args[0], project, []string{"sleep", "infinity"}, stderr, vm)
 	if code != exitOK {
 		return code
+	}
+	if fresh {
+		if err := recordBase(stateDir, project, args[0]); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
+		}
 	}
 	defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, stderr, vm) }()
 	return attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
@@ -233,22 +240,27 @@ type session struct {
 	ID      string
 	State   string // running, paused or exited
 	Started time.Time
+	Project string // set for sbox dev sessions
 }
 
-// parseSessions reads sbox-run ps lines ("<id> <state> <unix time>").
-// Malformed lines are skipped.
+// parseSessions reads sbox-run ps lines ("<id> <state> <unix time>
+// [project]"). Malformed lines are skipped.
 func parseSessions(out string) []session {
 	var list []session
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) != 3 {
+		if len(f) != 3 && len(f) != 4 {
 			continue
 		}
 		secs, err := strconv.ParseInt(f[2], 10, 64)
 		if err != nil {
 			continue
 		}
-		list = append(list, session{ID: f[0], State: f[1], Started: time.Unix(secs, 0)})
+		s := session{ID: f[0], State: f[1], Started: time.Unix(secs, 0)}
+		if len(f) == 4 {
+			s.Project = f[3]
+		}
+		list = append(list, s)
 	}
 	return list
 }

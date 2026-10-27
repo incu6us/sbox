@@ -39,15 +39,17 @@ jail_base=${SBOX_JAIL:-/srv/sbox-jail}
 state=${SBOX_STATE:-/var/lib/sbox}
 sessions=$state/sessions
 
-# session_ps prints "<id> <state> <started>" per session: running or
-# paused while its process lives, exited once it is gone.
+# session_ps prints "<id> <state> <started> [project]" per session:
+# running or paused while its process lives, exited once it is gone.
 session_ps() {
-	local dir st
+	local dir st project
 	for dir in "$sessions"/*/; do
 		[[ -f $dir/pid ]] || continue
 		st=$(cat "$dir/state")
 		kill -0 "$(cat "$dir/pid")" 2>/dev/null || st=exited
-		echo "$(basename "$dir") $st $(cat "$dir/started")"
+		project=""
+		[[ -f $dir/project ]] && project=" $(cat "$dir/project")"
+		echo "$(basename "$dir") $st $(cat "$dir/started")$project"
 	done
 }
 
@@ -102,9 +104,10 @@ session_dir() {
 # the guest's START marker, with the run's nonce, reaches the console log.
 # Sessions started more than a day ago are stopped first, so a forgotten
 # one doesn't hold memory forever. With a project id, the session gets that
-# project's work drive, made on first use and kept between sessions.
+# project's work drive, made on first use (announced with "NEW <id>") and
+# kept between sessions.
 session_start() {
-	local id=${1:-} project=${2:-} dir nonce i old now work=""
+	local id=${1:-} project=${2:-} dir nonce i old now work="" new=""
 	valid_id "$id"
 	[[ -z $project ]] || valid_project "$project"
 	now=$(date +%s)
@@ -128,6 +131,7 @@ session_start() {
 			truncate -s 20G "$work.tmp"
 			mkfs.ext4 -q -L sbox-work -F "$work.tmp"
 			mv "$work.tmp" "$work"
+			new=1
 		fi
 		chown sbox-vm "$work"
 		echo "$project" >"$dir/project"
@@ -141,6 +145,7 @@ session_start() {
 	for ((i = 0; i < 1200; i++)); do # 120 s
 		if grep -q "SBOX-$nonce START" "$dir/console.log"; then
 			rm -f "$dir/run.tar"
+			[[ -z $new ]] || echo "NEW $id"
 			echo "READY $id"
 			return 0
 		fi

@@ -47,7 +47,7 @@ Conventions shared by every plan:
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
-  - [ ] 4 `sbox sync`: detection, diff, apply, patch, host-to-guest
+  - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions (`-patch`, auto-push and the notice left)
   - [ ] 5 ports and services
   - [ ] 5b raw TCP egress (ssh, databases)
   - [ ] 5c reattach and detach

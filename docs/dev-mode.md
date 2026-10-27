@@ -427,10 +427,22 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] tested from Go with fakes, then on the real VM (a home file and a
       project edit survive into the next session; after forget, the host's
       copy and an empty home)
-- [ ] **4. Sync.** Change detection in the guest, `sbox sync` over SSH,
-    diff on the host, apply, `-patch`, the host-to-guest direction on
-    reuse, the change-count notice. `.git` rules. Tests on the diff and
-    apply logic with fixtures, no VM.
+- [x] **4. Sync.** `sbox sync [-apply] <dir>`: a three-way merge of the
+    Mac's files and the guest's against a base kept on the Mac (path,
+    SHA-256, executable bit), recorded when `sbox dev` first copies a
+    project in (`sbox-run start` prints `NEW <id>` for a new drive). A
+    change on one side goes to the other; different changes on both are
+    conflicts, left alone. Dry run by default, with unified diffs;
+    `-apply` carries it out and moves the base. Uses the project's running
+    session, or starts one and stops it (which flushes). The guest's files
+    arrive as a tar of regular files only, unpacked with the safe
+    extractor; nothing is written through a symlink on the Mac; symlinks,
+    `.git`, `node_modules`, `.venv`, `__pycache__`, `.DS_Store` are never
+    synced. Tests on the merge, the manifest, the extraction and the
+    writes with fixtures, then on the real VM.
+    - [ ] `-patch`: write the guest's changes as a patch instead
+    - [ ] push the Mac's changes automatically when `sbox dev` reuses a home
+    - [ ] the change-count notice in the terminal
 - [ ] **5. Ports and services.** Relay per listed port (guest to host) and
     per listed service (host to guest), `host.sbox` in the guest's
     `/etc/hosts`, Lima forwarding confirmed in doctor with a probe server

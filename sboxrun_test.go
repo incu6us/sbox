@@ -538,6 +538,10 @@ func TestSboxRunStartWithAProjectDrive(t *testing.T) {
 	if got := e.sessionFile(id, "project"); got != project {
 		t.Errorf("session's project %q, want %q", got, project)
 	}
+	ps, _, _ := e.run(nil, "ps")
+	if want := fmt.Sprintf("%s running %s %s\n", id, e.sessionFile(id, "started"), project); ps != want {
+		t.Errorf("ps %q, want %q", ps, want)
+	}
 }
 
 func TestSboxRunProjectDriveIsKeptAndExclusive(t *testing.T) {
@@ -548,13 +552,19 @@ func TestSboxRunProjectDriveIsKeptAndExclusive(t *testing.T) {
 	for _, id := range []string{first, second, third} {
 		e.killSessionOnCleanup(id)
 	}
+	var stdout string
 	start := func(id string) (string, int) {
-		_, stderr, code := e.run(runTar(t, "n0nce"), "start", id, project)
+		var stderr string
+		var code int
+		stdout, stderr, code = e.run(runTar(t, "n0nce"), "start", id, project)
 		return stderr, code
 	}
 
 	if stderr, code := start(first); code != 0 {
 		t.Fatalf("first start: exit %d, %s", code, stderr)
+	}
+	if want := "NEW " + first + "\nREADY " + first + "\n"; stdout != want {
+		t.Errorf("first start printed %q, want %q: the drive is new", stdout, want)
 	}
 	if stderr, code := start(second); code != 1 || !strings.Contains(stderr, "in use by session "+first) {
 		t.Errorf("second start while the first runs: exit %d, stderr %q; want exit 1, in use by %s", code, stderr, first)
@@ -567,6 +577,9 @@ func TestSboxRunProjectDriveIsKeptAndExclusive(t *testing.T) {
 	}
 	if stderr, code := start(third); code != 0 {
 		t.Fatalf("start after stop: exit %d, %s", code, stderr)
+	}
+	if want := "READY " + third + "\n"; stdout != want {
+		t.Errorf("start on a kept drive printed %q, want %q", stdout, want)
 	}
 	formats := 0
 	for _, c := range e.calls("mkfs.ext4") {

@@ -84,11 +84,17 @@ func extractTarGz(r io.Reader, dest string) error {
 		return err
 	}
 	defer func() { _ = gz.Close() }()
+	return extractTar(gz, dest, false)
+}
+
+// extractTar is extractTarGz for a plain tar. With filesOnly (a tar from a
+// guest) anything but files and folders is refused.
+func extractTar(r io.Reader, dest string, filesOnly bool) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
 	links := make(map[string]bool) // symlinks created, relative to dest
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -105,6 +111,9 @@ func extractTarGz(r io.Reader, dest string) error {
 			if links[dir] {
 				return fmt.Errorf("%s: written through a link", hdr.Name)
 			}
+		}
+		if filesOnly && hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
+			return fmt.Errorf("%s: not a regular file", hdr.Name)
 		}
 		target := filepath.Join(dest, filepath.FromSlash(rel))
 		switch hdr.Typeflag {
