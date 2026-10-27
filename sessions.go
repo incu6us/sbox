@@ -76,35 +76,93 @@ func startMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		_, _ = fmt.Fprintln(stderr, "usage: sbox start <dir> -- <command> [args...]")
 		return exitUsage
 	}
-	dir := args[0]
+	id, code := startSession(ctx, args[0], args[2:], stderr, vm)
+	if code == exitOK {
+		_, _ = fmt.Fprintln(stdout, id)
+	}
+	return code
+}
+
+// startSession sends dir and command to a new session and returns its id
+// once the guest is up, or the exit code to fail with.
+func startSession(ctx context.Context, dir string, command []string, stderr io.Writer, vm sboxRunFunc) (string, int) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		_, _ = fmt.Fprintf(stderr, "sbox: %s: not a directory\n", dir)
-		return exitUsage
+		return "", exitUsage
 	}
 	var ids [3]string // session id, nonce, canary
 	for i, n := range []int{8, 16, 6} {
 		var err error
 		if ids[i], err = randomHex(n); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
-			return exitFail
+			return "", exitFail
 		}
 	}
 	id, nonce, canary := ids[0], ids[1], ids[2]
 
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeRunTar(pw, dir, guestJob{command: args[2:]}, nonce, canary)) }()
+	go func() { pw.CloseWithError(writeRunTar(pw, dir, guestJob{command: command}, nonce, canary)) }()
 	var out bytes.Buffer
 	err := vm(ctx, pr, &out, stderr, "start", id)
 	_ = pr.Close() // unblocks the writer if sbox-run stopped reading early
 	if err != nil {
-		return vmFailed(stderr, err)
+		return "", vmFailed(stderr, err)
 	}
 	if !strings.Contains(out.String(), "READY "+id+"\n") {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s did not report ready\n", id)
-		return exitFail
+		return "", exitFail
 	}
-	_, _ = fmt.Fprintln(stdout, id)
-	return exitOK
+	return id, exitOK
+}
+
+// attachArgs reports whether args after the first are empty or
+// "-- <command...>".
+func attachArgs(args []string) bool {
+	return len(args) == 1 || (len(args) > 2 && args[1] == "--")
+}
+
+// attachMain implements `sbox attach <id> [-- <command...>]`: a terminal
+// in a running session's guest, by default a login shell. It exits with
+// the guest command's status.
+func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc) int {
+	if len(args) == 0 || !attachArgs(args) {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox attach <session-id> [-- <command> [args...]]")
+		return exitUsage
+	}
+	if !_sessionID.MatchString(args[0]) {
+		_, _ = fmt.Fprintf(stderr, "sbox: %q is not a session id (sbox ps lists them)\n", args[0])
+		return exitUsage
+	}
+	return attachExit(stderr, vm(ctx, stdin, stdout, stderr, append([]string{"attach"}, args...)...))
+}
+
+// devMain implements `sbox dev <dir> [-- <command...>]`: a session on the
+// directory that stays up, a terminal in it, and the session stopped when
+// the terminal's command exits.
+func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc) int {
+	if len(args) == 0 || !attachArgs(args) {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox dev <dir> [-- <command> [args...]]")
+		return exitUsage
+	}
+	id, code := startSession(ctx, args[0], []string{"sleep", "infinity"}, stderr, vm)
+	if code != exitOK {
+		return code
+	}
+	defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, stderr, vm) }()
+	return attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
+}
+
+// attachExit turns an sbox-run call's error into an exit code: the
+// remote command's own status when it has one.
+func attachExit(stderr io.Writer, err error) int {
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return exitOK
+	case errors.As(err, &exitErr) && exitErr.ExitCode() > 0:
+		return exitErr.ExitCode()
+	}
+	return vmFailed(stderr, err)
 }
 
 // vmFailed reports a failed sbox-run call. When sbox-run itself exited

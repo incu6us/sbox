@@ -5,8 +5,8 @@
 set -euo pipefail
 
 DIR=/opt/sbox
-ROOTFS_REVISION=5 # bump when the rootfs recipe below changes
-GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils
+ROOTFS_REVISION=7 # bump when the rootfs recipe below changes
+GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils,openssh-server
 
 mkdir -p "$DIR/cache" "$DIR/bin"
 cd "$DIR"
@@ -66,7 +66,13 @@ tar -xJf cache/node.tar.xz -C "$root/usr/local" --strip-components=1 \
 	--exclude='*/include' --exclude='*/share/doc' --exclude='*/share/man'
 tar -xzf cache/uv.tar.gz -C "$root/usr/local/bin" --strip-components=1
 tar -xzf cache/claude-code.tgz -C "$root/usr/local/bin" --strip-components=1 package/claude
+# Sessions bring their own sshd host key on the run drive; the keys the
+# package generated would be the same in every guest.
+rm -f "$root"/etc/ssh/ssh_host_*
 chroot "$root" useradd --create-home --uid 1000 --shell /bin/bash runner
+# No password, but not locked ("!"): without PAM, sshd refuses a locked
+# account even for key logins.
+chroot "$root" usermod -p '*' runner
 mkdir -p "$root/drive"
 
 # Stub init: mounts the run's drive and hands over to the init it carries,

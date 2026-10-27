@@ -150,7 +150,7 @@ func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration))
 	a := tick()
 	wait(2 * time.Second)
 	b := tick()
-	checks := []check{counted("session: guest runs", a, b, a >= 0 && b > a)}
+	checks := []check{counted("session: guest runs", a, b, b >= 0 && b > a)} // a is -1 before the first tick
 
 	paused := do("pause")
 	c := tick()

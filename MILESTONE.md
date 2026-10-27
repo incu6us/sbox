@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ⬜, sync ⬜ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, sync ⬜ | 🟡 |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -339,6 +339,23 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     left in the VM afterwards; ponytail scan still PASS.
   - Fixed from the real run: the serial console sends CR LF, which the
     fakes didn't; `sbox log` now drops the CR, as `sbox run` already did.
+
+- ✅ Step 2: a terminal in the guest. `sbox dev <dir> [-- cmd]` starts a
+  session, attaches, and stops it on exit; `sbox attach <id> [-- cmd]`
+  attaches to a running one. SSH from inside the session's namespace:
+  `sbox-run` makes a client key (root-only in the session folder) and a
+  guest host key (on the drive, pinned in `known_hosts`); the guest runs
+  `sshd` on its tap address for the runner only. Image: `openssh-server`,
+  1162 MB.
+  - Verified on the real VM: output, uid 1000, the project folder and the
+    exit code come back; a `/dev/pts` terminal; Ctrl-C through `sbox dev`
+    reaches the guest program; nothing left after exit.
+  - Fixed from the real runs: `runner` was locked (`!`), and without PAM
+    sshd refuses locked accounts even for keys; nothing mounted
+    `/dev/pts`, so no terminal could be allocated; doctor's first counter
+    read could come before the first tick.
+  - Measured, not built: the guest clock matched the host to the second
+    after a 20 s pause, so the planned clock fix is dropped.
 
 ## Prerequisites ✅
 

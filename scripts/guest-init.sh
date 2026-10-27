@@ -19,6 +19,11 @@ for d in /tmp /var/tmp /run /home/runner; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done
 chmod 0755 /home/runner
+# Pseudo-terminals, for ssh sessions and programs that want one (normally
+# mounted by systemd).
+mkdir -p /dev/pts
+mount -t devpts -o gid=5,mode=0620,ptmxmode=0666 devpts /dev/pts
+[ -e /dev/ptmx ] || ln -s pts/ptmx /dev/ptmx
 
 # Fake credentials where real ones live, each carrying the run's canary, so
 # a read shows up in the trace and the content can be recognised if it goes
@@ -95,6 +100,18 @@ if [ -b /dev/vdc ]; then
 		setpriv --reuid=runner --regid=runner --init-groups --reset-env \
 			pip install --quiet --user --break-system-packages --no-index --no-deps /mnt/wheels/*.whl >/dev/null 2>&1
 	fi
+fi
+
+# Sessions: sshd on the tap address, for the runner only, with the client
+# key and host key that sbox-run put on the drive. The config is empty, so
+# nothing from the image applies.
+if [ -d /drive/sbox/ssh ]; then
+	mkdir -p -m 0755 /run/sshd
+	/usr/sbin/sshd -f /dev/null -h /drive/sbox/ssh/host_ed25519 \
+		-o ListenAddress=172.16.0.2 -o AllowUsers=runner -o PermitRootLogin=no \
+		-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+		-o AuthorizedKeysFile=/drive/sbox/ssh/authorized_keys \
+		-o PrintLastLog=no -o PidFile=/run/sshd.pid
 fi
 
 echo "SBOX-$nonce START"

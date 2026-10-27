@@ -78,10 +78,9 @@ means in practice:
 - The attached terminal stays open; keystrokes queue and land on resume.
   An SSH session survives a pause of up to the TCP keepalive window; the
   attach loop reconnects if it didn't. `sbox watch` shows `paused`.
-- The guest clock stops with the vCPUs. On resume `sbox-run` sets it:
-  the session key's `authorized_keys` entry for root is restricted to one
-  command (`command="date -s ..."`), so root over SSH can do that and
-  nothing else. The snapshot plan's clock fix is the same mechanism.
+- The guest clock keeps time across a pause: measured, a 20 s pause left
+  it matching the host to the second (kvm-clock follows the host), so no
+  fix is needed.
 - Memory is still held (1 to 4 GiB per paused session), so `sbox ps`
   shows it and a paused session older than a day is stopped by the next
   `start`, like a stale one.
@@ -392,12 +391,26 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] host commands, tested with a fake `sbox-run` (`sessions_test.go`)
     - [x] `go test -tags vm -run TestSessionLifecycleOnVM` passes on a real VM
     - [x] doctor's session check
-- [ ] **2. SSH.** `openssh-server` in the image (`ROOTFS_REVISION` bump),
-    host keys and the session key in `guest-init.sh` (runner: full; root:
-    restricted to the clock command), `sshd` as the last step of the main
-    phase instead of the command. Resume sets the guest clock. `sbox dev <dir>` opens
-    the terminal; `-command` picks what runs. Probe: resize works, Ctrl-C
-    reaches the guest program, exit returns.
+- [x] **2. SSH.** `openssh-server` in the image (`ROOTFS_REVISION` 7),
+    with the package's baked host keys removed and `runner` unlocked
+    (`*`, not `!`: without PAM, sshd refuses a locked account even for
+    keys). `sbox-run` makes the keys in session mode: the client key stays
+    root-only in the session folder, the guest gets its public key and a
+    host key on the drive, pinned in the session's `known_hosts`. The guest
+    init mounts `/dev/pts` and starts `sshd` on 172.16.0.2 (runner only,
+    empty config). `sbox-run attach` runs `ssh` in the session's namespace,
+    `-t` when stdin is a terminal. Host: `sbox attach <id> [-- cmd]` and
+    `sbox dev <dir> [-- cmd]` (a session running `sleep infinity`, a
+    terminal in it, stopped on exit).
+    - [x] tested from Go with fakes, then on the real VM: output, uid 1000,
+      the project folder, the exit code, a `/dev/pts` terminal; through
+      `sbox dev`, Ctrl-C reaches the guest program
+    - [x] the guest clock: measured instead of fixed. After a 20 s pause it
+      matched the host to the second (Firecracker's kvm-clock follows the
+      host), so the planned clock fix and its restricted root key are not
+      needed
+    - [ ] window resize with a real terminal (not testable without one;
+      ssh forwards it by design)
 - [ ] **3. Writable work drive and persistence.** `work.ext4` per project,
     the hash-keyed folder, `-fresh`, `sbox clean`. The agent's state
     survives a second `sbox dev`.
