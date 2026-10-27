@@ -26,7 +26,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  setup    create and provision the sbox VM (Lima + Firecracker), then run doctor\n"+
 			"  doctor   check the VM, KVM, pinned artifacts, a microVM boot and its network boundary\n"+
 			"  run      run a command on a directory in a fresh microVM: sbox run <dir> -- <command>\n"+
-			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan <dir>\n")
+			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan <dir>\n"+
+			"\nsessions (a microVM that keeps running):\n"+
+			"  start    start a session on a directory and print its id: sbox start <dir> -- <command>\n"+
+			"  ps       list sessions and their state\n"+
+			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
+			"  pause    freeze a session in memory: sbox pause <id>\n"+
+			"  resume   continue a paused session: sbox resume <id>\n"+
+			"  log      print a session's console output: sbox log <id>\n")
 		return exitUsage
 	}
 	if len(args) == 0 {
@@ -41,6 +48,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMain(ctx, args[1:], stdout, stderr)
 	case "scan":
 		return scanMain(ctx, args[1:], stdout, stderr)
+	case "start":
+		return startMain(ctx, args[1:], stdout, stderr, sboxRun)
+	case "ps", "stop", "pause", "resume", "log":
+		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":
 		if err := setup(ctx, stdout); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)

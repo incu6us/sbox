@@ -18,29 +18,158 @@
 # Egress: if the run carries sbox/egress (host:port per line), the main
 # microVM gets the same relay and proxy, tunnelling to those hosts only.
 #
+# Sessions: `start` runs the same job in the background and returns once
+# the guest is up; the microVM then lives until `stop` or until the guest
+# powers off. Each session has a folder under $state/sessions/<id>.
+#
 # Usage (as root): sbox-run <run-id> <timeout-seconds> [prefetch-timeout-seconds]
+#                  sbox-run start <session-id> [timeout-seconds]   (run tar on stdin)
+#                  sbox-run ps
+#                  sbox-run stop <session-id>
+#                  sbox-run pause|resume|log <session-id>
 set -euo pipefail
+
+# Roots can be moved for tests; sudo resets the environment, so callers
+# can't move them.
+base=${SBOX_BASE:-/opt/sbox}
+jail_base=${SBOX_JAIL:-/srv/sbox-jail}
+state=${SBOX_STATE:-/var/lib/sbox}
+sessions=$state/sessions
+
+# session_ps prints "<id> <state> <started>" per session: running or
+# paused while its process lives, exited once it is gone.
+session_ps() {
+	local dir st
+	for dir in "$sessions"/*/; do
+		[[ -f $dir/pid ]] || continue
+		st=$(cat "$dir/state")
+		kill -0 "$(cat "$dir/pid")" 2>/dev/null || st=exited
+		echo "$(basename "$dir") $st $(cat "$dir/started")"
+	done
+}
+
+# teardown removes what a run leaves on the VM side: anything still in its
+# namespace, the namespace, its run folder, jails and cgroups. Safe to
+# repeat.
+teardown() {
+	local id=$1
+	ip netns pids "sbox-$id" 2>/dev/null | xargs -r kill -KILL 2>/dev/null || true
+	ip netns del "sbox-$id" 2>/dev/null || true
+	rm -rf "$state/runs/$id" "$jail_base/firecracker/$id" "$jail_base/firecracker/$id-pre"
+	rmdir "/sys/fs/cgroup/firecracker/$id" "/sys/fs/cgroup/firecracker/$id-pre" 2>/dev/null || true
+}
+
+valid_id() {
+	[[ ${1:-} =~ ^[a-f0-9]{8,32}$ ]] || { echo "sbox-run: bad session id" >&2; exit 2; }
+}
+
+# session_dir prints a session's folder, or fails when there is none.
+session_dir() {
+	valid_id "$1"
+	[[ -d $sessions/$1 ]] || { echo "sbox-run: no session $1" >&2; exit 1; }
+	echo "$sessions/$1"
+}
+
+# session_start keeps the run on disk, runs this script on it in session
+# mode in a new process group (so stop can end all of it), and returns once
+# the guest's START marker, with the run's nonce, reaches the console log.
+# Sessions started more than a day ago are stopped first, so a forgotten
+# one doesn't hold memory forever.
+session_start() {
+	local id=${1:-} secs=${2:-0} dir nonce i old now
+	valid_id "$id"
+	[[ $secs =~ ^[0-9]{1,5}$ ]] || { echo "sbox-run: bad timeout" >&2; exit 2; }
+	now=$(date +%s)
+	for old in "$sessions"/*/; do
+		[[ -f $old/started ]] || continue
+		if (($(cat "$old/started") < now - 86400)); then
+			session_stop "$(basename "$old")"
+		fi
+	done
+	dir=$sessions/$id
+	[[ ! -e $dir ]] || { echo "sbox-run: session $id exists" >&2; exit 1; }
+	mkdir -p "$dir"
+	cat >"$dir/run.tar"
+	nonce=$(tar -xOf "$dir/run.tar" sbox/nonce)
+	date +%s >"$dir/started"
+	echo running >"$dir/state"
+	SBOX_SESSION=1 setsid "${BASH:-bash}" "$0" "$id" "$secs" <"$dir/run.tar" >"$dir/console.log" 2>&1 &
+	echo $! >"$dir/pid"
+	for ((i = 0; i < 1200; i++)); do # 120 s
+		if grep -q "SBOX-$nonce START" "$dir/console.log"; then
+			rm -f "$dir/run.tar"
+			echo "READY $id"
+			return 0
+		fi
+		kill -0 "$(cat "$dir/pid")" 2>/dev/null || break
+		sleep 0.1
+	done
+	echo "sbox-run: session $id did not start" >&2
+	tail -n 20 "$dir/console.log" >&2
+	kill -KILL -- "-$(cat "$dir/pid")" 2>/dev/null || true
+	rm -rf "$dir"
+	return 1
+}
+
+# session_stop ends a session's process group: TERM first, so the run's own
+# cleanup stops its helpers; KILL after 10 s. The teardown then runs here
+# too, in case that cleanup never got to.
+session_stop() {
+	local id=${1:-} dir pid i
+	dir=$(session_dir "$id")
+	pid=$(cat "$dir/pid")
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -TERM -- "-$pid" 2>/dev/null || true
+		for ((i = 0; i < 100; i++)); do
+			kill -0 "$pid" 2>/dev/null || break
+			sleep 0.1
+		done
+		kill -KILL -- "-$pid" 2>/dev/null || true
+	fi
+	teardown "$id"
+	rm -rf "$dir"
+}
+
+# session_vm_state moves a live session from one state to another through
+# Firecracker's API (PATCH /vm), and records the new state only once
+# Firecracker has accepted it.
+session_vm_state() {
+	local id=$1 from=$2 to=$3 vm_state=$4 dir
+	dir=$(session_dir "$id")
+	if ! kill -0 "$(cat "$dir/pid")" 2>/dev/null || [[ $(cat "$dir/state") != "$from" ]]; then
+		echo "sbox-run: session $id is not $from" >&2
+		exit 1
+	fi
+	curl -fsS --unix-socket "$jail_base/firecracker/$id/root/run/firecracker.socket" \
+		-X PATCH -H 'Content-Type: application/json' -d "{\"state\":\"$vm_state\"}" http://localhost/vm ||
+		{ echo "sbox-run: Firecracker did not change session $id to $to" >&2; exit 1; }
+	echo "$to" >"$dir/state"
+}
+
+case ${1:-} in
+ps) session_ps; exit 0 ;;
+log) dir=$(session_dir "${2:-}"); cat "$dir/console.log"; exit 0 ;;
+pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
+resume) session_vm_state "${2:-}" paused running Resumed; exit 0 ;;
+stop) shift; session_stop "$@"; exit 0 ;;
+start) shift; session_start "$@"; exit 0 ;;
+esac
 
 id=${1:-} timeout=${2:-} prefetch_timeout=${3:-0}
 [[ $id =~ ^[a-f0-9]{8,32}$ ]] || { echo "sbox-run: bad run id" >&2; exit 2; }
 [[ $timeout =~ ^[0-9]{1,5}$ ]] || { echo "sbox-run: bad timeout" >&2; exit 2; }
 [[ $prefetch_timeout =~ ^[0-9]{1,5}$ ]] || { echo "sbox-run: bad prefetch timeout" >&2; exit 2; }
 
-base=/opt/sbox
-jail_base=/srv/sbox-jail
-run=/var/lib/sbox/runs/$id
+run=$state/runs/$id
 netns=sbox-$id
 
 pids=()
 cleanup() {
 	# Some are already stopped; a failed kill must not abort the cleanup.
-	kill "${pids[@]}" 2>/dev/null || true
+	((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null || true
 	# Anything else still in the run's namespace goes too, so nothing a run
 	# starts outlives it.
-	ip netns pids "$netns" 2>/dev/null | xargs -r kill -KILL 2>/dev/null
-	ip netns del "$netns" 2>/dev/null || true
-	rm -rf "$run" "$jail_base/firecracker/$id" "$jail_base/firecracker/$id-pre"
-	rmdir "/sys/fs/cgroup/firecracker/$id" "/sys/fs/cgroup/firecracker/$id-pre" 2>/dev/null || true
+	teardown "$id"
 }
 trap cleanup EXIT
 
@@ -104,6 +233,14 @@ boot() {
   "machine-config": {"vcpu_count": 2, "mem_size_mib": 1024}
 }
 EOF
+	# Sessions are paused and resumed through Firecracker's API; one-shot
+	# runs need no API.
+	local api=(--no-api)
+	if [[ ${SBOX_SESSION:-} == 1 && $phase == main ]]; then
+		mkdir -p "$root/run"
+		chown sbox-vm "$root/run"
+		api=(--api-sock /run/firecracker.socket)
+	fi
 	local status=0
 	# </dev/null: the serial console reads stdin.
 	timeout --kill-after=5 "$secs" "$base/bin/jailer" \
@@ -113,7 +250,7 @@ EOF
 		--chroot-base-dir "$jail_base" \
 		--cgroup-version 2 \
 		--netns "/var/run/netns/$netns" \
-		-- --no-api --config-file /vm.json </dev/null || status=$?
+		-- "${api[@]}" --config-file /vm.json </dev/null || status=$?
 	return "$status"
 }
 

@@ -105,3 +105,11 @@ func vmScriptInput(ctx context.Context, out io.Writer, command, input string) er
 	cmd.Stdout, cmd.Stderr = out, out
 	return cmd.Run()
 }
+
+// sboxRun runs sbox-run in the VM as root, with input on stdin. It is the
+// real sboxRunFunc.
+func sboxRun(ctx context.Context, in io.Reader, out, errOut io.Writer, args ...string) error {
+	cmd := exec.CommandContext(ctx, "limactl", append([]string{"shell", "--workdir", "/", _vmName, "sudo", _runScriptPath}, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, errOut
+	return cmd.Run()
+}
