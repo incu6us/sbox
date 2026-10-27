@@ -46,9 +46,10 @@ from `PATH`, and its version. The hint for a missing one becomes `sbox setup`.
     strings (M1, M3, M5, an Intel string, macOS 14 and 26).
 - [x] **2. `limactlPath()`.** Resolution order with tests on a temp home
     and a fake `PATH`; every call site switched to it.
-- [ ] **3. Pinned Lima download.** The artifact entry, download with
-    checksum, safe extraction (the same rules as the GitHub targets plan),
-    minimum-version check against a user's own Lima. Tests with
+- [x] **3. Pinned Lima download.** The artifact entry, download with
+    checksum, safe extraction (the same rules as the GitHub targets plan).
+    The minimum-version check against a user's own Lima is left out until
+    a version problem shows up. Tests with
     `httptest.Server` serving a small tarball.
 - [ ] **4. Verify and document.** On a Mac without Lima: `sbox setup`
     installs it, creates the VM, doctor passes. README's Requirements drop

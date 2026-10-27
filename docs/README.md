@@ -59,7 +59,7 @@ Conventions shared by every plan:
 - [ ] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
   - [x] 1 host preflight
   - [x] 2 `limactlPath()`
-  - [ ] 3 pinned Lima download
+  - [x] 3 pinned Lima download
   - [ ] 4 verified on a Mac without Lima
 - [ ] 2. Config ([config.md](config.md)): remaining commits 3, 5, 6, 7
 - [ ] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3
