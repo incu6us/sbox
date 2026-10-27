@@ -1,0 +1,38 @@
+package main
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+func TestRunDispatchesSessionCommands(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	run(nil, &stdout, &stderr)
+	for _, cmd := range []string{"start", "ps", "stop", "pause", "resume", "log"} {
+		if !strings.Contains(stderr.String(), "\n  "+cmd+" ") {
+			t.Errorf("usage lacks %s:\n%s", cmd, stderr.String())
+		}
+	}
+
+	// Arguments that fail validation reach each command without the VM.
+	tests := []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"start"}, "usage: sbox start"},
+		{[]string{"ps", "extra"}, "usage: sbox ps"},
+		{[]string{"stop"}, "usage: sbox stop"},
+		{[]string{"pause"}, "usage: sbox pause"},
+		{[]string{"resume"}, "usage: sbox resume"},
+		{[]string{"log"}, "usage: sbox log"},
+	}
+	for _, tt := range tests {
+		var stdout, stderr bytes.Buffer
+		if code := run(tt.args, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), tt.wantErr) {
+			t.Errorf("sbox %v: exit %d, stderr %q; want exit %d with %q", tt.args, code, stderr.String(), exitUsage, tt.wantErr)
+		}
+	}
+}
