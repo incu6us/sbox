@@ -57,7 +57,7 @@ Conventions shared by every plan:
   - [ ] 7 session summary, `sbox log`, `-trace`
   - [ ] 8 docs and timings
 - [ ] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
-  - [ ] 1 host preflight
+  - [x] 1 host preflight
   - [ ] 2 `limactlPath()`
   - [ ] 3 pinned Lima download
   - [ ] 4 verified on a Mac without Lima
