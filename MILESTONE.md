@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅, ports ✅ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅, ports ✅, egress ✅ | 🟡 |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -401,6 +401,19 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     Mac's localhost, and an echo service on the Mac reached from the guest
     as `host.sbox`.
   - Not done: doctor's forwarding check (the `vm`-tagged test covers it).
+
+- ✅ Step 5b: egress from the config. Entries are a name or `*.domain`,
+  with `:port` or `:*` (443 when left out); the HTTPS proxy matches those
+  patterns now. An exact host on a port other than 443 is raw TCP: the DNS
+  logger answers that one name with the VM side of the tap, and a relay
+  pair carries the connection to that host alone. SSH logins get
+  `HTTPS_PROXY` through sshd's `SetEnv`. Both Python self-tests now run in
+  `go test`.
+  - Verified on the real VM from an attached terminal: `api.github.com`
+    answers, `example.com` is refused, `github.com:22` returns GitHub's
+    SSH banner.
+  - Fixed from the real run: unprivileged binds in the namespace started
+    at 53, so the raw relay couldn't bind 22; they start at 0 there now.
 
 ## Prerequisites ✅
 

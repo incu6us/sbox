@@ -22,11 +22,13 @@ import socket
 import sys
 import threading
 
-ALLOWED = {
+# Rules are (host pattern, port), port None for any. A pattern is a host
+# name, or "*." and a domain for any name under it (not the domain itself).
+ALLOWED = [
     ("registry.npmjs.org", 443),
     ("pypi.org", 443),
     ("files.pythonhosted.org", 443),
-}
+]
 MAX_HEADER = 8192
 MAX_LOGGED = 10000
 _log_lock = threading.Lock()
@@ -95,7 +97,7 @@ def handle(client, log_file):
         client.close()
         return
     name = "%s:%d" % target
-    if target not in ALLOWED:
+    if not allowed(ALLOWED, *target):
         log(log_file, "DENY", name)
         client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
         client.close()
@@ -117,13 +119,30 @@ def handle(client, log_file):
 
 
 def parse_allowlist(entries):
-    """Parse host:port entries; anything malformed is skipped."""
-    allowed = set()
+    """Parse host:port entries, where the host may start with "*." and the
+    port may be "*"; anything malformed is skipped."""
+    rules = []
     for entry in entries:
         host, _, port = entry.lower().rpartition(":")
-        if host and port.isdigit() and all(c.isalnum() or c in ".-" for c in host):
-            allowed.add((host, int(port)))
-    return allowed
+        name = host[2:] if host.startswith("*.") else host
+        if not name or not all(c.isalnum() or c in ".-" for c in name) or name.startswith("."):
+            continue
+        if port == "*":
+            rules.append((host, None))
+        elif port.isdigit():
+            rules.append((host, int(port)))
+    return rules
+
+
+def allowed(rules, host, port):
+    for pattern, p in rules:
+        if p is not None and p != port:
+            continue
+        if pattern.startswith("*.") and host.endswith(pattern[1:]) and len(host) > len(pattern) - 1:
+            return True
+        if host == pattern:
+            return True
+    return False
 
 
 def serve(sock_path, log_path):
@@ -175,10 +194,17 @@ def selftest():
     assert parse_connect(b"CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: x\r\n\r\n") == ("registry.npmjs.org", 443)
     assert parse_connect(b"CONNECT PyPI.org:443 HTTP/1.1\r\n\r\n") == ("pypi.org", 443)
     assert parse_connect(b"GET http://evil.example/ HTTP/1.1\r\n\r\n") is None
-    assert parse_connect(b"CONNECT github.com:443 HTTP/1.1\r\n\r\n") not in ALLOWED
-    assert parse_connect(b"CONNECT registry.npmjs.org:80 HTTP/1.1\r\n\r\n") not in ALLOWED
+    assert allowed(ALLOWED, "registry.npmjs.org", 443)
+    assert not allowed(ALLOWED, *parse_connect(b"CONNECT github.com:443 HTTP/1.1\r\n\r\n"))
+    assert not allowed(ALLOWED, "registry.npmjs.org", 80)
     assert parse_connect(b"CONNECT junk\r\n\r\n") is None
-    assert parse_allowlist(["API.anthropic.com:443", "bad host:1", "x.io:", "a.b:80"]) == {("api.anthropic.com", 443), ("a.b", 80)}
+    rules = parse_allowlist(["API.anthropic.com:443", "bad host:1", "x.io:", "a.b:80",
+                             "*.github.com:443", "github.com:*", "*.:443", "*:443", "a.*.com:443"])
+    assert rules == [("api.anthropic.com", 443), ("a.b", 80), ("*.github.com", 443), ("github.com", None)], rules
+    assert allowed(rules, "api.github.com", 443) and allowed(rules, "a.b.github.com", 443)
+    assert not allowed(rules, "evilgithub.com", 443) and not allowed(rules, "api.github.com", 80)
+    assert allowed(rules, "github.com", 22) and allowed(rules, "github.com", 443)
+    assert not allowed(rules, "api.anthropic.com", 80)
     print("ok")
 
 

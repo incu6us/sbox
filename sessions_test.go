@@ -493,7 +493,7 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	user := filepath.Join(t.TempDir(), "config.yaml")
-	for p, body := range map[string]string{filepath.Join(dir, "sbox.yaml"): "ports: [3000]\n", user: "services: [5432]\n"} {
+	for p, body := range map[string]string{filepath.Join(dir, "sbox.yaml"): "ports: [3000]\n", user: "services: [5432]\negress: [api.anthropic.com]\n"} {
 		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -509,8 +509,8 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	files := tarFiles(t, vm.stdins[0]) // start's run tar
-	if files["sbox/ports"] != "3000\n" || files["sbox/services"] != "5432\n" {
-		t.Errorf("run tar: sbox/ports %q, sbox/services %q", files["sbox/ports"], files["sbox/services"])
+	if files["sbox/ports"] != "3000\n" || files["sbox/services"] != "5432\n" || files["sbox/egress"] != "api.anthropic.com:443\n" {
+		t.Errorf("run tar: sbox/ports %q, sbox/services %q, sbox/egress %q", files["sbox/ports"], files["sbox/services"], files["sbox/egress"])
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("ports: [80]\n"), 0o644); err != nil {

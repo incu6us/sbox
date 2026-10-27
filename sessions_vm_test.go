@@ -286,3 +286,36 @@ func TestPortsAndServicesOnVM(t *testing.T) {
 		t.Errorf("the Mac's service from the guest: exit %d, output %q, stderr %s", code, out.String(), errOut.String())
 	}
 }
+
+// TestEgressOnVM checks a session's egress from an attached terminal:
+// an allowed HTTPS host answers through the proxy, another is refused, and
+// an exact host on another port (github.com:22) is reached over raw TCP.
+func TestEgressOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	job := guestJob{command: []string{"sleep", "infinity"}, egress: []string{"*.github.com:443", "github.com:22"}}
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, t.TempDir(), "", job, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+	run := func(script string) (string, int) {
+		var out bytes.Buffer
+		code := attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), &out, io.Discard, sboxRun)
+		return out.String(), code
+	}
+
+	if out, _ := run("curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://api.github.com"); out == "" || out == "000" {
+		t.Errorf("api.github.com through the proxy: HTTP %q, want an answer", out)
+	}
+	if out, code := run("curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://example.com"); code == 0 && out != "000" {
+		t.Errorf("example.com: HTTP %q, exit %d; want it refused", out, code)
+	}
+	banner := `import socket; s = socket.create_connection(("github.com", 22), timeout=15); print(s.recv(20).decode())`
+	if out, code := run("python3 -c '" + banner + "'"); code != exitOK || !strings.Contains(out, "SSH-2.0") {
+		t.Errorf("github.com:22 over raw TCP: exit %d, output %q; want GitHub's SSH banner", code, out)
+	}
+}

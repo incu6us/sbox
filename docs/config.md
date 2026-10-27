@@ -292,7 +292,7 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
 
 ## Commits
 
-- [ ] **1. Egress wildcards.** `parse_allowlist` patterns, self-test, README
+- [x] **1. Egress wildcards.** `parse_allowlist` patterns, self-test, README
     table. Independent of the file; `-egress` accepts them too.
 - [ ] **2. Config loading.** `config.go`: the struct, `yaml.v3`, strict decode,
     path expansion (`~`), precedence with flags, the "never from the
