@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -162,5 +163,46 @@ func TestInstallLima(t *testing.T) {
 				t.Errorf("left behind: %v", left)
 			}
 		})
+	}
+}
+
+// plainTar is tarGz without the gzip layer: what a guest sends.
+func plainTar(t *testing.T, entries []tarEntry) []byte {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(tarGz(t, entries)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestExtractGuestTar(t *testing.T) {
+	t.Parallel()
+
+	dest := t.TempDir()
+	files := []tarEntry{
+		{name: "./src/app.js", typ: tar.TypeReg, mode: 0o644, body: "x"},
+		{name: "./run.sh", typ: tar.TypeReg, mode: 0o755, body: "#!/bin/sh\n"},
+	}
+	if err := extractTar(bytes.NewReader(plainTar(t, files)), dest, true); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(dest, "run.sh")); err != nil || info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("run.sh: %v, %v; want an executable file", err, info)
+	}
+
+	for _, e := range []tarEntry{
+		{name: "./link", typ: tar.TypeSymlink, link: "src/app.js"},
+		{name: "./fifo", typ: tar.TypeFifo},
+		{name: "./hard", typ: tar.TypeLink, link: "run.sh"},
+	} {
+		err := extractTar(bytes.NewReader(plainTar(t, []tarEntry{e})), t.TempDir(), true)
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("%s: err = %v, want a refusal", e.name, err)
+		}
 	}
 }

@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ⬜ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅ | 🟡 |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -370,6 +370,20 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   - Verified on the real VM: a home file and a project edit survive into
     the next session; after forget, the host's copy and an empty home;
     `sbox dev`, `-fresh` and `sbox clean` through the binary.
+
+- ✅ Step 4: `sbox sync [-apply] <dir>`. A three-way merge of the Mac's
+  files and the guest's against a base kept on the Mac (path, SHA-256,
+  executable bit), recorded when `sbox dev` first copies a project in. One
+  side's change goes to the other; different changes on both are
+  conflicts, left alone. Dry run with diffs by default. The guest's files
+  arrive as a tar of regular files only, through the safe extractor, and
+  nothing is written through a symlink on the Mac. Never synced: symlinks,
+  `.git`, `node_modules`, `.venv`, `__pycache__`, `.DS_Store`.
+  - Verified on the real VM: edits, an addition and a deletion in the
+    guest, an addition on the Mac; the dry run lists all four with the
+    diff, `-apply` brings them across, a second run finds nothing.
+  - Left for later: `-patch`, pushing Mac edits automatically when
+    `sbox dev` reuses a home, a change-count notice in the terminal.
 
 ## Prerequisites ✅
 

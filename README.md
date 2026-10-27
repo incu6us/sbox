@@ -34,6 +34,7 @@ sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <
 sbox dev [-fresh] <dir> [-- <command> [args...]]
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
+sbox sync [-apply] <dir>
 sbox ps
 sbox stop|pause|resume|log <session-id>
 sbox clean
@@ -95,10 +96,32 @@ VM, with a key made per session and the guest's host key pinned.
 The runner's home is kept per project between `sbox dev` sessions: the
 copy of the project and what was done to it, the agent's own state,
 caches, anything installed in the home. The project is copied in only the
-first time, so work done inside is never overwritten; edits you make on
-the Mac afterwards don't reach it yet. `sbox dev -fresh <dir>` starts that
-project over from the Mac's copy; `sbox clean` drops every project's
-state. Only one session runs per project at a time.
+first time, so work done inside is never overwritten. `sbox dev -fresh
+<dir>` starts that project over from the Mac's copy; `sbox clean` drops
+every project's state. Only one session runs per project at a time.
+
+`sbox sync <dir>` shows what changed in the guest and on the Mac since
+they last agreed, with diffs; `sbox sync -apply <dir>` brings each side's
+changes to the other. A file changed differently on both sides is listed
+as a conflict and left alone. Never synced: symlinks, `.git` (each side
+keeps its own history: commit the synced files on the Mac),
+`node_modules`, `.venv`, `__pycache__`, `.DS_Store`.
+
+```
+$ sbox sync ./myapp
+from the guest:
+  changed  notes.md
+  added    util.js
+from the Mac:
+  changed  app.js
+--- mac/notes.md
++++ guest/notes.md
+@@ -1,2 +1,2 @@
+ line one
+-line two
++line 2, edited
+dry run: sbox sync -apply ./myapp does it
+```
 
 `sbox start <dir> -- <command>` runs the same job as `sbox run`, but the
 microVM keeps running after the command returns. It prints the session id

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 )
 
 const (
@@ -18,6 +19,12 @@ const (
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// hostStateDir is where sbox keeps state on the Mac (Lima, sync bases).
+func hostStateDir() string {
+	home, _ := os.UserHomeDir() // "" leaves a relative path, which still works
+	return filepath.Join(home, ".local", "share", "sbox")
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -31,6 +38,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  dev      a terminal in a session on a directory, stopped on exit; its home is kept: sbox dev [-fresh] <dir> [-- <command>]\n"+
 			"  start    start a session on a directory and print its id: sbox start <dir> -- <command>\n"+
 			"  attach   a terminal in a running session: sbox attach <id> [-- <command>]\n"+
+			"  sync     show what the Mac and the guest each changed; -apply brings it across: sbox sync [-apply] <dir>\n"+
 			"  ps       list sessions and their state\n"+
 			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
 			"  pause    freeze a session in memory: sbox pause <id>\n"+
@@ -55,8 +63,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return startMain(ctx, args[1:], stdout, stderr, sboxRun)
 	case "attach":
 		return attachMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun)
+	case "sync":
+		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
 	case "dev":
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun)
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir())
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":
