@@ -411,9 +411,22 @@ writes a commented starter file and `sbox config` prints the effective one.
       needed
     - [ ] window resize with a real terminal (not testable without one;
       ssh forwards it by design)
-- [ ] **3. Writable work drive and persistence.** `work.ext4` per project,
-    the hash-keyed folder, `-fresh`, `sbox clean`. The agent's state
-    survives a second `sbox dev`.
+- [x] **3. Writable work drive and persistence.** A project id (the
+    SHA-256 of the folder's resolved path, 16 hex digits) names a sparse
+    20 GiB ext4 drive labelled `sbox-work` under
+    `/var/lib/sbox/projects/<id>/`, made on first use. The guest mounts it
+    as the runner's home, so the project copy, the agent's state, caches
+    and tools installed in the home all persist. The project is copied in
+    only when the home has none, so the agent's work is never overwritten;
+    host edits reach it with step 4's sync. One live session per project.
+    `sbox dev -fresh` and `sbox clean` drop the drives.
+    - [x] `stop` flushes first: root has a key on the drive limited to
+      `command="sync"`, and a paused guest is resumed for it. Found on the
+      real VM: a write just before stop was lost with the guest's page
+      cache
+    - [x] tested from Go with fakes, then on the real VM (a home file and a
+      project edit survive into the next session; after forget, the host's
+      copy and an empty home)
 - [ ] **4. Sync.** Change detection in the guest, `sbox sync` over SSH,
     diff on the host, apply, `-patch`, the host-to-guest direction on
     reuse, the change-count notice. `.git` rules. Tests on the diff and

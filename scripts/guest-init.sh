@@ -15,9 +15,13 @@ poweroff() {
 	echo 1 >/proc/sys/kernel/sysrq
 	echo b >/proc/sysrq-trigger
 }
-for d in /tmp /var/tmp /run /home/runner; do
+for d in /tmp /var/tmp /run; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done
+# A session on a project brings that project's work drive: the runner's
+# home, kept between sessions. Otherwise the home is scratch, like /tmp.
+mount LABEL=sbox-work /home/runner 2>/dev/null ||
+	mount -t tmpfs -o mode=1777,size=256m tmpfs /home/runner
 chmod 0755 /home/runner
 # Pseudo-terminals, for ssh sessions and programs that want one (normally
 # mounted by systemd).
@@ -61,8 +65,16 @@ printf 'nameserver 172.16.0.1\noptions timeout:1 attempts:1\n' >/run/sbox-resolv
 mount --bind /run/sbox-resolv.conf /etc/resolv.conf
 # Unprivileged ICMP sockets, so the runner can ping (normally set by systemd).
 echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
-cp -a /drive/skill /home/runner/work
-chown -R runner:runner /home/runner
+# The project goes in once: on a kept home, the copy there is the agent's
+# work and is never overwritten. Only what this boot wrote is chowned, so
+# a kept home with node_modules isn't walked on every boot.
+chown runner:runner /home/runner
+chown -R runner:runner /home/runner/.aws /home/runner/.ssh /home/runner/.config /home/runner/.docker \
+	/home/runner/.env /home/runner/.netrc /home/runner/.npmrc
+if [ ! -e /home/runner/work ]; then
+	cp -a /drive/skill /home/runner/work
+	chown -R runner:runner /home/runner/work
+fi
 
 # Prefetch phase: download dependencies onto the empty writable drive, with
 # package-manager scripts disabled, through the registry-only proxy.
@@ -102,15 +114,16 @@ if [ -b /dev/vdc ]; then
 	fi
 fi
 
-# Sessions: sshd on the tap address, for the runner only, with the client
-# key and host key that sbox-run put on the drive. The config is empty, so
+# Sessions: sshd on the tap address with the keys and host key that
+# sbox-run put on the drive: the runner's, and root's, which can only run
+# sync (stop flushes the work drive with it). The config is empty, so
 # nothing from the image applies.
 if [ -d /drive/sbox/ssh ]; then
 	mkdir -p -m 0755 /run/sshd
 	/usr/sbin/sshd -f /dev/null -h /drive/sbox/ssh/host_ed25519 \
-		-o ListenAddress=172.16.0.2 -o AllowUsers=runner -o PermitRootLogin=no \
+		-o ListenAddress=172.16.0.2 -o "AllowUsers=runner root" -o PermitRootLogin=forced-commands-only \
 		-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
-		-o AuthorizedKeysFile=/drive/sbox/ssh/authorized_keys \
+		-o AuthorizedKeysFile=/drive/sbox/ssh/authorized_keys.%u \
 		-o PrintLastLog=no -o PidFile=/run/sshd.pid
 fi
 

@@ -94,7 +94,7 @@ func TestAttachOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	var errOut bytes.Buffer
-	id, code := startSession(ctx, dir, []string{"sleep", "infinity"}, &errOut, sboxRun)
+	id, code := startSession(ctx, dir, "", []string{"sleep", "infinity"}, &errOut, sboxRun)
 	if code != exitOK {
 		t.Fatalf("start: exit %d: %s", code, errOut.String())
 	}
@@ -120,7 +120,7 @@ func TestAttachTerminalOnVM(t *testing.T) {
 		t.Skip("the sbox VM is not ready: run sbox setup")
 	}
 	var errOut bytes.Buffer
-	id, code := startSession(ctx, t.TempDir(), []string{"sleep", "infinity"}, &errOut, sboxRun)
+	id, code := startSession(ctx, t.TempDir(), "", []string{"sleep", "infinity"}, &errOut, sboxRun)
 	if code != exitOK {
 		t.Fatalf("start: exit %d: %s", code, errOut.String())
 	}
@@ -130,5 +130,54 @@ func TestAttachTerminalOnVM(t *testing.T) {
 		"sudo", _runScriptPath, "attach", id, "--", "sh", "-c", "tty; stty size").CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "/dev/pts/") {
 		t.Errorf("attach from a terminal: %v, output %q; want a /dev/pts terminal in the guest", err, out)
+	}
+}
+
+// TestDevStateIsKeptOnVM checks that a project's home (with the project in
+// it) survives from one session to the next, and that forgetting the
+// project starts it fresh from the host's copy.
+func TestDevStateIsKeptOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("host version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forget := func() {
+		if err := sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project); err != nil {
+			t.Fatalf("forget: %v", err)
+		}
+	}
+	forget()
+	t.Cleanup(forget)
+
+	// session runs one command in a new session on the project and stops it.
+	session := func(script string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		id, code := startSession(ctx, dir, project, []string{"sleep", "infinity"}, &errOut, sboxRun)
+		if code != exitOK {
+			t.Fatalf("start: exit %d: %s", code, errOut.String())
+		}
+		defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) }()
+		if code := attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun); code != exitOK {
+			t.Fatalf("attach %q: exit %d: %s", script, code, errOut.String())
+		}
+		return out.String()
+	}
+
+	session("echo kept > ~/state.txt && echo guest edit > README")
+	if out := session("cat ~/state.txt README"); !strings.Contains(out, "kept") || !strings.Contains(out, "guest edit") {
+		t.Errorf("second session sees %q, want the home file and the guest's edit", out)
+	}
+	forget()
+	if out := session("cat README; test -e ~/state.txt && echo still-there || echo gone"); !strings.Contains(out, "host version") || !strings.Contains(out, "gone") {
+		t.Errorf("after forget the session sees %q, want the host's README and no home file", out)
 	}
 }

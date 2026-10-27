@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,8 +27,20 @@ var _sessionID = regexp.MustCompile(`^[a-f0-9]{8,32}$`)
 // _sessionDone is what each session action prints on success.
 var _sessionDone = map[string]string{"stop": "stopped", "pause": "paused", "resume": "resumed"}
 
-// sessionMain implements `sbox ps`, and `sbox stop|pause|resume|log <id>`.
+// sessionMain implements `sbox ps`, `sbox clean`, and
+// `sbox stop|pause|resume|log <id>`.
 func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer, vm sboxRunFunc) int {
+	if cmd == "clean" {
+		if len(args) != 0 {
+			_, _ = fmt.Fprintln(stderr, "usage: sbox clean")
+			return exitUsage
+		}
+		if err := vm(ctx, nil, io.Discard, stderr, "clean"); err != nil {
+			return vmFailed(stderr, err)
+		}
+		_, _ = fmt.Fprintln(stdout, "removed every project's saved state")
+		return exitOK
+	}
 	if cmd == "ps" {
 		if len(args) != 0 {
 			_, _ = fmt.Fprintln(stderr, "usage: sbox ps")
@@ -76,16 +91,33 @@ func startMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		_, _ = fmt.Fprintln(stderr, "usage: sbox start <dir> -- <command> [args...]")
 		return exitUsage
 	}
-	id, code := startSession(ctx, args[0], args[2:], stderr, vm)
+	id, code := startSession(ctx, args[0], "", args[2:], stderr, vm)
 	if code == exitOK {
 		_, _ = fmt.Fprintln(stdout, id)
 	}
 	return code
 }
 
+// projectID names a project folder's state in the VM: the start of the
+// SHA-256 of its resolved absolute path, so the same folder reached by
+// another path is the same project.
+func projectID(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(real))
+	return hex.EncodeToString(sum[:8]), nil
+}
+
 // startSession sends dir and command to a new session and returns its id
-// once the guest is up, or the exit code to fail with.
-func startSession(ctx context.Context, dir string, command []string, stderr io.Writer, vm sboxRunFunc) (string, int) {
+// once the guest is up, or the exit code to fail with. With a project id,
+// the session gets that project's work drive.
+func startSession(ctx context.Context, dir, project string, command []string, stderr io.Writer, vm sboxRunFunc) (string, int) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		_, _ = fmt.Fprintf(stderr, "sbox: %s: not a directory\n", dir)
 		return "", exitUsage
@@ -103,7 +135,11 @@ func startSession(ctx context.Context, dir string, command []string, stderr io.W
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(writeRunTar(pw, dir, guestJob{command: command}, nonce, canary)) }()
 	var out bytes.Buffer
-	err := vm(ctx, pr, &out, stderr, "start", id)
+	call := []string{"start", id}
+	if project != "" {
+		call = append(call, project)
+	}
+	err := vm(ctx, pr, &out, stderr, call...)
 	_ = pr.Close() // unblocks the writer if sbox-run stopped reading early
 	if err != nil {
 		return "", vmFailed(stderr, err)
@@ -136,15 +172,31 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	return attachExit(stderr, vm(ctx, stdin, stdout, stderr, append([]string{"attach"}, args...)...))
 }
 
-// devMain implements `sbox dev <dir> [-- <command...>]`: a session on the
-// directory that stays up, a terminal in it, and the session stopped when
-// the terminal's command exits.
+// devMain implements `sbox dev [-fresh] <dir> [-- <command...>]`: a
+// session on the directory that stays up, a terminal in it, and the
+// session stopped when the terminal's command exits. The project's work
+// drive (the runner's home, with the project in it) is kept between
+// sessions; -fresh discards it first.
 func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc) int {
+	fresh := len(args) > 0 && args[0] == "-fresh"
+	if fresh {
+		args = args[1:]
+	}
 	if len(args) == 0 || !attachArgs(args) {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox dev <dir> [-- <command> [args...]]")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh] <dir> [-- <command> [args...]]")
 		return exitUsage
 	}
-	id, code := startSession(ctx, args[0], []string{"sleep", "infinity"}, stderr, vm)
+	project, err := projectID(args[0])
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
+	if fresh {
+		if err := vm(ctx, nil, io.Discard, stderr, "forget", project); err != nil {
+			return vmFailed(stderr, err)
+		}
+	}
+	id, code := startSession(ctx, args[0], project, []string{"sleep", "infinity"}, stderr, vm)
 	if code != exitOK {
 		return code
 	}

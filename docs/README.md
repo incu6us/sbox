@@ -46,7 +46,7 @@ Conventions shared by every plan:
 - [ ] 1. Dev mode ([dev-mode.md](dev-mode.md))
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
-  - [ ] 3 writable work drive, persistence, `-fresh`, `sbox clean`
+  - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
   - [ ] 4 `sbox sync`: detection, diff, apply, patch, host-to-guest
   - [ ] 5 ports and services
   - [ ] 5b raw TCP egress (ssh, databases)

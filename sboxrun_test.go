@@ -35,8 +35,13 @@ var _fakes = map[string]string{
 // START marker (unless FAKE_JAILER=silent), then exits or, with
 // FAKE_JAILER=sleep, keeps running like a live microVM.
 const _fakeJailer = `log jailer "$@"
-while [ $# -gt 0 ]; do [ "$1" = --id ] && jid=$2; shift; done
+while [ $# -gt 0 ]; do
+	[ "$1" = --id ] && jid=$2
+	[ "$1" = --chroot-base-dir ] && chroot=$2
+	shift
+done
 id=${jid%-pre}
+[ -n "$FAKE_VMJSON" ] && cp "$chroot/firecracker/$jid/root/vm.json" "$FAKE_VMJSON"
 if [ "$FAKE_JAILER" != silent ]; then
 	echo "SBOX-$(cat "$SBOX_STATE/runs/$id/drive/sbox/nonce") START"
 fi
@@ -308,6 +313,10 @@ func TestSboxRunStop(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("stop: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
+	flush := "netns exec sbox-" + id + " timeout 10 ssh -i " + filepath.Join(e.state, "sessions", id, "root_key")
+	if ip := e.calls("ip"); !slices.ContainsFunc(ip, func(c string) bool { return strings.HasPrefix(c, flush) && strings.HasSuffix(c, " root@172.16.0.2") }) {
+		t.Errorf("ip calls %q, want the guest flushed over root's sync-only key before the kill", ip)
+	}
 	if err := syscall.Kill(pid, 0); err == nil {
 		t.Errorf("session process %d still alive", pid)
 	}
@@ -421,9 +430,17 @@ func TestSboxRunSessionModeMakesSSHKeys(t *testing.T) {
 		t.Fatalf("client key: %v, %v; want a 0600 file in the session folder", err, key)
 	}
 	pub := e.sessionFile(id, "key.pub")
-	authorized, err := os.ReadFile(filepath.Join(drive, "sbox", "ssh", "authorized_keys"))
+	authorized, err := os.ReadFile(filepath.Join(drive, "sbox", "ssh", "authorized_keys.runner"))
 	if err != nil || strings.TrimSpace(string(authorized)) != pub {
-		t.Errorf("drive authorized_keys %q (%v), want the client's public key %q", authorized, err, pub)
+		t.Errorf("drive authorized_keys.runner %q (%v), want the client's public key %q", authorized, err, pub)
+	}
+	if rootKey, err := os.Stat(filepath.Join(session, "root_key")); err != nil || rootKey.Mode().Perm() != 0o600 {
+		t.Errorf("root key: %v, %v; want a 0600 file in the session folder", err, rootKey)
+	}
+	rootAuthorized, err := os.ReadFile(filepath.Join(drive, "sbox", "ssh", "authorized_keys.root"))
+	want := `command="sync",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ` + e.sessionFile(id, "root_key.pub")
+	if err != nil || strings.TrimSpace(string(rootAuthorized)) != want {
+		t.Errorf("drive authorized_keys.root %q (%v), want root's key limited to sync: %q", rootAuthorized, err, want)
 	}
 	hostKey, err := os.Stat(filepath.Join(drive, "sbox", "ssh", "host_ed25519"))
 	if err != nil || hostKey.Mode().Perm() != 0o600 {
@@ -486,5 +503,130 @@ func TestSboxRunAttach(t *testing.T) {
 	}
 	if _, stderr, code := e.run(nil, "attach", id); code != 1 || !strings.Contains(stderr, "not running") {
 		t.Errorf("attach to a paused session: exit %d, stderr %q; want exit 1, not running", code, stderr)
+	}
+}
+
+func TestSboxRunStartWithAProjectDrive(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	vmJSON := filepath.Join(t.TempDir(), "vm.json")
+	e.extra = []string{"FAKE_VMJSON=" + vmJSON}
+	const id, project = "aaaa000000000001", "0123456789abcdef"
+	work := filepath.Join(e.state, "projects", project, "work.ext4")
+	e.extra = append(e.extra, "FAKE_JAILER=sleep")
+	e.killSessionOnCleanup(id)
+
+	if stdout, stderr, code := e.run(runTar(t, "n0nce"), "start", id, project); code != 0 {
+		t.Fatalf("start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(work); err != nil {
+		t.Fatalf("the project's work drive: %v", err)
+	}
+	if mkfs := e.calls("mkfs.ext4"); !slices.Contains(mkfs, "-q -L sbox-work -F "+work+".tmp") {
+		t.Errorf("mkfs.ext4 calls %q, want the work drive formatted with its label", mkfs)
+	}
+	if !slices.Contains(e.calls("chown"), "sbox-vm "+work) {
+		t.Errorf("chown calls %q, want the work drive given to sbox-vm", e.calls("chown"))
+	}
+	cfg, err := os.ReadFile(vmJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"drive_id": "work", "path_on_host": "/work.ext4", "is_root_device": false, "is_read_only": false}`; !strings.Contains(string(cfg), want) {
+		t.Errorf("vm.json lacks %s:\n%s", want, cfg)
+	}
+	if got := e.sessionFile(id, "project"); got != project {
+		t.Errorf("session's project %q, want %q", got, project)
+	}
+}
+
+func TestSboxRunProjectDriveIsKeptAndExclusive(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"FAKE_JAILER=sleep"}
+	const first, second, third, project = "bbbb000000000001", "bbbb000000000002", "bbbb000000000003", "fedcba9876543210"
+	for _, id := range []string{first, second, third} {
+		e.killSessionOnCleanup(id)
+	}
+	start := func(id string) (string, int) {
+		_, stderr, code := e.run(runTar(t, "n0nce"), "start", id, project)
+		return stderr, code
+	}
+
+	if stderr, code := start(first); code != 0 {
+		t.Fatalf("first start: exit %d, %s", code, stderr)
+	}
+	if stderr, code := start(second); code != 1 || !strings.Contains(stderr, "in use by session "+first) {
+		t.Errorf("second start while the first runs: exit %d, stderr %q; want exit 1, in use by %s", code, stderr, first)
+	}
+	if _, err := os.Stat(filepath.Join(e.state, "sessions", second)); !os.IsNotExist(err) {
+		t.Errorf("the refused session's folder was left behind (stat: %v)", err)
+	}
+	if _, stderr, code := e.run(nil, "stop", first); code != 0 {
+		t.Fatalf("stop: exit %d, %s", code, stderr)
+	}
+	if stderr, code := start(third); code != 0 {
+		t.Fatalf("start after stop: exit %d, %s", code, stderr)
+	}
+	formats := 0
+	for _, c := range e.calls("mkfs.ext4") {
+		if strings.Contains(c, "sbox-work") {
+			formats++
+		}
+	}
+	if formats != 1 {
+		t.Errorf("the work drive was formatted %d times, want once", formats)
+	}
+}
+
+func TestSboxRunForgetAndClean(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"FAKE_JAILER=sleep"}
+	const id, busy, idle = "cccc000000000001", "1111222233334444", "5555666677778888"
+	e.killSessionOnCleanup(id)
+	projects := filepath.Join(e.state, "projects")
+	if _, stderr, code := e.run(runTar(t, "n0nce"), "start", id, busy); code != 0 {
+		t.Fatalf("start: exit %d, %s", code, stderr)
+	}
+	if err := os.MkdirAll(filepath.Join(projects, idle), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exists := func(p string) bool { _, err := os.Stat(filepath.Join(projects, p)); return err == nil }
+
+	if _, stderr, code := e.run(nil, "forget", busy); code != 1 || !strings.Contains(stderr, "in use by session "+id) || !exists(busy) {
+		t.Errorf("forget a busy project: exit %d, stderr %q, kept %v; want exit 1, in use, kept", code, stderr, exists(busy))
+	}
+	if _, stderr, code := e.run(nil, "clean"); code != 1 || !strings.Contains(stderr, "in use") || !exists(busy) || !exists(idle) {
+		t.Errorf("clean with a busy project: exit %d, stderr %q; want exit 1 and nothing removed", code, stderr)
+	}
+	if _, stderr, code := e.run(nil, "forget", idle); code != 0 || exists(idle) {
+		t.Errorf("forget an idle project: exit %d, stderr %q, kept %v; want it removed", code, stderr, exists(idle))
+	}
+	if _, _, code := e.run(nil, "forget", "NOT-HEX"); code != 2 {
+		t.Errorf("forget a bad id: exit %d, want 2", code)
+	}
+	if _, stderr, code := e.run(nil, "stop", id); code != 0 {
+		t.Fatalf("stop: exit %d, %s", code, stderr)
+	}
+	if _, stderr, code := e.run(nil, "clean"); code != 0 || exists(busy) {
+		t.Errorf("clean with nothing running: exit %d, stderr %q; want every project removed", code, stderr)
+	}
+}
+
+func TestSboxRunStopResumesAPausedSessionToFlushIt(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "dddd000000000001"
+	e.startSession(id)
+	if _, _, code := e.run(nil, "pause", id); code != 0 {
+		t.Fatal("pause failed")
+	}
+	if _, stderr, code := e.run(nil, "stop", id); code != 0 {
+		t.Fatalf("stop: exit %d, %s", code, stderr)
+	}
+	curl := e.calls("curl")
+	if len(curl) != 2 || !strings.Contains(curl[1], `{"state":"Resumed"}`) {
+		t.Errorf("curl calls %q, want the pause and then a resume before the flush", curl)
 	}
 }
