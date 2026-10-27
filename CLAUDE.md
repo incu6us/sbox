@@ -37,7 +37,8 @@ Report results as they happened: the command, and pass or fail.
 
 ## Conventions
 
-- Go standard library only.
+- Go standard library, plus `gopkg.in/yaml.v3` for the config file. No
+  other dependencies without asking.
 - Everything from inside the guest is untrusted: results travel in
   nonce-marked lines, and the host never runs code that came from the guest.
 - Before calling work done: `gofmt -l .` prints nothing, `go vet ./...` and

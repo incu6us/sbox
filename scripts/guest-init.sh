@@ -63,6 +63,10 @@ fi
 # read-only, so the new resolv.conf is bind-mounted from tmpfs.
 printf 'nameserver 172.16.0.1\noptions timeout:1 attempts:1\n' >/run/sbox-resolv.conf
 mount --bind /run/sbox-resolv.conf /etc/resolv.conf
+# host.sbox is the VM side of the tap, where a session's services (the
+# Mac's ports it may reach) are relayed.
+printf '127.0.0.1 localhost\n::1 localhost\n172.16.0.1 host.sbox\n' >/run/sbox-hosts
+mount --bind /run/sbox-hosts /etc/hosts
 # Unprivileged ICMP sockets, so the runner can ping (normally set by systemd).
 echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 # The project goes in once: on a kept home, the copy there is the agent's

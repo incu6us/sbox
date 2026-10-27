@@ -137,6 +137,15 @@ session_start() {
 		echo "$project" >"$dir/project"
 	fi
 	cat >"$dir/run.tar"
+	# A forwarded port already listening in the VM (another session's, most
+	# likely) would leave this session's relay unable to bind.
+	for port in $(tar -xOf "$dir/run.tar" sbox/ports 2>/dev/null); do
+		if [[ -n $(ss -Htln "sport = :$port") ]]; then
+			echo "sbox-run: port $port is already in use in the VM (sbox ps: another session?)" >&2
+			rm -rf "$dir"
+			exit 1
+		fi
+	done
 	nonce=$(tar -xOf "$dir/run.tar" sbox/nonce)
 	date +%s >"$dir/started"
 	echo running >"$dir/state"
@@ -416,6 +425,31 @@ if [[ -s $run/drive/sbox/egress ]]; then
 	done <"$run/drive/sbox/egress"
 fi
 ((${#egress[@]})) && start_egress "$run/egress.log" "${egress[@]}"
+
+# Forwarded ports and services: each is a relay and an expose joined by a
+# unix socket, one inside the run's namespace and one outside, so the
+# namespace still has no route out. A port goes from the guest to the VM's
+# 127.0.0.1, which Lima forwards to the Mac; a service goes from
+# 172.16.0.1 (host.sbox in the guest) to the Mac, as Lima's
+# host.lima.internal.
+proxy=$base/bin/sbox-proxy.py
+if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services ]]; then
+	install -d -o sbox-vm -m 0700 "$run/fwd"
+fi
+for port in $(cat "$run/drive/sbox/ports" 2>/dev/null); do
+	[[ $port =~ ^[0-9]{1,5}$ ]] || continue
+	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/port-$port.sock" 172.16.0.2 "$port" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+	"${as_vm_user[@]}" python3 "$proxy" relay 127.0.0.1 "$port" "$run/fwd/port-$port.sock" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+done
+for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do
+	[[ $port =~ ^[0-9]{1,5}$ ]] || continue
+	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$run/fwd/svc-$port.sock" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+	"${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/svc-$port.sock" host.lima.internal "$port" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+done
 
 # Exit 124 on timeout, 0 otherwise: the console (stdout) belongs to the
 # guest, so the timeout is reported out of its reach.

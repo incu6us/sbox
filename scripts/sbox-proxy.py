@@ -8,9 +8,14 @@ serve: an HTTPS CONNECT proxy on a unix socket, in the VM's main network
 relay: inside a run's network namespace, forwards TCP connections on
        <address>:<port> to that unix socket. Unix sockets live on the
        filesystem, so the run's namespace still has no route out.
+expose: the other half: listens on a unix socket and connects each client
+       to <host>:<port>. A session's forwarded ports and services are a
+       relay and an expose joined by a socket, one in the run's namespace
+       and one outside it.
 
 Usage: sbox-proxy.py serve <socket> <log file> [host:port ...]
        sbox-proxy.py relay <address> <port> <socket>
+       sbox-proxy.py expose <socket> <host> <port>
 """
 import os
 import socket
@@ -149,6 +154,23 @@ def relay(address, port, sock_path):
         threading.Thread(target=splice, args=(client, upstream), daemon=True).start()
 
 
+def expose(sock_path, host, port):
+    if os.path.exists(sock_path):
+        os.unlink(sock_path)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(64)
+    while True:
+        client, _ = server.accept()
+        try:
+            upstream = socket.create_connection((host, port), timeout=10)
+            upstream.settimeout(None)
+        except OSError:
+            client.close()
+            continue
+        threading.Thread(target=splice, args=(client, upstream), daemon=True).start()
+
+
 def selftest():
     assert parse_connect(b"CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: x\r\n\r\n") == ("registry.npmjs.org", 443)
     assert parse_connect(b"CONNECT PyPI.org:443 HTTP/1.1\r\n\r\n") == ("pypi.org", 443)
@@ -170,5 +192,7 @@ if __name__ == "__main__":
         serve(args[1], args[2])
     elif len(args) == 4 and args[0] == "relay":
         relay(args[1], int(args[2]), args[3])
+    elif len(args) == 4 and args[0] == "expose":
+        expose(args[1], args[2], int(args[3]))
     else:
         sys.exit(__doc__)

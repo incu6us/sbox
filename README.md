@@ -100,6 +100,20 @@ first time, so work done inside is never overwritten. `sbox dev -fresh
 <dir>` starts that project over from the Mac's copy; `sbox clean` drops
 every project's state. Only one session runs per project at a time.
 
+Ports and services come from the config file: `sbox.yaml` in the
+project's folder, and `~/.config/sbox/config.yaml` for every project
+(lists from both are combined; a key sbox doesn't know is an error):
+
+```yaml
+ports: [3000, 5173]   # the guest's dev servers, on the Mac's localhost
+services: [5432]      # the Mac's Postgres, reached in the guest as host.sbox:5432
+```
+
+Nothing else crosses: the guest's network still has no route out, and
+each forwarded port is a pair of relays joined by a unix socket in the
+Lima VM. Ports must be 1024 or higher, and free in the VM (a second
+session forwarding the same port is refused).
+
 `sbox sync <dir>` shows what changed in the guest and on the Mac since
 they last agreed, with diffs; `sbox sync -apply <dir>` brings each side's
 changes to the other. A file changed differently on both sides is listed

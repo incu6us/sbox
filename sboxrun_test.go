@@ -27,6 +27,7 @@ var _fakes = map[string]string{
 	"timeout":    `while [ "${1#-}" != "$1" ]; do shift; done; shift; exec "$@"`,
 	"setsid":     `exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"`,
 	"curl":       `log curl "$@"; exit "${FAKE_CURL_EXIT:-0}"`,
+	"ss":         `log ss "$@"; case "$*" in *":${FAKE_BUSY_PORT:-none}"*) echo "LISTEN 0 64 127.0.0.1:$FAKE_BUSY_PORT 0.0.0.0:*" ;; esac`,
 	"jailer.sh":  _fakeJailer,
 	"logfunc.sh": `log() { name=$1; shift; echo "$name $*" >>"$FAKE_LOG"; }`,
 }
@@ -641,5 +642,71 @@ func TestSboxRunStopResumesAPausedSessionToFlushIt(t *testing.T) {
 	curl := e.calls("curl")
 	if len(curl) != 2 || !strings.Contains(curl[1], `{"state":"Resumed"}`) {
 		t.Errorf("curl calls %q, want the pause and then a resume before the flush", curl)
+	}
+}
+
+func TestSboxRunForwardsPortsAndServices(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000001"
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, ports: []int{3000}, services: []int{5432}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	asVM := "setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py")
+	inNS := "netns exec sbox-" + id + " " + asVM
+	for _, want := range []struct{ prog, call string }{
+		{"ip", inNS + " expose " + run + "/fwd/port-3000.sock 172.16.0.2 3000"},
+		{"setpriv", "--reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py") + " relay 127.0.0.1 3000 " + run + "/fwd/port-3000.sock"},
+		{"ip", inNS + " relay 172.16.0.1 5432 " + run + "/fwd/svc-5432.sock"},
+		{"setpriv", "--reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py") + " expose " + run + "/fwd/svc-5432.sock host.lima.internal 5432"},
+	} {
+		if !slices.Contains(e.calls(want.prog), want.call) {
+			t.Errorf("%s calls %q lack %q", want.prog, e.calls(want.prog), want.call)
+		}
+	}
+}
+
+func TestRunTarCarriesPortsAndServices(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	job := guestJob{command: []string{"true"}, ports: []int{3000, 5173}, services: []int{5432}}
+	if err := writeRunTar(&buf, t.TempDir(), job, "n", "c"); err != nil {
+		t.Fatal(err)
+	}
+	files := tarFiles(t, buf.Bytes())
+	if files["sbox/ports"] != "3000\n5173\n" || files["sbox/services"] != "5432\n" {
+		t.Errorf("sbox/ports %q, sbox/services %q", files["sbox/ports"], files["sbox/services"])
+	}
+	buf.Reset()
+	if err := writeRunTar(&buf, t.TempDir(), guestJob{command: []string{"true"}}, "n", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if files := tarFiles(t, buf.Bytes()); files["sbox/ports"] != "" || files["sbox/services"] != "" {
+		t.Error("a run without ports carries port files")
+	}
+}
+
+func TestSboxRunStartRefusesAPortInUse(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"FAKE_JAILER=sleep", "FAKE_BUSY_PORT=3000"}
+	const id = "eeee000000000002"
+	e.killSessionOnCleanup(id)
+	var tarBuf bytes.Buffer
+	if err := writeRunTar(&tarBuf, t.TempDir(), guestJob{command: []string{"true"}, ports: []int{3000}}, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := e.run(tarBuf.Bytes(), "start", id)
+	if code != 1 || !strings.Contains(stderr, "port 3000 is already in use") {
+		t.Errorf("exit %d, stderr %q; want exit 1 naming the port", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(e.state, "sessions", id)); !os.IsNotExist(err) {
+		t.Errorf("session folder left behind (stat: %v)", err)
 	}
 }

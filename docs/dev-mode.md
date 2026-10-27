@@ -443,10 +443,17 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [ ] `-patch`: write the guest's changes as a patch instead
     - [ ] push the Mac's changes automatically when `sbox dev` reuses a home
     - [ ] the change-count notice in the terminal
-- [ ] **5. Ports and services.** Relay per listed port (guest to host) and
-    per listed service (host to guest), `host.sbox` in the guest's
-    `/etc/hosts`, Lima forwarding confirmed in doctor with a probe server
-    in the guest and a probe listener on the host.
+- [x] **5. Ports and services.** From the config: `ports` (guest to the
+    Mac's localhost) and `services` (the Mac's localhost to the guest, as
+    `host.sbox`). Each is `sbox-proxy.py relay` and `expose` joined by a
+    unix socket, one in the session's namespace and one outside; the guest
+    gets `host.sbox` in a bind-mounted `/etc/hosts`; a port already
+    listening in the VM is refused at start. The config loader comes in
+    here with these two keys.
+    - [x] tested with fakes and the real proxy script, then on the real VM
+      (a guest page on the Mac's localhost; a Mac echo service from the
+      guest)
+    - [ ] doctor's forwarding check
 - [ ] **5b. Raw TCP egress.** `sbox-dns.py --answer` for allowed non-443
     hosts, a relay per such port, the one-host-per-port preflight check,
     `EGRESS` lines for raw connections. Probe: `git ls-remote` over SSH to

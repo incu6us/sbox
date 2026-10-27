@@ -91,7 +91,7 @@ func startMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		_, _ = fmt.Fprintln(stderr, "usage: sbox start <dir> -- <command> [args...]")
 		return exitUsage
 	}
-	id, _, code := startSession(ctx, args[0], "", args[2:], stderr, vm)
+	id, _, code := startSession(ctx, args[0], "", guestJob{command: args[2:]}, stderr, vm)
 	if code == exitOK {
 		_, _ = fmt.Fprintln(stdout, id)
 	}
@@ -114,11 +114,11 @@ func projectID(dir string) (string, error) {
 	return hex.EncodeToString(sum[:8]), nil
 }
 
-// startSession sends dir and command to a new session and returns its id
-// once the guest is up, or the exit code to fail with. With a project id,
-// the session gets that project's work drive; fresh reports that the drive
-// was new, so the guest copied dir in.
-func startSession(ctx context.Context, dir, project string, command []string, stderr io.Writer, vm sboxRunFunc) (id string, fresh bool, code int) {
+// startSession sends dir and job to a new session and returns its id once
+// the guest is up, or the exit code to fail with. With a project id, the
+// session gets that project's work drive; fresh reports that the drive was
+// new, so the guest copied dir in.
+func startSession(ctx context.Context, dir, project string, job guestJob, stderr io.Writer, vm sboxRunFunc) (id string, fresh bool, code int) {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		_, _ = fmt.Fprintf(stderr, "sbox: %s: not a directory\n", dir)
 		return "", false, exitUsage
@@ -134,7 +134,7 @@ func startSession(ctx context.Context, dir, project string, command []string, st
 	id, nonce, canary := ids[0], ids[1], ids[2]
 
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(writeRunTar(pw, dir, guestJob{command: command}, nonce, canary)) }()
+	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce, canary)) }()
 	var out bytes.Buffer
 	call := []string{"start", id}
 	if project != "" {
@@ -178,8 +178,9 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // session stopped when the terminal's command exits. The project's work
 // drive (the runner's home, with the project in it) is kept between
 // sessions; -fresh discards it first. When the drive is new, what was
-// copied in becomes the sync base, kept in stateDir on the Mac.
-func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir string) int {
+// copied in becomes the sync base, kept in stateDir on the Mac. Ports and
+// services come from userConfig and the project's sbox.yaml.
+func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string) int {
 	fresh := len(args) > 0 && args[0] == "-fresh"
 	if fresh {
 		args = args[1:]
@@ -193,12 +194,18 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
+	cfg, err := loadConfig(userConfig, filepath.Join(args[0], "sbox.yaml"))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
 	if fresh {
 		if err := vm(ctx, nil, io.Discard, stderr, "forget", project); err != nil {
 			return vmFailed(stderr, err)
 		}
 	}
-	id, fresh, code := startSession(ctx, args[0], project, []string{"sleep", "infinity"}, stderr, vm)
+	job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services}
+	id, fresh, code := startSession(ctx, args[0], project, job, stderr, vm)
 	if code != exitOK {
 		return code
 	}
