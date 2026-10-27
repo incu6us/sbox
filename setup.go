@@ -6,7 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 )
 
 var (
@@ -78,6 +82,14 @@ var _artifacts = []artifact{
 	},
 }
 
+// _limaArtifact is Lima itself, installed on the Mac by setup when no
+// limactl is found. Its sum is the one in the release's SHA256SUMS.
+var _limaArtifact = artifact{
+	env:    "LIMA",
+	url:    "https://github.com/lima-vm/lima/releases/download/v2.2.1/lima-2.2.1-Darwin-arm64.tar.gz",
+	sha256: "9e9eacce88f37e185c346bad73aa6136f738d8cdf8c3bb23cd42b071824bc66e",
+}
+
 func pinnedSHA(env string) string {
 	for _, a := range _artifacts {
 		if a.env == env {
@@ -97,6 +109,13 @@ func setup(ctx context.Context, out io.Writer) error {
 	_, _ = fmt.Fprintln(out, "==> host")
 	if !preflight(out, readHostInfo(hostCommand, home)) {
 		return errors.New("this Mac can't run sbox: see the checks above")
+	}
+	if findLimactl(home, exec.LookPath) == "" {
+		_, _ = fmt.Fprintln(out, "==> install Lima into", filepath.Join("~", _limaDir))
+		client := &http.Client{Timeout: 10 * time.Minute}
+		if err := installLima(ctx, client, _limaArtifact, home); err != nil {
+			return fmt.Errorf("install Lima: %w", err)
+		}
 	}
 
 	vm, err := vmStatus(ctx)
