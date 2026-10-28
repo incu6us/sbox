@@ -35,6 +35,8 @@ const (
 	verdictReview = "REVIEW"
 	verdictBlock  = "BLOCK"
 
+	_redactedMark = "[redacted:" // where the host took a config secret out of guest output
+
 	_home = "/home/runner/"
 	_work = "/home/runner/work/" // the skill, and the project dir hooks are given
 )
@@ -129,17 +131,25 @@ func analyze(r entryRun, canary string, creds []string) []finding {
 		add(sevMedium, "dns-lookup", "looks up "+d.name)
 		if carries(d.name, canary) {
 			add(sevCritical, "canary-exfiltration", "sends a planted credential out in a DNS lookup: "+d.name)
+		} else if strings.Contains(d.name, _redactedMark) {
+			add(sevCritical, "canary-exfiltration", "sends a secret from the config out in a DNS lookup: "+d.name)
 		}
 	}
 	for _, p := range r.procs {
-		if !carries(strings.Join(p.argv, " "), canary) {
+		argv := strings.Join(p.argv, " ")
+		what := "a planted credential"
+		switch {
+		case carries(argv, canary):
+		case strings.Contains(argv, _redactedMark): // the host redacted a config secret on the way in
+			what = "a secret from the config"
+		default:
 			continue
 		}
 		name := path.Base(p.path)
 		if _networkTools[name] {
-			add(sevCritical, "canary-exfiltration", "passes a planted credential to "+name)
+			add(sevCritical, "canary-exfiltration", "passes "+what+" to "+name)
 		} else {
-			add(sevHigh, "canary-argv", "puts a planted credential on "+name+"'s command line")
+			add(sevHigh, "canary-argv", "puts "+what+" on "+name+"'s command line")
 		}
 	}
 
@@ -271,8 +281,9 @@ func countSeverities(findings []finding) map[severity]int {
 
 // writeScanJSON prints the scan as one JSON object.
 // writeScanJSON writes the report as one object, with the config's
-// overrides under config.overrides when there are any.
-func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, overrides []string) error {
+// overrides and the names of its real secrets under config when there are
+// any.
+func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, overrides, secrets []string) error {
 	type dnsJSON struct {
 		Name  string   `json:"name"`
 		Types []string `json:"types"`
@@ -292,7 +303,8 @@ func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entry
 		Findings  []finding `json:"findings"`
 	}
 	type configJSON struct {
-		Overrides []string `json:"overrides"`
+		Overrides []string `json:"overrides,omitempty"`
+		Secrets   []string `json:"secrets,omitempty"`
 	}
 	report := struct {
 		Target   string          `json:"target"`
@@ -302,8 +314,8 @@ func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entry
 		Prefetch *prefetchResult `json:"prefetch"`
 		Entries  []entryJSON     `json:"entries"`
 	}{Target: target, Verdict: verdict, Counts: make(map[string]int), Prefetch: pre, Entries: []entryJSON{}}
-	if len(overrides) > 0 {
-		report.Config = &configJSON{Overrides: overrides}
+	if len(overrides)+len(secrets) > 0 {
+		report.Config = &configJSON{Overrides: overrides, Secrets: secrets}
 	}
 	for sev, n := range countSeverities(all) {
 		report.Counts[sev.String()] = n
