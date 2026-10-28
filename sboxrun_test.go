@@ -769,3 +769,32 @@ func TestSboxRunSizesTheMicroVM(t *testing.T) {
 		})
 	}
 }
+
+func TestSboxRunEvents(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "6666666666666666"
+	e.startSession(id)
+	run := filepath.Join(e.state, "runs", id)
+	for name, body := range map[string]string{
+		"egress.log":        "DENY telemetry.example:443\nALLOW api.anthropic.com:443\n",
+		"dns.log":           "A telemetry.example\n",
+		"drive/sbox/egress": "api.anthropic.com:443\n",
+		"drive/sbox/ports":  "3000\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(run, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(run, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := e.run(nil, "events", id)
+	want := "RULE api.anthropic.com:443\nPORT 3000\nEGRESS DENY telemetry.example:443\nEGRESS ALLOW api.anthropic.com:443\nDNS A telemetry.example\n"
+	if code != 0 || stdout != want {
+		t.Errorf("events: exit %d, stdout %q, stderr %q; want %q", code, stdout, stderr, want)
+	}
+	if _, stderr, code := e.run(nil, "events", "7777777777777777"); code != 1 || !strings.Contains(stderr, "no session") {
+		t.Errorf("events of a missing session: exit %d, stderr %q", code, stderr)
+	}
+}

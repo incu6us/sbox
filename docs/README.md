@@ -54,7 +54,7 @@ Conventions shared by every plan:
   - [x] 5d toolchains via `image.packages`, a process cap in the guest
   - [x] 5e setup and start hooks, `dev.env`
   - [x] 6 secrets and config keys
-  - [ ] 7 session summary, `sbox log`, `-trace`
+  - [x] 7 diagnostics: preflight, BLOCKED lines, summary, `sbox watch`, `sbox log -f|-blocked` (`-trace` left)
   - [ ] 8 docs and timings
 - [x] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
   - [x] 1 host preflight

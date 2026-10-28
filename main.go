@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"time"
 )
 
 const (
@@ -53,7 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
 			"  pause    freeze a session in memory: sbox pause <id>\n"+
 			"  resume   continue a paused session: sbox resume <id>\n"+
-			"  log      print a session's console output: sbox log <id>\n"+
+			"  log      print a session's console output; -f follows it, -blocked shows what was blocked: sbox log [-f] [-blocked] <id>\n"+
+			"  watch    show what a session is blocked from, as it happens: sbox watch [id]\n"+
 			"  clean    remove every project's saved state (what sbox dev keeps)\n")
 		return exitUsage
 	}
@@ -87,7 +89,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return configMain(args[1:], stdout, stderr, devHost{userConfig: userConfigFile()})
 	case "setup-env":
 		return setupEnvMain(ctx, args[1:], stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
-	case "ps", "stop", "pause", "resume", "log", "clean":
+	case "log":
+		return logMain(ctx, args[1:], stdout, stderr, sboxRun, time.Second)
+	case "watch":
+		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second)
+	case "ps", "stop", "pause", "resume", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":
 		if err := setup(ctx, stdout, userConfigFile()); err != nil {

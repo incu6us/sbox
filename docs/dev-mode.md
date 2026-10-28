@@ -542,11 +542,25 @@ writes a commented starter file and `sbox config` prints the effective one.
       shows the servers)
     - [ ] the "could not start" check for `.mcp.json` servers: step 7
     - [ ] `dev.pause_after`, `dev.ignore`, `-config`, `-command`
-- [ ] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
+- [x] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
     the BLOCKED/MISSING line format with hints, the guest watcher's port
     and tool-denial records (transcript format confirmed here), `sbox
     watch`, `sbox log <id>` with `-blocked` and `-f`, the session summary
     at exit, strace opt-in with INFO rules and EROFS/EACCES as events.
+    - [x] `sbox-run events <id>`: allowlist, forwarded ports, proxy and
+      DNS logs, from the VM side
+    - [x] BLOCKED/FAILED lines with causes, hints from three sightings;
+      ports from the guest's `ss -Hltn` (unforwarded, or loopback-only on
+      a forwarded port: the relay can't reach those)
+    - [x] the preflight in `sbox dev` and `sbox config`, with remote MCP
+      servers (config and `.mcp.json`) checked against egress
+    - [x] the summary at exit, `sbox watch [id]`, `sbox log -blocked`,
+      `sbox log -f`
+    - [x] tested with fakes, then on the real VM (`TestDiagnosticsOnVM`)
+    - [ ] `-trace`: strace in dev mode with the scan rules at INFO, and
+      EROFS/EACCES as events
+    - [ ] Claude Code's denied tool calls from the session transcript
+      (marked experimental in the design)
 - [ ] **8. Docs.** README gets a `sbox dev` section first, scan second.
     `MILESTONE.md` gets a dev-mode milestone with timings: boot to prompt,
     sync of a 1,000-file project.

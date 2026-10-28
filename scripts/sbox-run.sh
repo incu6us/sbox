@@ -252,6 +252,14 @@ clean)
 	;;
 attach) shift; session_attach "$@" ;;
 log) dir=$(session_dir "${2:-}"); cat "$dir/console.log"; exit 0 ;;
+events) # the allowlist and forwarded ports, then what the proxy and DNS logger saw
+	session_dir "${2:-}" >/dev/null
+	sed 's/^/RULE /' "$state/runs/$2/drive/sbox/egress" 2>/dev/null || true
+	sed 's/^/PORT /' "$state/runs/$2/drive/sbox/ports" 2>/dev/null || true
+	sed 's/^/EGRESS /' "$state/runs/$2/egress.log" 2>/dev/null || true
+	sed 's/^/DNS /' "$state/runs/$2/dns.log" 2>/dev/null || true
+	exit 0
+	;;
 pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
 resume) session_vm_state "${2:-}" paused running Resumed; exit 0 ;;
 stop) shift; session_stop "$@"; exit 0 ;;

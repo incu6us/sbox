@@ -135,7 +135,7 @@ func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration))
 	}
 	tick := func() int {
 		var b bytes.Buffer
-		_ = sessionMain(ctx, "log", []string{id}, &b, io.Discard, vm)
+		_ = logMain(ctx, []string{id}, &b, io.Discard, vm, 0)
 		m := _counterTick.FindAllStringSubmatch(b.String(), -1)
 		if len(m) == 0 {
 			return -1

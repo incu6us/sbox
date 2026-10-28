@@ -482,6 +482,26 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     `secrets`, which the server inherits, so they never reach
     `~/.claude.json` on the kept home.
 
+- ✅ Step 7: diagnostics. `sbox-run events <id>` prints a session's
+  allowlist, forwarded ports, proxy verdicts and DNS lookups (written by
+  the VM-side helpers, so the guest can't forge them; names from the guest
+  are escaped on the Mac). From those and the guest's `ss -Hltn`, BLOCKED
+  lines: refused hosts and plain-http requests, failed allowed
+  connections, lookups no rule covers, ports listening but not forwarded,
+  and forwarded ports bound to loopback (the relay connects to the tap
+  address, so those can't work); a host seen three times or more gets the
+  config line that allows it. `sbox dev` prints a preflight (egress,
+  ports, services, secret names, MCP servers and where each runs, remote
+  ones the egress keeps out) and the summary at exit; `sbox config` shows
+  the preflight too; `sbox watch [id]`, `sbox log -blocked` and
+  `sbox log -f`.
+  - Verified on the real VM: three refused `curl`s and lookups, a
+    loopback-only server on a forwarded port and one on an unforwarded
+    port all show in the summary, in `log -blocked` and in `watch`.
+  - Not done: `-trace` (strace with the scan rules at INFO), Claude Code's
+    denied tool calls from its transcript, and EROFS/EACCES as events.
+    The read-only root is said once, on a new home, instead.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

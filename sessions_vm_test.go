@@ -21,7 +21,7 @@ import (
 func lastTick(t *testing.T, id string) int {
 	t.Helper()
 	var out bytes.Buffer
-	if code := sessionMain(context.Background(), "log", []string{id}, &out, io.Discard, sboxRun); code != exitOK {
+	if code := logMain(context.Background(), []string{id}, &out, io.Discard, sboxRun, 0); code != exitOK {
 		t.Fatalf("sbox log: exit %d", code)
 	}
 	m := _counterTick.FindAllStringSubmatch(out.String(), -1)
@@ -596,5 +596,58 @@ timeout 60 claude mcp list 2>&1`)
 	}
 	if out := dev(`python3 -c 'import json; d = json.load(open("/home/runner/.claude.json")); print(d.get("mine"), sorted(d["mcpServers"]))'`); !strings.Contains(out, "1 ['docs', 'local']") {
 		t.Errorf("second session: %q, want Claude Code's own key kept and the servers there", out)
+	}
+}
+
+// TestDiagnosticsOnVM makes a session hit a refused host and name, serve
+// a forwarded port on loopback only and an unforwarded one, and checks
+// the exit summary, sbox log -blocked and sbox watch.
+func TestDiagnosticsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("egress: [api.github.com]\nports: [3000]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := `for i in 1 2 3; do curl -s --max-time 5 -o /dev/null https://example.com; getent hosts registry.yarnpkg.com; done
+nohup python3 -m http.server 3000 --bind 127.0.0.1 >/dev/null 2>&1 &
+nohup python3 -m http.server 5173 >/dev/null 2>&1 &
+sleep 2`
+	var kept string
+	var out, notes bytes.Buffer
+	keep := func(id string) bool { kept = id; return true }
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir(), keep: keep}); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	for _, want := range []string{
+		"egress   api.github.com:443",
+		"BLOCKED egress  example.com:443 ×3  not in egress → egress: [example.com]",
+		"BLOCKED dns     registry.yarnpkg.com",
+		"BLOCKED port    3000  listening on loopback only",
+		"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]",
+	} {
+		if !strings.Contains(notes.String(), want) {
+			t.Errorf("sbox dev's output lacks %q:\n%s", want, notes.String())
+		}
+	}
+
+	var blocked bytes.Buffer
+	if code := logMain(ctx, []string{"-blocked", kept}, &blocked, io.Discard, sboxRun, 0); code != exitOK || !strings.Contains(blocked.String(), "example.com:443 ×3") {
+		t.Errorf("sbox log -blocked: exit %d:\n%s", code, blocked.String())
+	}
+	wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var watched bytes.Buffer
+	if code := watchMain(wctx, []string{kept}, &watched, io.Discard, sboxRun, time.Second); code != exitOK ||
+		!strings.Contains(watched.String(), "example.com:443") || !strings.Contains(watched.String(), "BLOCKED port    5173") {
+		t.Errorf("sbox watch: exit %d:\n%s", code, watched.String())
 	}
 }
