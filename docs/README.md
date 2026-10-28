@@ -43,7 +43,7 @@ Conventions shared by every plan:
 
 ## Status
 
-- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: `-trace`, the live change notice, doctor's forwarding check, the verification list)
+- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: the end-to-end verification list, which needs a real token; live egress and port changes)
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
@@ -54,7 +54,7 @@ Conventions shared by every plan:
   - [x] 5d toolchains via `image.packages`, a process cap in the guest
   - [x] 5e setup and start hooks, `dev.env`
   - [x] 6 secrets and config keys
-  - [x] 7 diagnostics: preflight, BLOCKED lines, summary, `sbox watch`, `sbox log -f|-blocked` (`-trace` left)
+  - [x] 7 diagnostics: preflight, BLOCKED lines, summary, `sbox watch`, `sbox log -f|-blocked`, denied tool calls, `-trace`
   - [x] 8 docs and timings
 - [x] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
   - [x] 1 host preflight

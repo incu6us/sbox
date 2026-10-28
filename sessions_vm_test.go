@@ -970,3 +970,32 @@ func TestToolDenialsOnVM(t *testing.T) {
 		t.Errorf("toolDenials = %q", got)
 	}
 }
+
+// TestDevTraceOnVM runs a command under sbox dev -trace: scan's rules
+// report the fake credentials read, and the write to the read-only root
+// is a BLOCKED line.
+func TestDevTraceOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	script := "cat ~/.aws/credentials >/dev/null; touch /usr/local/sbox-probe 2>/dev/null; echo done"
+	var out, errOut bytes.Buffer
+	if code := devMain(ctx, []string{"-trace", dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+		t.Fatalf("sbox dev -trace: exit %d: %s%s", code, out.String(), errOut.String())
+	}
+	for _, want := range []string{"INFO    credential-read  reads /home/runner/.aws/credentials", "BLOCKED write   /usr/local/sbox-probe  EROFS"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, errOut.String())
+		}
+	}
+	if out.String() != "done\n" {
+		t.Errorf("the command's own output %q, want it untouched by strace", out.String())
+	}
+}

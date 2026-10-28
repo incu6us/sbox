@@ -1019,7 +1019,7 @@ func TestSetupEnvMainWarnsAboutAnOlderConfig(t *testing.T) {
 	project := mustProjectID(t, dir)
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {setup: [npm ci]}\n")
 	old, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
-	if err := recordBoot(state, project, "0123abcd", old); err != nil {
+	if err := recordBoot(state, project, "0123abcd", "", old); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {setup: [npm ci]}\negress: [registry.npmjs.org]\n")
@@ -1101,7 +1101,7 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\tname = new\n")
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com]\n")
 	old, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
-	if err := recordBoot(state, project, "0123abcd", old); err != nil {
+	if err := recordBoot(state, project, "0123abcd", "", old); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, x.example]\npermissions: {deny: [WebFetch]}\nmounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig}]\n")
@@ -1138,5 +1138,30 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 	vm.calls, vm.stdins = nil, nil
 	if notes := dev(); strings.Contains(notes, "applied") || !strings.Contains(notes, "(egress)") {
 		t.Errorf("second attach: %q, want nothing applied again, egress still pending", notes)
+	}
+}
+
+func TestDevMainTrace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	vm := &fakeVM{answer: func(args []string) string {
+		switch {
+		case args[0] == "start":
+			return "READY " + args[1] + "\n"
+		case args[0] == "attach" && slices.Contains(args, _traceReadBack):
+			return `T 7 openat(AT_FDCWD, "/home/runner/.aws/credentials", O_RDONLY) = 3` + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{"-trace", dir, "--", "npm", "install"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	id := vm.calls[1][1]
+	if want := append([]string{"attach", id, "--"}, traceCommand([]string{"npm", "install"})...); !slices.Equal(withoutSummary(vm.calls)[2], want) {
+		t.Errorf("attach %q, want the command under strace", withoutSummary(vm.calls)[2])
+	}
+	if canary := tarFiles(t, vm.stdins[1])["sbox/canary"]; canary == "" || !strings.Contains(stderr.String(), "INFO    credential-read  reads /home/runner/.aws/credentials") {
+		t.Errorf("canary %q, stderr:\n%s\nwant the trace's findings", canary, stderr.String())
 	}
 }

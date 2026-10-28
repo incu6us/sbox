@@ -585,8 +585,11 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] the summary at exit, `sbox watch [id]`, `sbox log -blocked`,
       `sbox log -f`
     - [x] tested with fakes, then on the real VM (`TestDiagnosticsOnVM`)
-    - [ ] `-trace`: strace in dev mode with the scan rules at INFO, and
-      EROFS/EACCES as events
+    - [x] `-trace`: the terminal's command under strace as the runner
+      (scan's syscalls, tmpfs), read back at exit: scan's rules as INFO
+      lines with no verdict, the fake credentials' canary kept in the
+      session record, and every refused write outside the home (EROFS,
+      EACCES) as a BLOCKED line
     - [x] Claude Code's denied tool calls, from the transcripts in the
       guest's `~/.claude/projects/` (format confirmed on 2.1: a user entry
       with `toolDenialKind`, `permission-rule` or `user-rejected`, answering
