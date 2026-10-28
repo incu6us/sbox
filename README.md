@@ -274,8 +274,9 @@ dev.setup)`), plus every write the sandbox refused (`BLOCKED write
 or the project`).
 
 `sbox watch [id]` shows these as they happen, in a second terminal;
-`sbox log -blocked <id>` lists them for a running session, and
-`sbox log -f <id>` follows its console. A remote MCP server whose host
+`sbox log -blocked <id>` lists them for a running session,
+`sbox log -f <id>` follows its console, and `sbox log -start -f <id>`
+follows what `dev.start`'s background steps print (the dev server). A remote MCP server whose host
 isn't in egress, in the config or the project's `.mcp.json`, is flagged
 before the session boots.
 

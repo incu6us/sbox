@@ -54,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
 			"  pause    freeze a session in memory: sbox pause <id>\n"+
 			"  resume   continue a paused session: sbox resume <id>\n"+
-			"  log      print a session's console output; -f follows it, -blocked shows what was blocked: sbox log [-f] [-blocked] <id>\n"+
+			"  log      print a session's console output; -f follows it, -blocked shows what was blocked, -start dev.start's background output: sbox log [-f] [-blocked | -start] <id>\n"+
 			"  watch    show what a session is blocked from, as it happens: sbox watch [id]\n"+
 			"  clean    remove every project's saved state (what sbox dev keeps)\n")
 		return exitUsage

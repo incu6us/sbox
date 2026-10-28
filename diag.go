@@ -382,15 +382,17 @@ func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 	}
 }
 
-// logMain implements `sbox log [-f] [-blocked] <id>`: the session's
-// console, followed until it ends with -f, or just its BLOCKED lines.
+// logMain implements `sbox log [-f] [-blocked | -start] <id>`: the
+// session's console, or with -start the output of dev.start's background
+// steps, followed until it ends with -f; or just its BLOCKED lines.
 func logMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, every time.Duration) int {
 	flags := flag.NewFlagSet("sbox log", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	follow := flags.Bool("f", false, "follow the console until the session ends")
 	onlyBlocked := flags.Bool("blocked", false, "only what was blocked")
-	if flags.Parse(args) != nil || flags.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox log [-f] [-blocked] <session-id>")
+	start := flags.Bool("start", false, "dev.start's background output (~/.sbox/start.log)")
+	if flags.Parse(args) != nil || flags.NArg() != 1 || *onlyBlocked && *start {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox log [-f] [-blocked | -start] <session-id>")
 		return exitUsage
 	}
 	id := flags.Arg(0)
@@ -408,21 +410,30 @@ func logMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sb
 		}
 		return exitOK
 	}
-	printed := 0
+	printed, read, polled := 0, 0, false // console: text printed; start.log: bytes read
 	for {
 		var out bytes.Buffer
 		errOut := stderr
-		if printed > 0 {
+		if polled {
 			errOut = io.Discard // once following, the session going away is the end
 		}
-		if err := vm(ctx, nil, &out, errOut, "log", id); err != nil {
-			if printed > 0 {
+		var err error
+		if *start {
+			err = vm(ctx, strings.NewReader(""), &out, errOut, "attach", id, "--", "sh", "-c", fmt.Sprintf("tail -c +%d ~/.sbox/start.log 2>/dev/null; true", read+1))
+		} else {
+			err = vm(ctx, nil, &out, errOut, "log", id)
+		}
+		if err != nil {
+			if polled {
 				return exitOK
 			}
 			return vmFailed(stderr, err)
 		}
-		text := consoleText(out.String())
-		if len(text) > printed {
+		polled = true
+		if *start {
+			read += out.Len()
+			_, _ = io.WriteString(stdout, consoleText(out.String()))
+		} else if text := consoleText(out.String()); len(text) > printed {
 			_, _ = io.WriteString(stdout, text[printed:])
 			printed = len(text)
 		}

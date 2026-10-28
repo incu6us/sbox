@@ -213,7 +213,8 @@ dev:
   action, not the global `sbox setup`) reruns it on demand.
 - `start` runs at every attach to a fresh boot, not on reattach to a
   running session. A trailing `&` keeps a step running in the background
-  (a dev server); its output goes to `~/.sbox/start.log`. A step without
+  (a dev server); its output goes to `~/.sbox/start.log` (`sbox log -start
+  -f <id>` follows it). A step without
   it that is still running after 30 s gets a line saying the `&` may be
   missing, since the terminal waits for it (up to the step's timeout).
 - Both run under `sh -e` with output streamed to the terminal, prefixed,
@@ -528,9 +529,10 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] `dev.env` in every login through `~/.ssh/environment` and
       `PermitUserEnvironment`
     - [x] tested with fakes, then on the real VM (`TestDevHooksOnVM`)
-    - [ ] hook output prefixed and in `sbox log`: the runner can't write
-      the console, so steps are announced instead and background output
-      goes to `~/.sbox/start.log`
+    - [x] hook output: steps are announced on the terminal (the runner
+      can't write the console), and background output goes to
+      `~/.sbox/start.log`, which `sbox log -start <id>` prints and `-f`
+      follows (by byte offset, so a long log isn't read again)
 - [x] **6. Secrets and config.** The config plan's commits 1, 2 and 4, done
     here if not before, plus `ports`, `dev`, `mcp` and `permissions` keys,
     the generated guest `settings.json` and `.claude.json` MCP entries, the
