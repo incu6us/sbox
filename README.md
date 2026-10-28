@@ -180,10 +180,13 @@ drive and is there next session. The runner can have 2048 processes and
 threads, so a fork bomb or a runaway build fails inside the guest.
 
 A session takes the config when it boots. Change `sbox.yaml` under a
-running session and the next `sbox dev` says which keys differ
-(`the config changed since session <id> started (egress, ports)`);
-Changes to `permissions`, `mcp` and `mounts` are applied right there
-(Claude Code reads them the next time it starts); for the rest,
+running session and the next `sbox dev` applies what it can right there:
+`egress` (the proxy rereads its rules; open connections stay), `ports`
+and `services` (their relays start and stop), `permissions`, `mcp` and
+`mounts` (Claude Code reads them the next time it starts), all without
+stopping anything. Raw TCP egress (a port other than 443), egress for a
+session that started without any, and the rest say so
+(`the config changed since session <id> started (dev.vcpus)`); for those,
 `sbox dev -restart <dir>` stops the session and boots a new one with the config as
 it is now, on the same home: files, installed tools and Claude Code's
 history stay, running processes don't. `dev.command` applies at every
