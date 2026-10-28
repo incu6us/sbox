@@ -124,15 +124,18 @@ func ruleMatches(pat, rel string) bool {
 	return ok
 }
 
-// findPrune is find's test for the rules: -name for names, -path for paths,
-// the ! rules taken out.
-func (r ignoreRules) findPrune() string {
+// findPrune is find's test for the rules, for a find run from the root:
+// -name for names, -path for paths, the ! rules taken out.
+func (r ignoreRules) findPrune() string { return r.findPruneUnder(".") }
+
+// findPruneUnder is findPrune for a find started at root.
+func (r ignoreRules) findPruneUnder(root string) string {
 	var tests, negated []string
 	for _, pat := range r {
 		pat, neg := strings.CutPrefix(pat, "!")
 		test := "-name " + shellJoin([]string{pat})
 		if strings.Contains(pat, "/") {
-			test = "-path " + shellJoin([]string{"./" + strings.TrimPrefix(pat, "/")})
+			test = "-path " + shellJoin([]string{root + "/" + strings.TrimPrefix(pat, "/")})
 		}
 		if neg {
 			negated = append(negated, test)
@@ -665,13 +668,34 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 	return next
 }
 
-// runChanges brings back what sbox run's command changed in its work
-// folder: the guest's tar (sbox-run out), planned against base, the folder
-// as it was copied in, so files the Mac changed meanwhile are left alone
-// (or listed as conflicts). It shows them with diffs, writes them to
-// patchFile as a patch, or with apply writes them into dir once confirm
-// says yes; with no confirm (no terminal), -apply is refused.
-func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manifest, rules ignoreRules, apply bool, patchFile string, confirm func() bool, stdout, stderr io.Writer) (applied []string, code int) {
+// changeRoot is a folder sbox run brings back: its path on the Mac, its
+// path in the guest relative to the runner's home ("work" for the folder
+// run was given, an rw mount's otherwise), the manifest it was copied in
+// with, and the rules that leave things out of both.
+type changeRoot struct {
+	host, guest string
+	base        manifest
+	rules       ignoreRules
+}
+
+// outScript tars the roots from the runner's home, each with its rules,
+// for sbox run -apply, -patch and -push.
+func outScript(roots []changeRoot) string {
+	var finds []string
+	for _, r := range roots {
+		finds = append(finds, "find "+shellJoin([]string{r.guest})+" "+r.rules.findPruneUnder(r.guest)+" -prune -o -type f -print0")
+	}
+	return "cd /home/runner && { " + strings.Join(finds, "; ") + "; } | tar --null --no-recursion -T - -cf -"
+}
+
+// runChanges brings back what sbox run's command changed in the roots:
+// the guest's tar (sbox-run out), each root planned against its base, so
+// files the Mac changed meanwhile are left alone (or listed as
+// conflicts). It shows them with diffs; writes the first root's (the
+// folder run was given) to patchFile as a patch; or with apply writes
+// them all once confirm says yes, returning the paths it wrote in the
+// first root. With no confirm (no terminal), -apply is refused.
+func runChanges(ctx context.Context, vm sboxRunFunc, id string, roots []changeRoot, apply bool, patchFile string, confirm func() bool, stdout, stderr io.Writer) (applied []string, code int) {
 	fail := func(err error) ([]string, int) {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return nil, exitFail
@@ -697,43 +721,83 @@ func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manife
 	if err != nil {
 		return fail(fmt.Errorf("reading the guest's files: %w", err))
 	}
-	guest, err := readManifest(pulled, rules)
-	if err != nil {
-		return fail(err)
+
+	type rootPlan struct {
+		root        changeRoot
+		pulled      string
+		host, guest manifest
+		plan        []syncAction
 	}
-	host, err := readManifest(dir, rules)
-	if err != nil {
-		return fail(err)
+	var plans []rootPlan
+	for _, r := range roots {
+		p := rootPlan{root: r, pulled: filepath.Join(pulled, filepath.FromSlash(r.guest))}
+		if p.guest, err = readManifest(p.pulled, r.rules); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fail(err)
+		}
+		if p.host, err = readManifest(r.host, r.rules); err != nil {
+			return fail(err)
+		}
+		p.plan = slices.DeleteFunc(planSync(r.base, p.host, p.guest), func(a syncAction) bool {
+			return a.Op == opPush || a.Op == opPushDelete || a.Op == opSame // the Mac's own, or already alike
+		})
+		plans = append(plans, p)
 	}
-	plan := slices.DeleteFunc(planSync(base, host, guest), func(a syncAction) bool {
-		return a.Op == opPush || a.Op == opPushDelete || a.Op == opSame // the Mac's own, or already alike
-	})
 	if patchFile != "" {
-		if err := os.WriteFile(patchFile, []byte(guestPatch(plan, host, dir, pulled)), 0o644); err != nil {
+		if err := os.WriteFile(patchFile, []byte(guestPatch(plans[0].plan, plans[0].host, plans[0].root.host, plans[0].pulled)), 0o644); err != nil {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: the command's changes are in %s\n", patchFile)
+		for _, p := range plans[1:] {
+			if len(p.plan) > 0 {
+				_, _ = fmt.Fprintf(stderr, "sbox: the rw mount %s changed too; it isn't in the patch (-apply brings it)\n", p.root.host)
+			}
+		}
 		return nil, exitOK
 	}
-	if !writePlan(stdout, plan, host, guest, dir, pulled, true) || !apply {
+	changes := false
+	for _, p := range plans {
+		if len(plans) > 1 && len(p.plan) > 0 {
+			_, _ = fmt.Fprintf(stdout, "in %s:\n", p.root.host)
+		}
+		if writePlan(stdout, p.plan, p.host, p.guest, p.root.host, p.pulled, true) {
+			changes = true
+		}
+	}
+	if !changes || !apply {
 		return nil, exitOK
 	}
 	if confirm == nil {
 		return fail(errors.New("-apply asks before writing: run it in a terminal, or use -patch <file>"))
 	}
 	if !confirm() {
-		_, _ = fmt.Fprintf(stderr, "sbox: %s left as it was\n", dir)
+		_, _ = fmt.Fprintln(stderr, "sbox: left as it was")
 		return nil, exitOK
 	}
-	if err := applyPulls(dir, pulled, plan, guest); err != nil {
-		return fail(err)
-	}
-	for _, a := range plan {
-		if a.Op == opPull || a.Op == opPullDelete {
-			applied = append(applied, a.Path)
+	for i, p := range plans {
+		if err := applyRoot(p.root.host, p.pulled, p.plan, p.guest); err != nil {
+			return fail(err)
+		}
+		for _, a := range p.plan {
+			if i == 0 && (a.Op == opPull || a.Op == opPullDelete) {
+				applied = append(applied, a.Path)
+			}
 		}
 	}
 	return applied, exitOK
+}
+
+// applyRoot writes one root's pulls: a folder through applyPulls, a single
+// mounted file in place.
+func applyRoot(host, pulled string, plan []syncAction, guest manifest) error {
+	if info, err := os.Stat(host); err == nil && !info.IsDir() {
+		for _, a := range plan {
+			if a.Op == opPull && a.Path == "." {
+				return replaceFile(host, pulled, guest["."].Exec)
+			}
+		}
+		return nil
+	}
+	return applyPulls(host, pulled, plan, guest)
 }
 
 // pushOnBoot brings the Mac's changes into a kept home when sbox dev boots

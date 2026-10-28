@@ -1222,13 +1222,13 @@ func TestRunApplyOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	job := guestJob{command: []string{"sh", "-c", "echo v2 > a.txt; echo new > c.txt; rm b.txt; mkdir node_modules; echo x > node_modules/i.js; echo hook > .git/HEAD"},
-		out: pullScript(rules)}
+		out: outScript([]changeRoot{{guest: "work", rules: rules}})}
 	var out, errOut bytes.Buffer
 	res, err := runVM(ctx, dir, job, 30*time.Second, false, &out, &errOut)
 	if err != nil || res.exitCode != 0 {
 		t.Fatalf("run: %v, exit %d: %s", err, res.exitCode, errOut.String())
 	}
-	if _, code := runChanges(ctx, sboxRun, res.id, dir, base, rules, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
+	if _, code := runChanges(ctx, sboxRun, res.id, []changeRoot{{host: dir, guest: "work", base: base, rules: rules}}, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
 		t.Fatalf("runChanges: exit %d: %s", code, errOut.String())
 	}
 	read := func(p string) string { data, _ := os.ReadFile(filepath.Join(dir, p)); return string(data) }
@@ -1238,14 +1238,14 @@ func TestRunApplyOnVM(t *testing.T) {
 
 	// Nothing stays on the VM side once fetched, even when the Mac then
 	// fails (a patch it can't write), nor after a run that timed out.
-	failed, err := runVM(ctx, dir, guestJob{command: []string{"sh", "-c", "echo v3 > a.txt"}, out: pullScript(rules)}, 30*time.Second, false, io.Discard, &errOut)
+	failed, err := runVM(ctx, dir, guestJob{command: []string{"sh", "-c", "echo v3 > a.txt"}, out: outScript([]changeRoot{{guest: "work", rules: rules}})}, 30*time.Second, false, io.Discard, &errOut)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, code := runChanges(ctx, sboxRun, failed.id, dir, base, rules, false, "/nonexistent/run.patch", nil, io.Discard, io.Discard); code != exitFail {
+	if _, code := runChanges(ctx, sboxRun, failed.id, []changeRoot{{host: dir, guest: "work", base: base, rules: rules}}, false, "/nonexistent/run.patch", nil, io.Discard, io.Discard); code != exitFail {
 		t.Errorf("a patch that can't be written: exit %d, want a failure", code)
 	}
-	timedOut, err := runVM(ctx, dir, guestJob{command: []string{"sleep", "60"}, out: pullScript(rules)}, 3*time.Second, false, io.Discard, &errOut)
+	timedOut, err := runVM(ctx, dir, guestJob{command: []string{"sleep", "60"}, out: outScript([]changeRoot{{guest: "work", rules: rules}})}, 3*time.Second, false, io.Discard, &errOut)
 	if err != nil || !timedOut.timedOut {
 		t.Fatalf("the sleep: %v, timed out %v", err, timedOut.timedOut)
 	}
@@ -1306,5 +1306,46 @@ func TestScanSecretOnVM(t *testing.T) {
 		!strings.Contains(report, "config: real secrets GITHUB_TOKEN") ||
 		!strings.Contains(report, "CRITICAL sends a secret from the config out in a DNS lookup: [redacted:GITHUB_TOKEN].evil.example") {
 		t.Errorf("scan: exit %d\n%s%s", code, report, errOut.String())
+	}
+}
+
+// TestRunRWMountOnVM: an rw mount's changes come back to its Mac folder
+// with the run's folder; a ro mount's stay in the guest.
+func TestRunRWMountOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, notes, other := t.TempDir(), t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "a.txt"), "v1\n")
+	writeTestFile(t, filepath.Join(notes, "n.txt"), "old\n")
+	if err := os.MkdirAll(filepath.Join(notes, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(notes, ".git", "HEAD"), "ref\n")
+	writeTestFile(t, filepath.Join(other, "ro.txt"), "keep\n")
+	roots := []changeRoot{{host: dir, guest: "work"}, {host: notes, guest: "notes"}}
+	for i := range roots {
+		roots[i].rules = syncRules(nil)
+		roots[i].base, _ = readManifest(roots[i].host, roots[i].rules)
+	}
+	job := guestJob{
+		command: []string{"sh", "-c", "echo v2 > a.txt; echo new > ~/notes/n.txt; echo hook > ~/notes/.git/HEAD; echo changed > ~/other/ro.txt"},
+		mounts:  []mountCopy{{src: notes, guest: "/home/runner/notes"}, {src: other, guest: "/home/runner/other"}},
+		out:     outScript(roots),
+	}
+	var out, errOut bytes.Buffer
+	res, err := runVM(ctx, dir, job, 30*time.Second, false, &out, &errOut)
+	if err != nil || res.exitCode != 0 {
+		t.Fatalf("run: %v, exit %d: %s%s", err, res.exitCode, out.String(), errOut.String())
+	}
+	if _, code := runChanges(ctx, sboxRun, res.id, roots, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
+		t.Fatalf("runChanges: exit %d: %s", code, errOut.String())
+	}
+	read := func(p string) string { data, _ := os.ReadFile(p); return string(data) }
+	if read(filepath.Join(dir, "a.txt")) != "v2\n" || read(filepath.Join(notes, "n.txt")) != "new\n" ||
+		read(filepath.Join(notes, ".git", "HEAD")) != "ref\n" || read(filepath.Join(other, "ro.txt")) != "keep\n" {
+		t.Errorf("after apply: a %q, n %q, notes/.git/HEAD %q, ro %q", read(filepath.Join(dir, "a.txt")), read(filepath.Join(notes, "n.txt")),
+			read(filepath.Join(notes, ".git", "HEAD")), read(filepath.Join(other, "ro.txt")))
 	}
 }
