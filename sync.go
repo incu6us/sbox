@@ -13,25 +13,67 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 )
 
-// _neverSynced are names sync skips at any depth: version control, which
-// stays each side's own, and folders that are rebuilt rather than copied.
-// ponytail: fixed list; a dev.ignore key in the config when someone needs more.
-var _neverSynced = map[string]bool{".git": true, "node_modules": true, ".venv": true, "__pycache__": true, ".DS_Store": true}
+// ignoreRules are what sync skips: a name (globs allowed) at any depth, or
+// a path from the project root when it has a slash.
+type ignoreRules []string
 
-// readManifest hashes the regular files under dir. Symlinks and the
-// never-synced names are skipped.
-func readManifest(dir string) (manifest, error) {
+// copyRules are what sbox dev leaves out of the project it copies in:
+// folders rebuilt in the guest (a Mac's node_modules has Mac binaries) and
+// extra, from dev.ignore.
+func copyRules(extra []string) ignoreRules {
+	return append(ignoreRules{".DS_Store", ".venv", "__pycache__", "node_modules"}, extra...)
+}
+
+// syncRules are what sync skips: the copy rules, and version control,
+// which stays each side's own (the guest gets a copy of .git, never back).
+func syncRules(extra []string) ignoreRules {
+	return append(ignoreRules{".git"}, copyRules(extra)...)
+}
+
+// skip reports whether the path rel (slash-separated, from the root) is
+// ignored.
+func (r ignoreRules) skip(rel string) bool {
+	name := path.Base(rel)
+	for _, pat := range r {
+		subject := name
+		if strings.Contains(pat, "/") {
+			subject = rel
+		}
+		if ok, _ := path.Match(pat, subject); ok { // patterns are checked when the config loads
+			return true
+		}
+	}
+	return false
+}
+
+// findPrune is find's test for the rules: -name for names, -path for paths.
+func (r ignoreRules) findPrune() string {
+	var tests []string
+	for _, pat := range r {
+		if strings.Contains(pat, "/") {
+			tests = append(tests, "-path "+shellJoin([]string{"./" + pat}))
+		} else {
+			tests = append(tests, "-name "+shellJoin([]string{pat}))
+		}
+	}
+	return `\( ` + strings.Join(tests, " -o ") + ` \)`
+}
+
+// readManifest hashes the regular files under dir. Symlinks and what the
+// rules ignore are skipped.
+func readManifest(dir string, rules ignoreRules) (manifest, error) {
 	m := make(manifest)
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if _neverSynced[d.Name()] && p != dir {
+		if rel, _ := filepath.Rel(dir, p); p != dir && rules.skip(filepath.ToSlash(rel)) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -254,8 +296,8 @@ func saveBase(stateDir, project string, m manifest) error {
 }
 
 // recordBase makes dir's current files the project's sync base.
-func recordBase(stateDir, project, dir string) error {
-	m, err := readManifest(dir)
+func recordBase(stateDir, project, dir string, rules ignoreRules) error {
+	m, err := readManifest(dir, rules)
 	if err != nil {
 		return err
 	}
@@ -264,9 +306,6 @@ func recordBase(stateDir, project, dir string) error {
 
 // The guest-side commands of sync, run through attach as the runner.
 var (
-	// _pullScript sends the guest's project as a tar of its regular files,
-	// without the never-synced names.
-	_pullScript = pullScript()
 	// _pushCommand unpacks the Mac's changed files into the guest's project.
 	_pushCommand = []string{"tar", "-C", "/home/runner/work", "-xf", "-"}
 )
@@ -275,20 +314,18 @@ var (
 // guest's project.
 const _deleteScript = "cd /home/runner/work && xargs -0 rm -f --"
 
-func pullScript() string {
-	var names []string
-	for _, n := range slices.Sorted(maps.Keys(_neverSynced)) {
-		names = append(names, "-name "+n)
-	}
-	return `cd /home/runner/work && find . \( ` + strings.Join(names, " -o ") +
-		` \) -prune -o -type f -print0 | tar --null --no-recursion -T - -cf -`
+// pullScript sends the guest's project as a tar of its regular files,
+// without what the rules ignore.
+func pullScript(rules ignoreRules) string {
+	return `cd /home/runner/work && find . ` + rules.findPrune() + ` -prune -o -type f -print0 | tar --null --no-recursion -T - -cf -`
 }
 
 // syncMain implements `sbox sync [-apply] <dir>`: it compares the project
 // on the Mac and in its guest with the base both last agreed on, prints
 // what each side changed, and with -apply brings each change to the other
 // side. Paths changed differently on both sides are left alone.
-func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, stateDir string) int {
+func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, mac devHost) int {
+	stateDir := mac.stateDir
 	var mode string
 	if len(args) > 0 && (args[0] == "-apply" || args[0] == "-patch") {
 		mode, args = args[0], args[1:]
@@ -304,11 +341,17 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
+	cfg, err := loadConfig(mac.userConfig, filepath.Join(dir, "sbox.yaml"))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
 	if _, err := loadBase(stateDir, project); err != nil {
 		_, _ = fmt.Fprintf(stderr, "sbox: no sync base for %s: sbox dev records one when it first copies the project in (sbox dev -fresh starts over)\n", dir)
 		return exitFail
 	}
-	id, stop, code := projectSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, stderr, vm, stateDir)
+	rules := syncRules(cfg.Dev.Ignore)
+	id, stop, code := projectSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, rules, stderr, vm, stateDir)
 	if code != exitOK {
 		return code
 	}
@@ -326,16 +369,16 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	pulled := filepath.Join(tmp, "guest")
-	if err := pullGuest(ctx, vm, id, pulled, stderr); err != nil {
+	if err := pullGuest(ctx, vm, id, pulled, rules, stderr); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox: reading the guest's files:", err)
 		return exitFail
 	}
-	guest, err := readManifest(pulled)
+	guest, err := readManifest(pulled, rules)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitFail
 	}
-	host, err := readManifest(dir)
+	host, err := readManifest(dir, rules)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitFail
@@ -375,7 +418,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 // projectSession finds the live session on a project, resuming a paused
 // one until done, or starts one that done stops (which also flushes the
 // guest's writes).
-func projectSession(ctx context.Context, dir, project string, job guestJob, stderr io.Writer, vm sboxRunFunc, stateDir string) (id string, done func(), code int) {
+func projectSession(ctx context.Context, dir, project string, job guestJob, rules ignoreRules, stderr io.Writer, vm sboxRunFunc, stateDir string) (id string, done func(), code int) {
 	live, found, code := liveSession(ctx, project, stderr, vm)
 	switch {
 	case code != exitOK:
@@ -393,7 +436,7 @@ func projectSession(ctx context.Context, dir, project string, job guestJob, stde
 		return "", nil, code
 	}
 	if fresh { // the drive was gone, so the guest just copied dir in
-		if err := recordBase(stateDir, project, dir); err != nil {
+		if err := recordBase(stateDir, project, dir, rules); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 		}
 	}
@@ -402,11 +445,11 @@ func projectSession(ctx context.Context, dir, project string, job guestJob, stde
 
 // pullGuest unpacks the guest's project files into dest, as a tar from an
 // untrusted source: regular files only, nothing outside dest.
-func pullGuest(ctx context.Context, vm sboxRunFunc, id, dest string, stderr io.Writer) error {
+func pullGuest(ctx context.Context, vm sboxRunFunc, id, dest string, rules ignoreRules, stderr io.Writer) error {
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		err := vm(ctx, nil, pw, stderr, "attach", id, "--", "sh", "-c", _pullScript)
+		err := vm(ctx, nil, pw, stderr, "attach", id, "--", "sh", "-c", pullScript(rules))
 		pw.CloseWithError(err)
 		done <- err
 	}()
@@ -491,7 +534,7 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 // half of the sync plan is carried out, and the base moves for those paths
 // alone. The guest's own changes and conflicts wait for sbox sync, with a
 // line saying so. A project with no base (never copied in) is left alone.
-func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir string, stderr io.Writer) error {
+func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir string, rules ignoreRules, stderr io.Writer) error {
 	base, err := loadBase(stateDir, project)
 	if err != nil {
 		return nil
@@ -502,14 +545,14 @@ func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir 
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	pulled := filepath.Join(tmp, "guest")
-	if err := pullGuest(ctx, vm, id, pulled, stderr); err != nil {
+	if err := pullGuest(ctx, vm, id, pulled, rules, stderr); err != nil {
 		return err
 	}
-	guest, err := readManifest(pulled)
+	guest, err := readManifest(pulled, rules)
 	if err != nil {
 		return err
 	}
-	host, err := readManifest(dir)
+	host, err := readManifest(dir, rules)
 	if err != nil {
 		return err
 	}

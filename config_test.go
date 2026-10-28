@@ -402,3 +402,23 @@ func TestBootKeys(t *testing.T) {
 		t.Error("secrets should be compared by name and source")
 	}
 }
+
+func TestLoadConfigDevIgnore(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(write(t, "dev: {ignore: [\"*.log\"]}\n"), write(t, "dev: {ignore: [dist, build/cache]}\n"))
+	if err != nil || !slices.Equal(cfg.Dev.Ignore, []string{"*.log", "dist", "build/cache"}) {
+		t.Errorf("dev.ignore = %q, %v; want both files', in order", cfg.Dev.Ignore, err)
+	}
+	for _, bad := range []string{"../up", "/abs", "a/../b", "", "[", "./x"} {
+		if _, err := loadConfig("", write(t, "dev: {ignore: [\""+bad+"\"]}\n")); err == nil || !strings.Contains(err.Error(), "dev.ignore") {
+			t.Errorf("dev.ignore %q: err %v, want a refusal", bad, err)
+		}
+	}
+}

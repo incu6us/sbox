@@ -39,6 +39,7 @@ type config struct {
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
+		Ignore      []string          `yaml:"ignore,omitempty"` // names or root paths neither copied in nor synced, besides node_modules and the like
 	} `yaml:"dev,omitempty"`
 	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot
 	Secrets map[string]string `yaml:"secrets,omitempty"` // guest variable → env:HOST_VARIABLE, read when a session starts
@@ -220,6 +221,7 @@ func loadConfig(userFile, projectFile string) (config, error) {
 		}
 		cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
 		cfg.Mounts = append(cfg.Mounts, c.Mounts...)
+		cfg.Dev.Ignore = append(cfg.Dev.Ignore, c.Dev.Ignore...)
 		cfg.Dev.Setup = append(cfg.Dev.Setup, c.Dev.Setup...)
 		cfg.Dev.Start = append(cfg.Dev.Start, c.Dev.Start...)
 		if len(c.Dev.Env) > 0 && cfg.Dev.Env == nil {
@@ -346,6 +348,12 @@ func (c *config) check() error {
 		}
 		if guest == "/home/runner/work" || strings.HasPrefix(guest, "/home/runner/work/") {
 			return fmt.Errorf("mounts: guest %q: that's the project; sbox sync carries files there", m.Guest)
+		}
+	}
+	for _, pat := range c.Dev.Ignore {
+		_, err := path.Match(pat, "")
+		if pat == "" || err != nil || path.IsAbs(pat) || path.Clean(pat) != pat || strings.HasPrefix(pat, "../") || pat == ".." {
+			return fmt.Errorf("dev.ignore: %q: want a name or glob (*.log), or a clean path from the project root (build/cache)", pat)
 		}
 	}
 	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {

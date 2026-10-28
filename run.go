@@ -135,6 +135,7 @@ type guestJob struct {
 	memoryMiB int
 	claude    []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
 	mounts    []mountCopy // Mac files and folders the guest init copies into the home
+	ignore    ignoreRules // what the project copy leaves out (sbox dev); everything when nil
 }
 
 // mountCopy is one mount: a resolved Mac path and where it goes.
@@ -323,10 +324,10 @@ func printable(s string) string {
 }
 
 // packTree adds src (a folder, or a single file) to tw under prefix:
-// regular files, folders and symlinks as links; sockets, devices and pipes
-// are skipped. total counts file bytes across calls, capped at
-// _maxRunBytes.
-func packTree(tw *tar.Writer, src, prefix string, total *int64) error {
+// regular files, folders and symlinks as links; sockets, devices, pipes and
+// what skip ignores are left out. total counts file bytes across calls,
+// capped at _maxRunBytes.
+func packTree(tw *tar.Writer, src, prefix string, skip ignoreRules, total *int64) error {
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -346,6 +347,12 @@ func packTree(tw *tar.Writer, src, prefix string, total *int64) error {
 		rel, err := filepath.Rel(src, p)
 		if err != nil {
 			return err
+		}
+		if rel != "." && skip.skip(filepath.ToSlash(rel)) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		hdr, err := tar.FileInfoHeader(info, link)
 		if err != nil {
@@ -378,11 +385,11 @@ func packTree(tw *tar.Writer, src, prefix string, total *int64) error {
 func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) error {
 	tw := tar.NewWriter(w)
 	total := int64(0)
-	err := packTree(tw, dir, "skill", &total)
+	err := packTree(tw, dir, "skill", job.ignore, &total)
 	var mountList strings.Builder
 	for i, m := range job.mounts {
 		if err == nil {
-			err = packTree(tw, m.src, fmt.Sprintf("mounts/%d", i), &total)
+			err = packTree(tw, m.src, fmt.Sprintf("mounts/%d", i), nil, &total)
 		}
 		fmt.Fprintf(&mountList, "%d %s\n", i, m.guest)
 	}

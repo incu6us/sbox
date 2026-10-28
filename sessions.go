@@ -244,11 +244,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			_, _ = fmt.Fprintln(stderr, "sbox: recording the session's config:", err)
 		}
 		if newDrive {
-			if err := recordBase(host.stateDir, project, args[0]); err != nil {
+			if err := recordBase(host.stateDir, project, args[0], syncRules(cfg.Dev.Ignore)); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 			}
 			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
-		} else if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, stderr); err != nil {
+		} else if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, syncRules(cfg.Dev.Ignore), stderr); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox: copying the Mac's changes in:", err)
 		}
 		if code := runHooks(ctx, id, cfg, false, stdout, stderr, vm); code != exitOK {
@@ -291,7 +291,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		_, _ = fmt.Fprintln(stdout, "no dev.setup steps in the config")
 		return exitOK
 	}
-	id, done, code := projectSession(ctx, args[0], project, job, stderr, vm, host.stateDir)
+	id, done, code := projectSession(ctx, args[0], project, job, syncRules(cfg.Dev.Ignore), stderr, vm, host.stateDir)
 	if code != exitOK {
 		return code
 	}
@@ -419,7 +419,7 @@ func warnConfigChanged(stderr io.Writer, stateDir, project, id, dir string, cfg 
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
 	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets,
-		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings()}
+		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore)}
 }
 
 // runHooks runs the config's setup and start steps in session id (setup

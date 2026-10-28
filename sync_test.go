@@ -12,6 +12,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -73,7 +74,7 @@ func TestReadManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, err := readManifest(dir)
+	m, err := readManifest(dir, syncRules(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +169,18 @@ type fakeSyncGuest struct {
 	running string            // a session already running for the project
 	state   string            // its state, running when empty
 	calls   [][]string
+	// newDrive makes start report a new work drive; started is the run
+	// tar start was sent.
+	newDrive bool
+	started  []byte
+	rules    ignoreRules // what the pull leaves out; syncRules(nil) when nil
+}
+
+func (g *fakeSyncGuest) pullRules() ignoreRules {
+	if g.rules == nil {
+		return syncRules(nil)
+	}
+	return g.rules
 }
 
 func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, args ...string) error {
@@ -179,14 +192,20 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 			_, _ = fmt.Fprintf(out, "%s %s 1700000000 %s\n", g.running, state, g.project)
 		}
 	case "start":
-		_, _ = io.Copy(io.Discard, in)
+		g.started, _ = io.ReadAll(in)
+		if g.newDrive {
+			_, _ = fmt.Fprintf(out, "NEW %s\n", args[1])
+		}
 		_, _ = fmt.Fprintf(out, "READY %s\n", args[1])
 	case "attach":
 		cmd := args[3:]
 		switch {
-		case slices.Equal(cmd, []string{"sh", "-c", _pullScript}):
+		case slices.Equal(cmd, []string{"sh", "-c", pullScript(g.pullRules())}):
 			tw := tar.NewWriter(out)
 			for _, p := range slices.Sorted(maps.Keys(g.files)) {
+				if g.pullRules().skip(p) || g.pullRules().skip(path.Dir(p)) {
+					continue
+				}
 				_ = tw.WriteHeader(&tar.Header{Name: "./" + p, Mode: 0o644, Size: int64(len(g.files[p])), Typeflag: tar.TypeReg})
 				_, _ = io.WriteString(tw, g.files[p])
 			}
@@ -234,7 +253,7 @@ func TestSyncMain(t *testing.T) {
 		write(p, "v1\n")
 	}
 	project := mustProjectID(t, dir)
-	if err := recordBase(state, project, dir); err != nil {
+	if err := recordBase(state, project, dir, syncRules(nil)); err != nil {
 		t.Fatal(err)
 	}
 	// Then each side worked.
@@ -246,7 +265,7 @@ func TestSyncMain(t *testing.T) {
 	}}
 
 	var stdout, stderr bytes.Buffer
-	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK {
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("dry run: exit %d, %s", code, stderr.String())
 	}
 	for _, want := range []string{"guest-edits", "guest-deletes", "guest-adds", "host-edits", "host-adds", "conflict", "both-edit", "-apply"} {
@@ -262,7 +281,7 @@ func TestSyncMain(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if code := syncMain(context.Background(), []string{"-apply", dir}, &stdout, &stderr, guest.run, state); code != exitOK {
+	if code := syncMain(context.Background(), []string{"-apply", dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("apply: exit %d, %s", code, stderr.String())
 	}
 	if read("guest-edits") != "guest v2\n" || read("guest-adds") != "new in the guest\n" || read("guest-deletes") != "<missing>" {
@@ -277,7 +296,7 @@ func TestSyncMain(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK {
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("second dry run: exit %d, %s", code, stderr.String())
 	}
 	if out := stdout.String(); strings.Count(out, "\n") > 3 || !strings.Contains(out, "both-edit") {
@@ -286,19 +305,19 @@ func TestSyncMain(t *testing.T) {
 
 	guest.running = "abababababababab"
 	guest.calls = nil
-	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK ||
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK ||
 		slices.ContainsFunc(guest.calls, func(c []string) bool { return c[0] == "start" || c[0] == "stop" }) {
 		t.Errorf("with a session running: exit %d, calls %q; want that session used, none started or stopped", code, guest.calls)
 	}
 
 	guest.state = "paused"
 	guest.calls = nil
-	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK ||
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK ||
 		!slices.Equal(guest.calls[1], []string{"resume", guest.running}) || !slices.Equal(guest.calls[len(guest.calls)-1], []string{"pause", guest.running}) {
 		t.Errorf("with the session paused: exit %d, calls %q; want it resumed for the sync and paused again", code, guest.calls)
 	}
 
-	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, t.TempDir()); code != exitFail ||
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: t.TempDir()}); code != exitFail ||
 		!strings.Contains(stderr.String(), "no sync base") {
 		t.Errorf("without a base: exit %d, stderr %q; want a refusal", code, stderr.String())
 	}
@@ -316,7 +335,7 @@ func TestDevMainPushesMacEditsOnBoot(t *testing.T) {
 		write(p, "v1\n")
 	}
 	project := mustProjectID(t, dir)
-	if err := recordBase(state, project, dir); err != nil {
+	if err := recordBase(state, project, dir, syncRules(nil)); err != nil {
 		t.Fatal(err)
 	}
 	write("mac-edits", "mac v2\n")
@@ -342,7 +361,7 @@ func TestDevMainPushesMacEditsOnBoot(t *testing.T) {
 		}
 	}
 	base, _ := loadBase(state, project)
-	host, _ := readManifest(dir)
+	host, _ := readManifest(dir, syncRules(nil))
 	if base["mac-edits"] != host["mac-edits"] || base["guest-edits"] == (fileState{}) {
 		t.Errorf("base after boot %v: want the pushed paths moved, the guest's change still pending", base)
 	}
@@ -363,14 +382,14 @@ func TestSyncPatch(t *testing.T) {
 		write(dir, p, "line one\nline two\n")
 	}
 	project := mustProjectID(t, dir)
-	if err := recordBase(state, project, dir); err != nil {
+	if err := recordBase(state, project, dir, syncRules(nil)); err != nil {
 		t.Fatal(err)
 	}
 	guest := &fakeSyncGuest{t: t, project: project, running: "abababababababab", files: map[string]string{
 		"edited.txt": "line one\nline 2\n", "src/kept.go": "line one\nline two\n", "src/new.go": "package main\n",
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := syncMain(context.Background(), []string{"-patch", dir}, &stdout, &stderr, guest.run, state); code != exitOK {
+	if code := syncMain(context.Background(), []string{"-patch", dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	patch := stdout.String()
@@ -387,7 +406,7 @@ func TestSyncPatch(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("patch -p1 -E: %v\n%s\n%s", err, out, patch)
 	}
-	got, _ := readManifest(copyDir)
+	got, _ := readManifest(copyDir, syncRules(nil))
 	want := manifest{}
 	for p, body := range guest.files {
 		sum := sha256.Sum256([]byte(body))
@@ -398,5 +417,71 @@ func TestSyncPatch(t *testing.T) {
 	}
 	if base, _ := loadBase(state, project); base["edited.txt"] == want["edited.txt"] {
 		t.Error("-patch moved the base; it only prints")
+	}
+}
+
+func TestIgnoreRules(t *testing.T) {
+	t.Parallel()
+	rules := syncRules([]string{"*.log", "dist", "build/cache"})
+	for rel, want := range map[string]bool{
+		".git": true, "sub/.git": true, "node_modules": true, "a/b/node_modules": true,
+		"app.log": true, "logs/x.log": true, "dist": true, "web/dist": true,
+		"build/cache": true, "web/build/cache": false, "build": false, "build/out.js": false,
+		"src/main.go": false, "distribution": false,
+	} {
+		if got := rules.skip(rel); got != want {
+			t.Errorf("skip(%q) = %v, want %v", rel, got, want)
+		}
+	}
+	if got := rules.findPrune(); !strings.Contains(got, `-name '*.log'`) || !strings.Contains(got, `-path './build/cache'`) {
+		t.Errorf("findPrune = %s", got)
+	}
+}
+
+func TestDevIgnoreInCopyAndSync(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	for p, body := range map[string]string{
+		"sbox.yaml": "dev: {ignore: [dist]}\n", "src/app.js": "app\n", "dist/bundle.js": "built on the Mac\n",
+		"node_modules/x/index.js": "darwin build\n", ".git/HEAD": "ref: refs/heads/main\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, p), body)
+	}
+	project := mustProjectID(t, dir)
+	guest := &fakeSyncGuest{t: t, project: project, files: map[string]string{}, rules: syncRules([]string{"dist"})}
+	var stdout, stderr bytes.Buffer
+	start := func() {
+		guest.calls = nil
+		if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+	}
+	guest.newDrive = true
+	start()
+	files := tarFiles(t, guest.started)
+	if files["skill/src/app.js"] != "app\n" || files["skill/.git/HEAD"] == "" {
+		t.Errorf("copy-in lacks the project or its history: %v", slices.Sorted(maps.Keys(files)))
+	}
+	for _, p := range []string{"skill/dist/bundle.js", "skill/node_modules/x/index.js"} {
+		if _, ok := files[p]; ok {
+			t.Errorf("copy-in carries %s", p)
+		}
+	}
+	base, _ := loadBase(state, project)
+	if _, ok := base["dist/bundle.js"]; ok || base["src/app.js"] == (fileState{}) {
+		t.Errorf("base %v: want the project without ignored files", base)
+	}
+
+	// The guest builds its own dist; neither side's dist goes anywhere.
+	guest.files = map[string]string{"sbox.yaml": "dev: {ignore: [dist]}\n", "src/app.js": "app\n", "dist/bundle.js": "built in the guest\n"}
+	stdout.Reset()
+	if code := syncMain(context.Background(), []string{"-apply", dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("sync: exit %d: %s", code, stderr.String())
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "dist", "bundle.js")); string(data) != "built on the Mac\n" || strings.Contains(stdout.String(), "dist") {
+		t.Errorf("after sync the Mac's dist is %q, output:\n%s", data, stdout.String())
 	}
 }
