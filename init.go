@@ -96,8 +96,7 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	}
 	cfg, err := host.loadConfig(dir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitUsage
+		return configFailed(stderr, err)
 	}
 	project := cmp.Or(host.projectConfig, filepath.Join(dir, "sbox.yaml"))
 	sources := keySources(host.userConfig, project)

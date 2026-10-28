@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -168,4 +170,91 @@ func TestAllowsServiceSecretMount(t *testing.T) {
 			t.Errorf("allowsMount(%s, rw %v) = %v, want %v", tt.host, tt.rw, got, tt.want)
 		}
 	}
+}
+
+// TestDevMainWorkspaces: a project asks; the user's file grants. The
+// downloaded-repo case asks for a key, a secret and the network, and
+// nothing starts; a project inside its workspace's allowance starts, with
+// the workspace's grants on top.
+func TestDevMainWorkspaces(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	dev := func(t *testing.T, dir string) (*fakeVM, string, int) {
+		vm := &fakeVM{answer: func(args []string) string {
+			if args[0] == "start" {
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		host := devHost{stateDir: t.TempDir(), userConfig: user, home: home, lookupEnv: func(k string) (string, bool) { return "value-of-" + k, true }}
+		code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host)
+		return vm, stderr.String(), code
+	}
+
+	stranger := t.TempDir()
+	writeTestFile(t, filepath.Join(stranger, "sbox.yaml"), `mounts: [{host: ~/.ssh, guest: /home/runner/.ssh}]
+secrets: {X: "env:AWS_SECRET_ACCESS_KEY"}
+egress: [evil.example]
+`)
+	writeTestFile(t, user, "egress: [api.anthropic.com]\n")
+	vm, notes, code := dev(t, stranger)
+	for _, want := range []string{
+		"BLOCKED mount   ~/.ssh → /home/runner/.ssh  not allowed in workspace default → workspaces.default.allow.mounts: [~/.ssh]",
+		"BLOCKED secret  X ← env:AWS_SECRET_ACCESS_KEY  not allowed in workspace default → workspaces.default.allow.secrets: [AWS_SECRET_ACCESS_KEY]",
+		"BLOCKED egress  evil.example:443  not allowed in workspace default → workspaces.default.allow.egress: [evil.example]",
+		"asks for more than workspace default allows; nothing was started",
+	} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, notes)
+		}
+	}
+	if code != exitFail || len(vm.calls) != 0 {
+		t.Errorf("the stranger's repo: exit %d, calls %q; want nothing done", code, vm.calls)
+	}
+
+	project := filepath.Join(home, "work", "client-a", "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, ".gitconfig-a"), "[user]\n")
+	writeTestFile(t, user, `egress: [api.anthropic.com]
+workspaces:
+  client-a:
+    paths: [~/work/client-a]
+    egress: ["*.client-a.com"]
+    mounts: [{host: ~/.gitconfig-a, guest: /home/runner/.gitconfig}]
+    allow:
+      egress: [registry.npmjs.org]
+      services: ["5432"]
+      secrets: [CLIENT_A_NPM_TOKEN]
+`)
+	writeTestFile(t, filepath.Join(project, "sbox.yaml"), "egress: [registry.npmjs.org, api.anthropic.com]\nservices: [5432]\nsecrets: {NPM_TOKEN: \"env:CLIENT_A_NPM_TOKEN\"}\n")
+	vm, notes, code = dev(t, project)
+	if code != exitOK {
+		t.Fatalf("an allowed project: exit %d\n%s", code, notes)
+	}
+	files := tarFiles(t, vm.stdins[slices.IndexFunc(vm.calls, func(c []string) bool { return c[0] == "start" })])
+	if files["sbox/egress"] != "*.client-a.com:443\napi.anthropic.com:443\nregistry.npmjs.org:443\n" || files["sbox/services"] != "5432\n" ||
+		files["mounts/0"] != "[user]\n" || files["sbox/secrets"] != "NPM_TOKEN=value-of-CLIENT_A_NPM_TOKEN\n" {
+		t.Errorf("the job: egress %q, services %q, mount %q, secrets %q", files["sbox/egress"], files["sbox/services"], files["mounts/0"], files["sbox/secrets"])
+	}
+
+	writeTestFile(t, filepath.Join(project, "sbox.yaml"), "egress: [pypi.org]\n")
+	if _, notes, code := dev(t, project); code != exitFail || !strings.Contains(notes, "→ workspaces.client-a.allow.egress: [pypi.org]") {
+		t.Errorf("pypi.org in client-a: exit %d\n%s", code, notes)
+	}
+}
+
+// _allowAll is a user config whose default workspace lets a project ask
+// for anything: for tests about other things than workspaces.
+const _allowAll = "workspaces: {default: {allow: {egress: [\"*\"], services: [\"*\"], mounts: [/], rw: [/], secrets: [GH, GH_SBOX, CLAUDE_CODE_OAUTH_TOKEN]}}}\n"
+
+// allowAll writes _allowAll to a file and returns its path.
+func allowAll(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, p, _allowAll)
+	return p
 }

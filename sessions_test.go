@@ -811,7 +811,7 @@ func TestDevMainSecrets(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitOK {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	run := vm.stdins[1]
@@ -825,7 +825,7 @@ func TestDevMainSecrets(t *testing.T) {
 	delete(host, "GH_SBOX")
 	none := fakeVM{}
 	stderr.Reset()
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitUsage ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup, userConfig: allowAll(t)}); code != exitUsage ||
 		len(none.calls) != 0 || !strings.Contains(stderr.String(), "GH_SBOX") {
 		t.Errorf("unset host variable: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
 	}
@@ -878,7 +878,7 @@ func TestDevMainPreflightAndSummary(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitOK {
+	if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	id := vm.calls[1][1]
@@ -944,7 +944,7 @@ func TestDevMainMounts(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), home: home}); code != exitOK {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), home: home, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	files := tarFiles(t, vm.stdins[1])
@@ -961,7 +961,7 @@ func TestDevMainMounts(t *testing.T) {
 	}
 	none := fakeVM{}
 	stderr.Reset()
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), home: home}); code != exitUsage ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), home: home, userConfig: allowAll(t)}); code != exitUsage ||
 		len(none.calls) != 0 || !strings.Contains(stderr.String(), "~/.gitconfig") {
 		t.Errorf("missing mount: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
 	}
@@ -991,7 +991,7 @@ func TestDevMainConfigChangedAndRestart(t *testing.T) {
 	dev := func(args ...string) string {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), append(args, dir), strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, keep: keep}); code != exitOK {
+		if code := devMain(context.Background(), append(args, dir), strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, keep: keep, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev %q: exit %d: %s", args, code, stderr.String())
 		}
 		return stderr.String()
@@ -1022,7 +1022,7 @@ func TestDevMainConfigChangedAndRestart(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{"-restart", "-fresh", dir}, strings.NewReader(""), io.Discard, &stderr, vm.run, devHost{stateDir: state}); code != exitUsage {
+	if code := devMain(context.Background(), []string{"-restart", "-fresh", dir}, strings.NewReader(""), io.Discard, &stderr, vm.run, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitUsage {
 		t.Errorf("-restart -fresh: exit %d, want usage", code)
 	}
 }
@@ -1044,7 +1044,7 @@ func TestSetupEnvMainWarnsAboutAnOlderConfig(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, vm.run, devHost{stateDir: state}); code != exitOK {
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, vm.run, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "the config changed since session 0123abcd started (egress)") {
@@ -1066,7 +1066,7 @@ func TestDevFlagsConfigAndCommand(t *testing.T) {
 			return ""
 		}}
 		var stdout, stderr bytes.Buffer
-		code := devMain(context.Background(), args, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()})
+		code := devMain(context.Background(), args, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)})
 		return vm, stderr.String(), code
 	}
 
@@ -1133,7 +1133,7 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 	}}
 	dev := func() string {
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, home: home}); code != exitOK {
+		if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, home: home, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("exit %d: %s", code, stderr.String())
 		}
 		return stderr.String()

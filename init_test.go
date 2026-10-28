@@ -45,7 +45,7 @@ func TestConfigMain(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	user := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(user, []byte("egress: [api.anthropic.com]\nsecrets: {CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN}\n"), 0o644); err != nil {
+	if err := os.WriteFile(user, []byte("egress: [api.anthropic.com]\nsecrets: {CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN}\n"+_allowAll), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("ports: [3000]\nsecrets: {GITHUB_TOKEN: env:GH_SBOX}\n"), 0o644); err != nil {
@@ -83,7 +83,7 @@ func TestConfigMainSources(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	user := filepath.Join(t.TempDir(), "config.yaml")
-	writeTestFile(t, user, "egress: [a.example]\ntimeouts: {run: 2m}\nsecrets: {CLAUDE_CODE_OAUTH_TOKEN: env:TOKEN}\n")
+	writeTestFile(t, user, "egress: [a.example]\ntimeouts: {run: 2m}\nsecrets: {CLAUDE_CODE_OAUTH_TOKEN: env:TOKEN}\n"+_allowAll)
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [b.example]\nports: [3000]\ntimeouts: {setup: 5m}\nsecrets: {GITHUB_TOKEN: env:GH}\n")
 	var stdout, stderr bytes.Buffer
 	lookup := func(k string) (string, bool) { return "", k == "TOKEN" }
