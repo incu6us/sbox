@@ -79,14 +79,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
 	case "dev":
 		var keep func(string, int) bool
+		var approve func([]string) bool
 		if isTerminal(os.Stdin) {
-			keep = askKeep(os.Stdin, stderr)
+			keep, approve = askKeep(os.Stdin, stderr), askApprove(os.Stdin, stderr)
 		}
 		var title func(string)
 		if isTerminal(os.Stderr) {
 			title = func(s string) { _, _ = fmt.Fprintf(os.Stderr, "\033]0;%s\007", s) }
 		}
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile(), keep: keep, title: title})
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile(), keep: keep, approve: approve, title: title})
 	case "init":
 		return initMain(args[1:], stdout, stderr)
 	case "config":

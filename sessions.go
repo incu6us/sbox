@@ -387,6 +387,7 @@ type devHost struct {
 	fetch                fetchFunc                   // GitHub downloads; githubFetch when nil
 	projectConfig        string                      // -config: the file used instead of the project's sbox.yaml
 	workspace            string                      // -workspace: the user's choice for this run; by folder when empty
+	approve              func(lines []string) bool   // asks to allow refused requests for this project alone; refused outright when nil
 	title                func(string)                // sets the terminal's title; no change notice when nil
 	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
 }
@@ -468,10 +469,31 @@ func (h devHost) loadConfig(dir string) (config, error) {
 	if home == "" {
 		home, _ = os.UserHomeDir()
 	}
-	cfg, ws, misses, err := layered(h.userConfig, project, dir, h.workspace, home, nil)
-	if err == nil && len(misses) > 0 {
-		return cfg, &blockedError{dir: dir, ws: ws, misses: misses, cfg: cfg}
+	id, _ := projectID(dir)
+	approved := map[string]bool{}
+	if h.stateDir != "" && id != "" {
+		for r := range loadApproved(h.stateDir, id) {
+			approved[r] = true
+		}
 	}
+	cfg, ws, misses, err := layered(h.userConfig, project, dir, h.workspace, home, approved)
+	if err != nil || len(misses) == 0 {
+		return cfg, err
+	}
+	blocked := &blockedError{dir: dir, ws: ws, misses: misses, cfg: cfg}
+	if h.approve == nil || h.stateDir == "" || id == "" {
+		return cfg, blocked
+	}
+	if blocked.shown = true; !h.approve(blocked.lines()) {
+		return cfg, blocked
+	}
+	if err := saveApproved(h.stateDir, id, misses); err != nil {
+		return cfg, err
+	}
+	for _, r := range misses {
+		approved[r.id()] = true
+	}
+	cfg, _, _, err = layered(h.userConfig, project, dir, h.workspace, home, approved)
 	return cfg, err
 }
 
@@ -484,7 +506,9 @@ func configFailed(stderr io.Writer, err error) int {
 		return exitUsage
 	}
 	for _, line := range blocked.lines() {
-		_, _ = fmt.Fprintln(stderr, line)
+		if !blocked.shown {
+			_, _ = fmt.Fprintln(stderr, line)
+		}
 	}
 	_, _ = fmt.Fprintf(stderr, "sbox: %v; nothing was started (add the keys above to your config, or remove them from %s)\n", err, filepath.Join(blocked.dir, "sbox.yaml"))
 	return exitFail
