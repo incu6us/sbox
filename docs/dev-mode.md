@@ -170,7 +170,7 @@ CONNECT proxy, unchanged.
 **Reattach.** A session outlives its terminal. `sbox dev` on a project
 that already has a running or paused session attaches to it and says so
 (`attached to session <id>, running 2h10m`), resuming a paused one.
-`-fresh` is the only way to get a second VM for the same project. Closing
+`-fresh` stops it and starts over; two VMs never share a project's drive. Closing
 the terminal detaches without stopping; `sbox stop` ends the session, and
 `sbox dev` asks once at detach whether to stop or keep it, with keep as
 the default for a session that has unsynced changes.
@@ -467,8 +467,20 @@ writes a commented starter file and `sbox config` prints the effective one.
     - Found on the real VM: inside the namespace unprivileged binds
       started at 53 (for the DNS logger), so the relay couldn't bind 22;
       it is 0 there now, since only sbox's helpers listen in it
-- [ ] **5c. Reattach and detach.** Session lookup by project hash, attach
+- [x] **5c. Reattach and detach.** Session lookup by project hash, attach
     to running or paused, the detach question, `-fresh` semantics.
+    - [x] `sbox dev` finds the project's running or paused session in
+      `sbox-run ps`, resumes a paused one, and attaches with a note
+    - [x] at detach, `keep session <id> running? [Y/n]` when stdin is a
+      terminal; without one the session stops, as before
+    - [x] `-fresh` stops the live session, then drops the drive: one
+      session per project stays the rule, since two would share a drive
+    - [x] `sbox sync` resumes a paused session for the sync and pauses it
+      again (it used to try a second session and fail on "in use")
+    - [x] tested with fakes, then on the real VM (kept, paused, reattached
+      to the same guest's process, stopped)
+    - [ ] keep as the default only when the guest has unsynced changes:
+      the question always defaults to keep for now
 - [ ] **5d. Toolchains.** `image.packages` through setup and the stamp,
     `pids.max` in the jailer cgroup, the read-only-root line in preflight.
     Probe: `go version` after adding `golang-go`; a fork bomb in the guest

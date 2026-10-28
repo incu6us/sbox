@@ -67,7 +67,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
 	case "dev":
 		home, _ := os.UserHomeDir()
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), filepath.Join(home, ".config", "sbox", "config.yaml"))
+		var keep func(string) bool
+		if isTerminal(os.Stdin) {
+			keep = askKeep(os.Stdin, stderr)
+		}
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), filepath.Join(home, ".config", "sbox", "config.yaml"), keep)
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":

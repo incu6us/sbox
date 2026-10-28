@@ -415,6 +415,16 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   - Fixed from the real run: unprivileged binds in the namespace started
     at 53, so the raw relay couldn't bind 22; they start at 0 there now.
 
+- ✅ Step 5c: reattach. `sbox dev` on a folder with a running or paused
+  session attaches to it (`attached to session <id>, running 2h10m`),
+  resuming a paused one. At exit it asks whether to keep the session,
+  keep being the default; with no terminal it stops it, as before.
+  `-fresh` stops the live session, then drops the drive. `sbox sync` on a
+  paused session resumes it for the sync and pauses it again.
+  - Verified on the real VM: a session kept at detach and paused, then
+    `sbox dev` again reaches the first guest's background process, and
+    stopping at the second detach leaves nothing running.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

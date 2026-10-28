@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -174,13 +175,15 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 }
 
 // devMain implements `sbox dev [-fresh] <dir> [-- <command...>]`: a
-// session on the directory that stays up, a terminal in it, and the
-// session stopped when the terminal's command exits. The project's work
-// drive (the runner's home, with the project in it) is kept between
-// sessions; -fresh discards it first. When the drive is new, what was
-// copied in becomes the sync base, kept in stateDir on the Mac. Ports and
-// services come from userConfig and the project's sbox.yaml.
-func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string) int {
+// terminal in the project's session. A running or paused session on the
+// project is attached to again; otherwise a new one starts. The project's
+// work drive (the runner's home, with the project in it) is kept between
+// sessions; -fresh stops the live session and discards the drive first.
+// When the drive is new, what was copied in becomes the sync base, kept in
+// stateDir on the Mac. Ports, services and egress come from userConfig and
+// the project's sbox.yaml. At detach, keep says whether the session stays
+// up; with no keep (no terminal to ask on) it is stopped.
+func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string, keep func(id string) bool) int {
 	fresh := len(args) > 0 && args[0] == "-fresh"
 	if fresh {
 		args = args[1:]
@@ -199,23 +202,64 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
+	live, found, code := liveSession(ctx, project, stderr, vm)
+	if code != exitOK {
+		return code
+	}
+	if found && fresh {
+		if err := vm(ctx, nil, io.Discard, stderr, "stop", live.ID); err != nil {
+			return vmFailed(stderr, err)
+		}
+		found = false
+	}
 	if fresh {
 		if err := vm(ctx, nil, io.Discard, stderr, "forget", project); err != nil {
 			return vmFailed(stderr, err)
 		}
 	}
-	job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress}
-	id, fresh, code := startSession(ctx, args[0], project, job, stderr, vm)
-	if code != exitOK {
-		return code
-	}
-	if fresh {
-		if err := recordBase(stateDir, project, args[0]); err != nil {
-			_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
+
+	id := live.ID
+	if found {
+		if live.State == "paused" {
+			if err := vm(ctx, nil, io.Discard, stderr, "resume", id); err != nil {
+				return vmFailed(stderr, err)
+			}
+		}
+		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
+	} else {
+		job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress}
+		var newDrive bool
+		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
+			return code
+		}
+		if newDrive {
+			if err := recordBase(stateDir, project, args[0]); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
+			}
 		}
 	}
-	defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, stderr, vm) }()
-	return attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
+
+	code = attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
+	if keep != nil && keep(id) {
+		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
+		return code
+	}
+	_ = sessionMain(ctx, "stop", []string{id}, io.Discard, stderr, vm)
+	return code
+}
+
+// liveSession finds the project's running or paused session.
+func liveSession(ctx context.Context, project string, stderr io.Writer, vm sboxRunFunc) (session, bool, int) {
+	var ps bytes.Buffer
+	if err := vm(ctx, nil, &ps, stderr, "ps"); err != nil {
+		return session{}, false, vmFailed(stderr, err)
+	}
+	for _, s := range parseSessions(ps.String()) {
+		if s.Project == project && (s.State == "running" || s.State == "paused") {
+			return s, true, exitOK
+		}
+	}
+	return session{}, false, exitOK
 }
 
 // attachExit turns an sbox-run call's error into an exit code: the
@@ -297,4 +341,21 @@ func age(d time.Duration) string {
 		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 	return fmt.Sprintf("%dd%dh", int(d.Hours())/24, int(d.Hours())%24)
+}
+
+// askKeep asks on out whether to keep a session running at detach, and
+// reads the answer from in. Keeping is the default: stopping loses the
+// guest's unsynced work.
+func askKeep(in io.Reader, out io.Writer) func(id string) bool {
+	return func(id string) bool {
+		_, _ = fmt.Fprintf(out, "sbox: keep session %s running? [Y/n] ", id)
+		answer, _ := bufio.NewReader(in).ReadString('\n')
+		return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "n")
+	}
+}
+
+// isTerminal reports whether f is a terminal.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }

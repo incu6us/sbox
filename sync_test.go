@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -164,6 +165,7 @@ type fakeSyncGuest struct {
 	project string
 	files   map[string]string // the guest's work tree
 	running string            // a session already running for the project
+	state   string            // its state, running when empty
 	calls   [][]string
 }
 
@@ -172,7 +174,8 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 	switch args[0] {
 	case "ps":
 		if g.running != "" {
-			_, _ = fmt.Fprintf(out, "%s running 1700000000 %s\n", g.running, g.project)
+			state := cmp.Or(g.state, "running")
+			_, _ = fmt.Fprintf(out, "%s %s 1700000000 %s\n", g.running, state, g.project)
 		}
 	case "start":
 		_, _ = io.Copy(io.Discard, in)
@@ -284,6 +287,13 @@ func TestSyncMain(t *testing.T) {
 	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK ||
 		slices.ContainsFunc(guest.calls, func(c []string) bool { return c[0] == "start" || c[0] == "stop" }) {
 		t.Errorf("with a session running: exit %d, calls %q; want that session used, none started or stopped", code, guest.calls)
+	}
+
+	guest.state = "paused"
+	guest.calls = nil
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, state); code != exitOK ||
+		!slices.Equal(guest.calls[1], []string{"resume", guest.running}) || !slices.Equal(guest.calls[len(guest.calls)-1], []string{"pause", guest.running}) {
+		t.Errorf("with the session paused: exit %d, calls %q; want it resumed for the sync and paused again", code, guest.calls)
 	}
 
 	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, t.TempDir()); code != exitFail ||
