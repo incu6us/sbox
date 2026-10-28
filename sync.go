@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -662,6 +663,72 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 		}
 	}
 	return next
+}
+
+// runChanges brings back what sbox run's command changed in its work
+// folder: the guest's tar (sbox-run out), planned against base, the folder
+// as it was copied in, so files the Mac changed meanwhile are left alone
+// (or listed as conflicts). It shows them with diffs, writes them to
+// patchFile as a patch, or with apply writes them into dir once confirm
+// says yes; with no confirm (no terminal), -apply is refused.
+func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manifest, rules ignoreRules, apply bool, patchFile string, confirm func() bool, stdout, stderr io.Writer) int {
+	fail := func(err error) int {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitFail
+	}
+	tmp, err := os.MkdirTemp("", "sbox-run-")
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	pulled := filepath.Join(tmp, "guest")
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := vm(ctx, nil, pw, stderr, "out", id)
+		pw.CloseWithError(err)
+		done <- err
+	}()
+	err = extractTar(pr, pulled, true)
+	_, _ = io.Copy(io.Discard, pr)
+	if verr := <-done; err == nil {
+		err = verr
+	}
+	if err != nil {
+		return fail(fmt.Errorf("reading the guest's files: %w", err))
+	}
+	guest, err := readManifest(pulled, rules)
+	if err != nil {
+		return fail(err)
+	}
+	host, err := readManifest(dir, rules)
+	if err != nil {
+		return fail(err)
+	}
+	plan := slices.DeleteFunc(planSync(base, host, guest), func(a syncAction) bool {
+		return a.Op == opPush || a.Op == opPushDelete || a.Op == opSame // the Mac's own, or already alike
+	})
+	if patchFile != "" {
+		if err := os.WriteFile(patchFile, []byte(guestPatch(plan, host, dir, pulled)), 0o644); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(stderr, "sbox: the command's changes are in %s\n", patchFile)
+		return exitOK
+	}
+	if !writePlan(stdout, plan, host, guest, dir, pulled, true) || !apply {
+		return exitOK
+	}
+	if confirm == nil {
+		return fail(errors.New("-apply asks before writing: run it in a terminal, or use -patch <file>"))
+	}
+	if !confirm() {
+		_, _ = fmt.Fprintf(stderr, "sbox: %s left as it was\n", dir)
+		return exitOK
+	}
+	if err := applyPulls(dir, pulled, plan, guest); err != nil {
+		return fail(err)
+	}
+	return exitOK
 }
 
 // pushOnBoot brings the Mac's changes into a kept home when sbox dev boots

@@ -1198,3 +1198,38 @@ func TestRunSecretsOnVM(t *testing.T) {
 		t.Errorf("markers %q: want the lookup with the token redacted", res.markers)
 	}
 }
+
+// TestRunApplyOnVM: a run's changes to its folder come back through the
+// raw out drive and apply, the .git and ignored folders left out.
+func TestRunApplyOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	for p, body := range map[string]string{"a.txt": "v1\n", "b.txt": "gone\n", ".gitignore": "node_modules\n", ".git/HEAD": "ref\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, p), body)
+	}
+	rules := syncRules(gitignoreRules(dir))
+	base, err := readManifest(dir, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := guestJob{command: []string{"sh", "-c", "echo v2 > a.txt; echo new > c.txt; rm b.txt; mkdir node_modules; echo x > node_modules/i.js; echo hook > .git/HEAD"},
+		out: pullScript(rules)}
+	var out, errOut bytes.Buffer
+	res, err := runVM(ctx, dir, job, 30*time.Second, false, &out, &errOut)
+	if err != nil || res.exitCode != 0 {
+		t.Fatalf("run: %v, exit %d: %s", err, res.exitCode, errOut.String())
+	}
+	if code := runChanges(ctx, sboxRun, res.id, dir, base, rules, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
+		t.Fatalf("runChanges: exit %d: %s", code, errOut.String())
+	}
+	read := func(p string) string { data, _ := os.ReadFile(filepath.Join(dir, p)); return string(data) }
+	if read("a.txt") != "v2\n" || read("c.txt") != "new\n" || read("b.txt") != "" || read(".git/HEAD") != "ref\n" || read("node_modules/i.js") != "" {
+		t.Errorf("after apply: a %q, c %q, b %q, .git/HEAD %q, node_modules %q", read("a.txt"), read("c.txt"), read("b.txt"), read(".git/HEAD"), read("node_modules/i.js"))
+	}
+}

@@ -43,6 +43,7 @@ while [ $# -gt 0 ]; do
 done
 id=${jid%-pre}
 [ -n "$FAKE_VMJSON" ] && cp "$chroot/firecracker/$jid/root/vm.json" "$FAKE_VMJSON"
+[ -n "$FAKE_OUT" ] && [ -f "$chroot/firecracker/$jid/root/out.img" ] && cat "$FAKE_OUT" >"$chroot/firecracker/$jid/root/out.img"
 if [ "$FAKE_JAILER" != silent ]; then
 	echo "SBOX-$(cat "$SBOX_STATE/runs/$id/drive/sbox/nonce") START"
 fi
@@ -865,6 +866,59 @@ func TestSboxRunPrefetchRegistries(t *testing.T) {
 		"/prefetch.log registry.npmjs.org:443 pypi.org:443 files.pythonhosted.org:443 npm.internal.example.com:443"
 	if !slices.Contains(e.calls("setpriv"), want) {
 		t.Errorf("setpriv calls %q lack %q", e.calls("setpriv"), want)
+	}
+}
+
+// TestSboxRunOut: a run carrying sbox/out.sh gets a raw writable drive;
+// the guest writes its byte count in the first block and the tar after
+// it, and sbox-run keeps exactly that many bytes for sbox-run out.
+func TestSboxRunOut(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, header string
+		want         string // the tar kept, "" for none
+	}{
+		{"the count is honoured", "12\n", "hello world!"},
+		{"not a count", "x12\n", ""},
+		{"over the cap", "99999999999\n", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newSboxRunEnv(t)
+			const id = "eeee000000000007"
+			img := filepath.Join(t.TempDir(), "out.img")
+			block := tt.header + strings.Repeat("\x00", 512-len(tt.header))
+			// Junk well past a pipe's buffer: reading only what the count says
+			// mustn't leave a writer to die of SIGPIPE.
+			if err := os.WriteFile(img, []byte(block+"hello world!"+strings.Repeat("junk after", 100000)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			vmJSON := filepath.Join(t.TempDir(), "vm.json")
+			e.extra = []string{"FAKE_OUT=" + img, "FAKE_VMJSON=" + vmJSON}
+			var tarBuf bytes.Buffer
+			if err := writeRunTar(&tarBuf, t.TempDir(), guestJob{command: []string{"true"}, out: "tar -cf - ."}, "n0nce", "c0ffee"); err != nil {
+				t.Fatal(err)
+			}
+			if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+				t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+			}
+			if cfg, _ := os.ReadFile(vmJSON); !strings.Contains(string(cfg), `{"drive_id": "out", "path_on_host": "/out.img", "is_root_device": false, "is_read_only": false}`) {
+				t.Errorf("vm.json lacks the out drive:\n%s", cfg)
+			}
+			stdout, stderr, code := e.run(nil, "out", id)
+			if tt.want == "" {
+				if code != 1 || !strings.Contains(stderr, "no changes") {
+					t.Errorf("out: exit %d, %q, %q; want a refusal", code, stdout, stderr)
+				}
+				return
+			}
+			if code != 0 || stdout != tt.want {
+				t.Errorf("out: exit %d, stdout %q, stderr %q; want %q", code, stdout, stderr, tt.want)
+			}
+			if _, _, code := e.run(nil, "out", id); code != 1 {
+				t.Errorf("a second out: exit %d, want it gone", code)
+			}
+		})
 	}
 }
 
