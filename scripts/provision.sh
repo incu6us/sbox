@@ -7,6 +7,10 @@ set -euo pipefail
 DIR=/opt/sbox
 ROOTFS_REVISION=7 # bump when the rootfs recipe below changes
 GUEST_PACKAGES=ca-certificates,libstdc++6,curl,wget,netcat-openbsd,iproute2,iputils-ping,python3,python3-pip,python3-venv,strace,git,procps,xz-utils,openssh-server
+# image.packages from the user's config, sorted and checked by sbox.
+if [[ -n ${GUEST_EXTRA_PACKAGES:-} ]]; then
+	GUEST_PACKAGES+=",$GUEST_EXTRA_PACKAGES"
+fi
 
 mkdir -p "$DIR/cache" "$DIR/bin"
 cd "$DIR"
@@ -52,6 +56,11 @@ install -m 0644 cache/vmlinux vmlinux
 # The guest image: Ubuntu minbase from the signed archive, node and uv from
 # the pinned tarballs, an unprivileged runner user, and the doctor's hello init.
 stamp="rootfs.r${ROOTFS_REVISION}-${NODE_SHA256:0:12}-${UV_SHA256:0:12}-${CLAUDE_SHA256:0:12}"
+# A change to the package list rebuilds the image; no list keeps the stamp
+# images built before image.packages existed have.
+if [[ -n ${GUEST_EXTRA_PACKAGES:-} ]]; then
+	stamp+="-p$(printf %s "$GUEST_EXTRA_PACKAGES" | sha256sum | cut -c1-12)"
+fi
 if [[ -f rootfs.ext4 && -f "$stamp" ]]; then
 	step "rootfs up to date"
 	exit 0

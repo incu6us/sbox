@@ -236,6 +236,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			if err := recordBase(stateDir, project, args[0]); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 			}
+			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
 		}
 	}
 

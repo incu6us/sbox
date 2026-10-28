@@ -27,6 +27,13 @@ func hostStateDir() string {
 	return filepath.Join(home, ".local", "share", "sbox")
 }
 
+// userConfigFile is the user's sbox config, read by every command that
+// takes config.
+func userConfigFile() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "sbox", "config.yaml")
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
 		_, _ = fmt.Fprint(stderr, "usage: sbox <command>\n\n"+
@@ -66,16 +73,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "sync":
 		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
 	case "dev":
-		home, _ := os.UserHomeDir()
 		var keep func(string) bool
 		if isTerminal(os.Stdin) {
 			keep = askKeep(os.Stdin, stderr)
 		}
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), filepath.Join(home, ".config", "sbox", "config.yaml"), keep)
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), userConfigFile(), keep)
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":
-		if err := setup(ctx, stdout); err != nil {
+		if err := setup(ctx, stdout, userConfigFile()); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
 			return exitFail
 		}

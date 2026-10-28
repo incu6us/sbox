@@ -97,3 +97,40 @@ func TestLoadConfigEgress(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigImage(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	missing := filepath.Join(t.TempDir(), "none.yaml")
+	cfg, err := loadConfig(write(t, "image:\n  packages: [rustc, golang-go, g++, golang-go]\n"), missing)
+	if err != nil || !slices.Equal(cfg.Image.Packages, []string{"g++", "golang-go", "rustc"}) {
+		t.Errorf("image.packages = %q, %v; want them sorted, once each", cfg.Image.Packages, err)
+	}
+
+	for _, tt := range []struct{ name, user, project, wantErr string }{
+		{"a comma would add another package", "image: {packages: [\"git,curl\"]}\n", "", "git,curl"},
+		{"an option", "image: {packages: [\"--allow-unauthenticated\"]}\n", "", "--allow-unauthenticated"},
+		{"a URL", "image: {packages: [\"https://example.com/x.deb\"]}\n", "", "x.deb"},
+		{"in a project's file", "", "image: {packages: [golang-go]}\n", "~/.config/sbox/config.yaml"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			user, project := missing, missing
+			if tt.user != "" {
+				user = write(t, tt.user)
+			}
+			if tt.project != "" {
+				project = write(t, tt.project)
+			}
+			if _, err := loadConfig(user, project); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -15,6 +15,10 @@ poweroff() {
 	echo 1 >/proc/sys/kernel/sysrq
 	echo b >/proc/sysrq-trigger
 }
+# Cap the runner's processes (threads count too), so a fork bomb or a
+# runaway build fails inside the guest. Everything started from here
+# inherits it; root, so sshd, is exempt and still lets you in.
+prlimit --pid $$ --nproc=2048:2048
 for d in /tmp /var/tmp /run; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done

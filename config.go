@@ -23,7 +23,14 @@ type config struct {
 	Ports    []int    `yaml:"ports"`    // guest ports forwarded to the Mac's localhost
 	Services []int    `yaml:"services"` // Mac ports the guest reaches at host.sbox
 	Egress   []string `yaml:"egress"`   // hosts the guest may reach: name or *.domain, :port or :* (443 when left out)
+	Image    struct {
+		Packages []string `yaml:"packages"` // Ubuntu packages added to the guest image by sbox setup
+	} `yaml:"image"`
 }
+
+// _packageName is a Debian package name: nothing mmdebstrap could read as
+// a second package, an option or a file.
+var _packageName = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 
 var _egressPattern = regexp.MustCompile(`^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:([0-9]{1,5}|\*))?$`)
 
@@ -31,7 +38,7 @@ var _egressPattern = regexp.MustCompile(`^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:([0-
 // an empty one.
 func loadConfig(userFile, projectFile string) (config, error) {
 	var cfg config
-	for _, p := range []string{userFile, projectFile} {
+	for i, p := range []string{userFile, projectFile} {
 		var c config
 		data, err := os.ReadFile(p)
 		switch {
@@ -48,6 +55,10 @@ func loadConfig(userFile, projectFile string) (config, error) {
 		if err := c.check(); err != nil {
 			return config{}, fmt.Errorf("%s: %w", p, err)
 		}
+		if i == 1 && len(c.Image.Packages) > 0 {
+			return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
+		}
+		cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
 		cfg.Ports = append(cfg.Ports, c.Ports...)
 		cfg.Services = append(cfg.Services, c.Services...)
 		cfg.Egress = append(cfg.Egress, c.Egress...)
@@ -55,7 +66,9 @@ func loadConfig(userFile, projectFile string) (config, error) {
 	slices.Sort(cfg.Ports)
 	slices.Sort(cfg.Services)
 	slices.Sort(cfg.Egress)
+	slices.Sort(cfg.Image.Packages)
 	cfg.Ports, cfg.Services, cfg.Egress = slices.Compact(cfg.Ports), slices.Compact(cfg.Services), slices.Compact(cfg.Egress)
+	cfg.Image.Packages = slices.Compact(cfg.Image.Packages)
 	raw := make(map[string]string) // port → host
 	for _, e := range cfg.rawEgress() {
 		host, port, _ := strings.Cut(e, ":")
@@ -99,6 +112,11 @@ func (c *config) check() error {
 			}
 		}
 		c.Egress[i] = e
+	}
+	for _, p := range c.Image.Packages {
+		if !_packageName.MatchString(p) {
+			return fmt.Errorf("image.packages: %q: want an Ubuntu package name", p)
+		}
 	}
 	for _, p := range c.Ports {
 		if p < 1024 || p > 65535 {
