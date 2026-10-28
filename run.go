@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -168,6 +170,10 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		return exitInfra
 	}
 	job, timeout := cfg.runJob(rest[2:]), cfg.runTimeout()
+	if job.secrets, err = cfg.secretValues(os.LookupEnv); err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
 
 	dir, name, err := resolveTarget(rest[0], githubFetch(ctx))
 	if err != nil {
@@ -247,7 +253,7 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 		return runResult{}, fmt.Errorf("limactl: %w", err)
 	}
 
-	res := streamConsole(console, out, verbose, nonce)
+	res := streamConsole(console, out, verbose, nonce, redactor(job.secrets))
 	res.nonce, res.canary = nonce, canary
 	err = cmd.Wait()
 	var exitErr *exec.ExitError
@@ -263,7 +269,43 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 // streamConsole prints the guest's output and picks up the init's markers,
 // which only count with the run's nonce. Kernel and Firecracker lines are
 // noise unless verbose.
-func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string) runResult {
+// redactor replaces each secret, its hex in either case and its base64
+// forms (standard and URL-safe, padded or not) with [redacted:NAME], as
+// sbox-redact.py does in the VM; values under 8 characters would match
+// noise and stay.
+func redactor(secrets map[string]string) func(string) string {
+	type form struct {
+		re    *regexp.Regexp
+		label string
+	}
+	var forms []form
+	for _, name := range slices.Sorted(maps.Keys(secrets)) {
+		v := secrets[name]
+		if len(v) < 8 {
+			continue
+		}
+		alts := []string{v}
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding} {
+			e := enc.EncodeToString([]byte(v))
+			alts = append(alts, e, strings.TrimRight(e, "="))
+		}
+		slices.SortFunc(alts, func(a, b string) int { return len(b) - len(a) })
+		for i := range alts {
+			alts[i] = regexp.QuoteMeta(alts[i])
+		}
+		label := "[redacted:" + name + "]"
+		forms = append(forms, form{regexp.MustCompile(strings.Join(alts, "|")), label},
+			form{regexp.MustCompile("(?i)" + hex.EncodeToString([]byte(v))), label})
+	}
+	return func(s string) string {
+		for _, f := range forms {
+			s = f.re.ReplaceAllLiteralString(s, f.label)
+		}
+		return s
+	}
+}
+
+func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string, redact func(string) string) runResult {
 	var (
 		res     runResult
 		blank   bool // held back: the guest prints one before each marker
@@ -275,6 +317,9 @@ func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string) runRe
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
+		if redact != nil {
+			line = redact(line)
+		}
 		if blank && !strings.HasPrefix(line, mark) {
 			_, _ = fmt.Fprintln(out, "│")
 		}
@@ -301,9 +346,12 @@ func streamConsole(r io.Reader, out io.Writer, verbose bool, nonce string) runRe
 
 // isNoise spots Firecracker's own log lines and kernel messages.
 func isNoise(line string) bool {
-	return strings.HasPrefix(line, "[") || (len(line) > 4 && line[4] == '-' && strings.Contains(line, "[") &&
+	return _kernelLine.MatchString(line) || (len(line) > 4 && line[4] == '-' && strings.Contains(line, "[") &&
 		strings.HasPrefix(line, "20"))
 }
+
+// _kernelLine is a kernel message's "[    0.512345] " timestamp.
+var _kernelLine = regexp.MustCompile(`^\[\s*\d+\.\d+\]`)
 
 // printable escapes control characters, so guest output can't drive the
 // user's terminal.

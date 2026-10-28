@@ -95,7 +95,8 @@ against `file` events on their `file_path` instead.
     `scripts/sbox-redact.py` takes each secret, its hex in either case and
     its base64 forms out of `sbox-run log` and `events`, so the summary,
     `sbox log` and `sbox watch` never show one. The interactive terminal
-    is yours and isn't filtered. `run` and `scan` carry no secrets yet.) `redact` and its test; wired into the four writers;
+    is yours and isn't filtered. `run` and `scan` redact on the Mac, in the
+    console reader, before anything is printed or judged.) `redact` and its test; wired into the four writers;
     `runResult.secrets`. No behaviour change until a secret exists (the
     agent plan's commit 2 fills the list).
 - [ ] **3. Hostname and work directory.** (Hostname done: six letters from

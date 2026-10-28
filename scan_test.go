@@ -157,7 +157,8 @@ func TestScanScript(t *testing.T) {
 		`-o /run/sbox/trace.1 sh -c 'node "${CLAUDE_PLUGIN_ROOT}/it'\''s.js"' </drive/sbox/in/stdin.1`,
 		`sh -c '(cat /drive/sbox/in/stdin.2; sleep 18) | '\''npx'\'' '\''pkg'\''' </dev/null`,
 		`pkill -KILL -u runner`,
-		`NODE_DISABLE_COMPILE_CACHE=1 'npm_config_userconfig=/dev/null' \`,
+		`NODE_DISABLE_COMPILE_CACHE=1 'npm_config_userconfig=/dev/null' "$@" \`,
+		`[ -f /drive/sbox/secrets ] && while IFS= read -r kv; do set -- "$@" "$kv"; done </drive/sbox/secrets`,
 		`getent hosts "entry-2-$nonce.sbox.invalid"`,
 		`echo "SBOX-$nonce RESULT 2 $status"`,
 	} {

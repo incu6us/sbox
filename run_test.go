@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/hex"
 	"io"
 	"os"
 	"os/exec"
@@ -60,6 +61,12 @@ func TestStreamConsole(t *testing.T) {
 			wantOut: "│ \\x1b[2Jgone\n",
 		},
 		{
+			name:    "output starting with [ is output; kernel lines aren't",
+			give:    "SBOX-abc123 START\n[1, 2]\n[INFO] built\n[    0.512345] late kernel line\n[redacted:X]\n\nSBOX-abc123 EXIT 0\n",
+			want:    runResult{started: true},
+			wantOut: "│ [1, 2]\n│ [INFO] built\n│ [redacted:X]\n",
+		},
+		{
 			name: "never started",
 			give: "[ 0.1] Kernel panic\n",
 		},
@@ -75,7 +82,7 @@ func TestStreamConsole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var out bytes.Buffer
-			got := streamConsole(strings.NewReader(tt.give), &out, false, nonce)
+			got := streamConsole(strings.NewReader(tt.give), &out, false, nonce, nil)
 			if got.started != tt.want.started || got.exitCode != tt.want.exitCode || got.timedOut != tt.want.timedOut ||
 				!slices.Equal(got.markers, tt.want.markers) {
 				t.Errorf("result = %+v, want %+v", got, tt.want)
@@ -161,5 +168,38 @@ func TestEgressLog(t *testing.T) {
 	})
 	if !slices.Equal(allowed, []string{"api.anthropic.com:443 ×2"}) || !slices.Equal(refused, []string{"example.com:443 ×1"}) {
 		t.Errorf("allowed %v, refused %v", allowed, refused)
+	}
+}
+
+// TestRedactor matches sbox-redact.py's self-test: the value, its hex in
+// either case and its base64 forms go; a short value stays.
+func TestRedactor(t *testing.T) {
+	t.Parallel()
+	const secret = "ghp_abcdefgh12345678"
+	redact := redactor(map[string]string{"GITHUB_TOKEN": secret, "SHORT": "abc"})
+	for _, encoded := range []string{secret, hex.EncodeToString([]byte(secret)), strings.ToUpper(hex.EncodeToString([]byte(secret))),
+		"Z2hwX2FiY2RlZmdoMTIzNDU2Nzg=", "Z2hwX2FiY2RlZmdoMTIzNDU2Nzg"} {
+		if got := redact("A " + encoded + ".evil.example"); got != "A [redacted:GITHUB_TOKEN].evil.example" {
+			t.Errorf("redact(%s) = %q", encoded, got)
+		}
+	}
+	if got := redact("abc stays"); got != "abc stays" {
+		t.Errorf("a short value: %q", got)
+	}
+	if redactor(nil)("x") != "x" {
+		t.Error("no secrets changed the text")
+	}
+}
+
+// TestStreamConsoleRedacts: a secret never reaches the output or the
+// markers analysis reads.
+func TestStreamConsoleRedacts(t *testing.T) {
+	t.Parallel()
+	const nonce = "abc123"
+	var out bytes.Buffer
+	give := "SBOX-abc123 START\ntoken ghp_abcdefgh12345678\nSBOX-abc123 DNS A ghp_abcdefgh12345678.evil.example\nSBOX-abc123 EXIT 0\n"
+	res := streamConsole(strings.NewReader(give), &out, false, nonce, redactor(map[string]string{"GITHUB_TOKEN": "ghp_abcdefgh12345678"}))
+	if out.String() != "│ token [redacted:GITHUB_TOKEN]\n" || !slices.Equal(res.markers, []string{"DNS A [redacted:GITHUB_TOKEN].evil.example"}) {
+		t.Errorf("output %q, markers %q", out.String(), res.markers)
 	}
 }

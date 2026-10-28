@@ -310,7 +310,7 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     `writeRunTar` output. (Dev mode: copied in at each boot, under
     `/home/runner` outside the project; `sbox run` and `scan` don't take
     them yet.)
-- [ ] **4. Secrets.** (Partly, in dev mode: from the Mac's environment, root-only on the drive, tmpfs in the guest. Canary tails and the header line wait for scan mode.) Drive file, guest export, canary tails, header line. Tests
+- [x] **4. Secrets.** (Dev mode: from the Mac's environment, root-only on the drive, tmpfs in the guest. `run` and `scan`: the same values as `env`'s last assignments, so a real one replaces the fake of its name; the Mac redacts every line from the guest (value, hex, base64) before printing or judging it, and a `[redacted:NAME]` in a lookup or a network tool's arguments is `canary-exfiltration`, which replaces the planned canary tails; the header and JSON `config.secrets` name the real ones.) Drive file, guest export, canary tails, header line. Tests
     on `analyze` with a secret tail.
 - [ ] **5. Read-write mounts.** (Not for dev mode: `sbox sync` covers it.) `out.ext4`, the bind mounts, the fetch call, the
     diff, `-out`, `-apply` with confirmation.

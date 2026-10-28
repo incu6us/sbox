@@ -489,6 +489,14 @@ report:
   fail_on: block                          # exit 0 on REVIEW; non-zero on BLOCK only
 ```
 
+`secrets` (`GITHUB_TOKEN: env:SBOX_TOKEN`, read from your environment)
+puts real values in front of the entry points, in place of the fake ones
+of the same name, to see what a skill does with a real token. Every line
+from the guest has them taken out before the report sees it (`[redacted:
+GITHUB_TOKEN]`, hex and base64 forms too); one in a lookup or a network
+tool's arguments is `canary-exfiltration`, CRITICAL. `sbox run` takes
+`secrets` the same way.
+
 Every override that changes a verdict is printed under the header
 (`config: expected hosts: telemetry.vercel.com`) and in JSON under
 `config.overrides`, so a PASS with a downgraded rule says so.
