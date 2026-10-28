@@ -648,6 +648,30 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     connections: `BLOCKED service host.sbox:8765 … → services: [8765]`,
     `BLOCKED connect <addr>:<port>`).
 
+- ✅ What was left that needs no token (2026-10-28):
+  - `-trace` covers `dev.setup`: a `file:` dependency whose postinstall
+    reads `~/.aws/credentials` under `npm install` gives `INFO
+    credential-read … (in dev.setup)`. Found on the way: scan's fake
+    credentials were written into a session's kept home at every boot,
+    over its `.npmrc` (the npm prefix the preflight suggests), `.netrc`,
+    gh login and ssh key; scratch homes only now.
+  - MCP servers that can't start, from what sbox sees without running
+    them: `npx` or `uvx` without its registry in egress (preflight), a
+    command the guest lacks (`command -v` at boot, before the terminal).
+    Running `claude mcp list` in the background was tried and dropped: it
+    made the first `claude` beside it take 2 m 10 s instead of 37 s.
+  - `sbox log -start [-f] <id>`: the dev server's output from
+    `~/.sbox/start.log`.
+  - `egress`, `ports` and `services` apply live on reattach through `sbox-run
+    reconfigure`: the proxy rereads a rules file (open tunnels stay),
+    relay pairs start and stop with pid files that teardown checks and
+    ends. Raw TCP egress, egress for a session booted without any, and a
+    port busy in the VM are refused and left to `-restart`.
+  - GitHub targets: refs unused for 30 days leave the cache.
+  - Each verified on the real VM (`TestDevTraceOnVM`,
+    `TestDevStateIsKeptOnVM`, `TestDevMCPCommandsOnVM`, `TestDevHooksOnVM`,
+    `TestDevLiveNetworkOnVM`), the cache cleanup by unit test.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

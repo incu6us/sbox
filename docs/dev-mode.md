@@ -557,12 +557,14 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] tested with fakes and the helper's self-test, then on the real VM
       (`TestDevSecretsOnVM`, `TestDevAgentSettingsOnVM`: `claude mcp list`
       shows the servers)
-    - [x] the "could not start" check: with MCP servers (the config's or
-      `.mcp.json`), a fresh boot starts `claude mcp list` detached in the
-      guest (30 s per server would hold the terminal; nonessential traffic
-      off, so no Anthropic lookups), and the summary turns each `✘` into
-      `BLOCKED mcp <name> could not start: <reason>`. `.mcp.json` servers
-      are checked once approved in `claude`; sbox doesn't approve them
+    - [x] the "could not start" check, from the causes sbox can see
+      without starting the servers: the preflight flags a server run
+      through `npx` or `uvx` when egress lacks its registry, and a fresh
+      boot asks the guest (`command -v`, in a login shell) for each guest
+      server's command, naming the missing ones before the terminal
+      opens. Tried first and dropped: `claude mcp list` detached at boot;
+      it takes 30 s a server and made the first `claude` beside it take
+      2 m 10 s instead of 37 s
     - [x] `dev.ignore`: names or globs at any depth, or paths from the
       root, left out of the copy-in, the base and both sides of sync;
       `node_modules`, `.venv`, `__pycache__` and `.DS_Store` are left out of

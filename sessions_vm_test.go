@@ -1078,9 +1078,9 @@ func TestDevTraceOnVM(t *testing.T) {
 	}
 }
 
-// TestDevMCPHealthOnVM: a server that can't start shows in the summary,
-// from Claude Code's own health check run in the background at boot.
-func TestDevMCPHealthOnVM(t *testing.T) {
+// TestDevMCPCommandsOnVM: a server whose command the guest lacks is named
+// at boot, before the terminal opens.
+func TestDevMCPCommandsOnVM(t *testing.T) {
 	ctx := context.Background()
 	if ok, _ := doctor(ctx, io.Discard); !ok {
 		t.Skip("the sbox VM is not ready: run sbox setup")
@@ -1091,20 +1091,14 @@ func TestDevMCPHealthOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
-	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {broken: {command: does-not-exist-sbox}}}\n")
-	began := time.Now()
-	script := "for i in $(seq 1 90); do [ -e ~/.sbox/mcp-health ] && break; sleep 1; done"
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {broken: {command: does-not-exist-sbox}, fine: {command: node}}}\n")
 	var out, notes bytes.Buffer
-	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "echo", "terminal"}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
 	}
-	if want := `BLOCKED mcp     broken  could not start: ENOENT`; !strings.Contains(notes.String(), want) {
-		t.Errorf("output lacks %q:\n%s", want, notes.String())
+	if want := "BLOCKED mcp     broken  could not start: does-not-exist-sbox isn't in the guest"; !strings.Contains(notes.String(), want) || strings.Contains(notes.String(), "fine  could not") {
+		t.Errorf("output lacks %q, or names fine:\n%s", want, notes.String())
 	}
-	if strings.Contains(notes.String(), "api.anthropic.com") {
-		t.Errorf("the check reached for Anthropic's hosts:\n%s", notes.String())
-	}
-	t.Logf("session with the check: %v", time.Since(began).Round(time.Second))
 }
 
 // TestDevLiveNetworkOnVM: egress, ports and services changed under a

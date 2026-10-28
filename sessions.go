@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -288,8 +289,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		if code := runHooks(ctx, id, cfg, false, *trace, stdout, stderr, vm); code != exitOK {
 			_, _ = fmt.Fprintf(stderr, "sbox: the terminal opens anyway; fix it there, then sbox setup-env %s\n", args[0])
 		}
-		if hasMCP(cfg, args[0]) {
-			_ = vm(ctx, strings.NewReader(""), io.Discard, io.Discard, "attach", id, "--", "sh", "-c", _mcpCheck)
+		servers := map[string]mcpServer{}
+		maps.Copy(servers, readMCPJSON(args[0]))
+		maps.Copy(servers, cfg.MCP.Servers)
+		for _, line := range mcpMissing(ctx, vm, id, servers) {
+			_, _ = fmt.Fprintln(stderr, line)
 		}
 	}
 
@@ -669,12 +673,6 @@ func runHooks(ctx context.Context, id string, cfg config, force, trace bool, std
 	return attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), stdout, stderr, vm)
 }
 
-// hasMCP reports whether Claude Code in the guest has MCP servers to start:
-// the config's, or the project's .mcp.json.
-func hasMCP(cfg config, dir string) bool {
-	return len(cfg.MCP.Servers) > 0 || len(readMCPJSON(dir)) > 0
-}
-
 // collectSummary asks the session what it saw (the helpers' events and the
 // guest's listening ports) and returns sessionSummary's lines; a session
 // that can't answer gets just the first line.
@@ -683,9 +681,6 @@ func collectSummary(ctx context.Context, id, dir string, started time.Time, unsy
 	_ = vm(ctx, nil, &events, io.Discard, "events", id)
 	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
 	blocked := append(portLines(ss.String(), cfg.Ports), toolDenials(ctx, vm, id, started)...)
-	if hasMCP(cfg, dir) {
-		blocked = append(blocked, mcpFailures(ctx, vm, id)...)
-	}
 	return sessionSummary(time.Since(started), dir, unsynced, parseEvents(events.String()), blocked)
 }
 
