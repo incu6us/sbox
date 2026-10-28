@@ -15,8 +15,10 @@ import (
 // (the project's kept drive). A failed step stops the script, before any
 // start step and without the stamp. A start step ending in & runs
 // detached, its output appended to ~/.sbox/start.log; one still running
-// after 30 s gets a line saying the & may be missing.
-func hookScript(setup, start []string, timeout time.Duration, force bool) string {
+// after 30 s gets a line saying the & may be missing. With trace, setup
+// steps run under strace into /tmp/sbox-trace/setup (start steps don't: a
+// traced server would hold its step open).
+func hookScript(setup, start []string, timeout time.Duration, force, trace bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `cd "$HOME/work" || exit 1
 mkdir -p "$HOME/.sbox"
@@ -24,7 +26,7 @@ step() {
 	echo "sbox: $1: $2" >&2
 	w=
 	[ "$1" = start ] && { (sleep 30 </dev/null >/dev/null 2>&1; echo "sbox: start: still running after 30s: $2 (end a server's line with & to run it in the background)" >&2) & w=$!; }
-	timeout %d sh -c "$2" </dev/null
+	timeout %d $tracer sh -c "$2" </dev/null
 	s=$?
 	[ -n "$w" ] && kill $w 2>/dev/null
 	[ $s -eq 0 ] && return
@@ -40,10 +42,13 @@ step() {
 			cond = "true"
 		}
 		fmt.Fprintf(&b, "if %s; then\n\trm -f \"$HOME/.sbox/setup.sha\"\n", cond)
+		if trace {
+			fmt.Fprintf(&b, "\trm -rf /tmp/sbox-trace/setup && mkdir -p /tmp/sbox-trace/setup\n\ttracer='strace -ff -qq -s 200 -e trace=%s -o /tmp/sbox-trace/setup/t --'\n", _traced)
+		}
 		for _, s := range setup {
 			fmt.Fprintf(&b, "\tstep setup %s\n", shellJoin([]string{s}))
 		}
-		fmt.Fprintf(&b, "\techo %s >\"$HOME/.sbox/setup.sha\"\nfi\n", stamp)
+		fmt.Fprintf(&b, "\techo %s >\"$HOME/.sbox/setup.sha\"\nfi\ntracer=\n", stamp)
 	}
 	for _, s := range start {
 		s = strings.TrimSpace(s)

@@ -24,8 +24,12 @@ for d in /tmp /var/tmp /run; do
 done
 # A session on a project brings that project's work drive: the runner's
 # home, kept between sessions. Otherwise the home is scratch, like /tmp.
-mount LABEL=sbox-work /home/runner 2>/dev/null ||
+kept_home=
+if mount LABEL=sbox-work /home/runner 2>/dev/null; then
+	kept_home=1
+else
 	mount -t tmpfs -o mode=1777,size=256m tmpfs /home/runner
+fi
 chmod 0755 /home/runner
 # Pseudo-terminals, for ssh sessions and programs that want one (normally
 # mounted by systemd).
@@ -35,7 +39,9 @@ mount -t devpts -o gid=5,mode=0620,ptmxmode=0666 devpts /dev/pts
 
 # Fake credentials where real ones live, each carrying the run's canary, so
 # a read shows up in the trace and the content can be recognised if it goes
-# anywhere. They exist only in this throwaway VM.
+# anywhere. Only on a scratch home: a session's kept home is yours, and its
+# .npmrc, .netrc or gh login must survive the next boot.
+if [ -z "$kept_home" ]; then
 CANARY_UP=$(echo "$canary" | tr a-f A-F)
 mkdir -p /home/runner/.aws /home/runner/.ssh /home/runner/.config/gh /home/runner/.docker
 cat >/home/runner/.aws/credentials <<EOF
@@ -55,6 +61,9 @@ printf 'github.com:\n    user: runner\n    oauth_token: gho_sbox%sPl0Ok9Ij8Uh7\n
 printf '{"auths":{"ghcr.io":{"auth":"cnVubmVyOnNib3g%s"}}}\n' "$canary" >/home/runner/.docker/config.json
 chmod 0700 /home/runner/.ssh
 chmod 0600 /home/runner/.aws/credentials /home/runner/.ssh/id_ed25519 /home/runner/.env /home/runner/.netrc /home/runner/.npmrc
+chown -R runner:runner /home/runner/.aws /home/runner/.ssh /home/runner/.config /home/runner/.docker \
+	/home/runner/.env /home/runner/.netrc /home/runner/.npmrc
+fi
 
 # Network: the VM side of the tap is the only thing reachable.
 ip link set lo up
@@ -81,8 +90,6 @@ echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 # work and is never overwritten. Only what this boot wrote is chowned, so
 # a kept home with node_modules isn't walked on every boot.
 chown runner:runner /home/runner
-chown -R runner:runner /home/runner/.aws /home/runner/.ssh /home/runner/.config /home/runner/.docker \
-	/home/runner/.env /home/runner/.netrc /home/runner/.npmrc
 if [ ! -e /home/runner/work ]; then
 	cp -a /drive/skill /home/runner/work
 	chown -R runner:runner /home/runner/work
@@ -162,6 +169,7 @@ if [ -d /drive/sbox/ssh ]; then
 	# dev.env, then the secrets (so a secret wins), one NAME=value per line,
 	# for every login: sshd reads the runner's ~/.ssh/environment, a link to
 	# a file in tmpfs, so the values are never on the kept home.
+	install -d -o runner -g runner -m 0700 /home/runner/.ssh
 	rm -f /home/runner/.ssh/environment
 	if [ -s /drive/sbox/env ] || [ -s /drive/sbox/secrets ]; then
 		(umask 077 && cat /drive/sbox/env /drive/sbox/secrets >/run/sbox-env 2>/dev/null)

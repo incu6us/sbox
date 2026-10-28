@@ -285,7 +285,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		} else if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, syncRules(cfg.Dev.Ignore), stderr); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox: copying the Mac's changes in:", err)
 		}
-		if code := runHooks(ctx, id, cfg, false, stdout, stderr, vm); code != exitOK {
+		if code := runHooks(ctx, id, cfg, false, *trace, stdout, stderr, vm); code != exitOK {
 			_, _ = fmt.Fprintf(stderr, "sbox: the terminal opens anyway; fix it there, then sbox setup-env %s\n", args[0])
 		}
 	}
@@ -317,10 +317,15 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	unsynced := guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
 	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm))
 	if *trace {
-		var out bytes.Buffer
-		_ = vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", _traceReadBack)
-		for _, line := range traceLines(out.String(), bootCanary(host.stateDir, project, id)) {
-			_, _ = fmt.Fprintln(stderr, line)
+		for _, phase := range []string{"setup", "terminal"} {
+			var out bytes.Buffer
+			_ = vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", traceReadBack(phase))
+			for _, line := range traceLines(out.String(), bootCanary(host.stateDir, project, id)) {
+				if phase == "setup" {
+					line += " (in dev.setup)"
+				}
+				_, _ = fmt.Fprintln(stderr, line)
+			}
 		}
 	}
 	if host.keep != nil && host.keep(id, unsynced) {
@@ -362,7 +367,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	}
 	defer done()
 	warnConfigChanged(stderr, host.stateDir, project, id, args[0], cfg)
-	return runHooks(ctx, id, cfg, true, stdout, stderr, vm)
+	return runHooks(ctx, id, cfg, true, false, stdout, stderr, vm)
 }
 
 // devHost is what dev commands take from the Mac: where the sync base and
@@ -630,7 +635,7 @@ func devJob(cfg config, secrets map[string]string) guestJob {
 // runHooks runs the config's setup and start steps in session id (setup
 // only, and regardless of its stamp, when force is set), with their output
 // on stdout and stderr, and returns their exit status.
-func runHooks(ctx context.Context, id string, cfg config, force bool, stdout, stderr io.Writer, vm sboxRunFunc) int {
+func runHooks(ctx context.Context, id string, cfg config, force, trace bool, stdout, stderr io.Writer, vm sboxRunFunc) int {
 	start := cfg.Dev.Start
 	if force {
 		start = nil
@@ -638,7 +643,7 @@ func runHooks(ctx context.Context, id string, cfg config, force bool, stdout, st
 	if len(cfg.Dev.Setup)+len(start) == 0 {
 		return exitOK
 	}
-	script := hookScript(cfg.Dev.Setup, start, cfg.setupTimeout(), force)
+	script := hookScript(cfg.Dev.Setup, start, cfg.setupTimeout(), force, trace)
 	return attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), stdout, stderr, vm)
 }
 

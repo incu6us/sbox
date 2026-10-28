@@ -265,10 +265,12 @@ BLOCKED service host.sbox:6379  not in services → services: [6379]
 BLOCKED connect 140.82.112.3:443  straight to an address: the guest goes out only by name, through egress
 ```
 
-`sbox dev -trace` runs the terminal's command under strace and ends with
-what scan's rules make of it, as INFO lines, plus every write the
-sandbox refused (`BLOCKED write   /usr/local/lib/x  EROFS: the root is
-read-only → install into ~/.local or the project`).
+`sbox dev -trace` runs the terminal's command, and `dev.setup` when it
+runs (a dependency's install script, say), under strace and ends with
+what scan's rules make of it, as INFO lines (setup's marked `(in
+dev.setup)`), plus every write the sandbox refused (`BLOCKED write
+/usr/local/lib/x  EROFS: the root is read-only → install into ~/.local
+or the project`).
 
 `sbox watch [id]` shows these as they happen, in a second terminal;
 `sbox log -blocked <id>` lists them for a running session, and
@@ -506,7 +508,9 @@ or a prefetch timeout is LOW: the entry points run without it.
 
 ### Fake credentials
 
-Every run's home folder holds fake credentials where real ones live:
+Every `run` and `scan` home folder holds fake credentials where real ones
+live (not a `dev` session's: that home is yours, kept, and its `.npmrc` or
+gh login must survive):
 `~/.aws/credentials`, `~/.ssh/id_ed25519`, `~/.env`, `~/.netrc`, `~/.npmrc`,
 `~/.config/gh/hosts.yml`, `~/.docker/config.json`. In `sbox scan`, entry
 points also get fake `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` and AWS keys in
