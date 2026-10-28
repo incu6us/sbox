@@ -1187,3 +1187,38 @@ func TestDevMainTrace(t *testing.T) {
 		t.Errorf("hooks attach %q, want setup under strace", hooks)
 	}
 }
+
+// TestDevMainMCPHealth: with MCP servers, a fresh boot starts Claude
+// Code's health check in the background, and the summary names the
+// servers that failed; without any, neither happens.
+func TestDevMainMCPHealth(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, yaml string) (*fakeVM, string) {
+		dir := t.TempDir()
+		writeTestFile(t, filepath.Join(dir, "sbox.yaml"), yaml)
+		vm := &fakeVM{answer: func(args []string) string {
+			switch {
+			case args[0] == "start":
+				return "READY " + args[1] + "\n"
+			case args[0] == "attach" && slices.Contains(args, _mcpHealth):
+				return "broken: nope  - ✘ Failed to connect — ENOENT: Executable not found in $PATH: \"nope\"\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return vm, stderr.String()
+	}
+	called := func(vm *fakeVM, script string) bool {
+		return slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, script) })
+	}
+	vm, notes := run(t, "mcp: {servers: {broken: {command: nope}}}\n")
+	if !called(vm, _mcpCheck) || !strings.Contains(notes, `BLOCKED mcp     broken  could not start: ENOENT: Executable not found in $PATH: "nope"`) {
+		t.Errorf("calls %q, notes:\n%s\nwant the check started and the failure in the summary", vm.calls, notes)
+	}
+	if vm, _ := run(t, "ports: [3000]\n"); called(vm, _mcpCheck) || called(vm, _mcpHealth) {
+		t.Errorf("no servers, calls %q: want no health check", vm.calls)
+	}
+}

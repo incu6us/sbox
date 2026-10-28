@@ -1064,3 +1064,32 @@ func TestDevTraceOnVM(t *testing.T) {
 		t.Errorf("output %q, want setup's then the command's, untouched by strace", out.String())
 	}
 }
+
+// TestDevMCPHealthOnVM: a server that can't start shows in the summary,
+// from Claude Code's own health check run in the background at boot.
+func TestDevMCPHealthOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {broken: {command: does-not-exist-sbox}}}\n")
+	began := time.Now()
+	script := "for i in $(seq 1 90); do [ -e ~/.sbox/mcp-health ] && break; sleep 1; done"
+	var out, notes bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
+	}
+	if want := `BLOCKED mcp     broken  could not start: ENOENT`; !strings.Contains(notes.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, notes.String())
+	}
+	if strings.Contains(notes.String(), "api.anthropic.com") {
+		t.Errorf("the check reached for Anthropic's hosts:\n%s", notes.String())
+	}
+	t.Logf("session with the check: %v", time.Since(began).Round(time.Second))
+}

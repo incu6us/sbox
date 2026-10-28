@@ -518,6 +518,36 @@ func toolDenials(ctx context.Context, vm sboxRunFunc, id string, since time.Time
 	return denialLines(out.String())
 }
 
+// _mcpCheck starts Claude Code's health check of its MCP servers at boot,
+// detached: it gives each server 30 s, too long to hold the terminal. Its
+// output lands in ~/.sbox/mcp-health, which _mcpHealth reads back.
+const (
+	_mcpCheck  = `mkdir -p ~/.sbox && rm -f ~/.sbox/mcp-health && cd ~/work && CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 nohup sh -c 'timeout 180 claude mcp list >~/.sbox/mcp-health.part 2>&1; mv ~/.sbox/mcp-health.part ~/.sbox/mcp-health' </dev/null >/dev/null 2>&1 &`
+	_mcpHealth = `head -n 200 ~/.sbox/mcp-health 2>/dev/null`
+)
+
+var _mcpFailed = regexp.MustCompile(`^([A-Za-z0-9_-]+): .* - ✘ (?:Failed to connect — )?(.*)$`)
+
+// mcpLines turns claude mcp list's output (the runner's, so data) into a
+// BLOCKED line per server that failed; connected ones and those waiting
+// for approval say nothing.
+func mcpLines(out string) []string {
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if m := _mcpFailed.FindStringSubmatch(line); m != nil {
+			lines = append(lines, fmt.Sprintf("BLOCKED mcp     %s  could not start: %s", m[1], printable(m[2])))
+		}
+	}
+	return lines
+}
+
+// mcpFailures reads session id's MCP health check: nothing until it ends.
+func mcpFailures(ctx context.Context, vm sboxRunFunc, id string) []string {
+	var out bytes.Buffer
+	_ = vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", _mcpHealth)
+	return mcpLines(out.String())
+}
+
 // traceCommand wraps a terminal's command (a login shell when empty) in
 // strace for sbox dev -trace: the runner traces what it starts, with
 // scan's syscalls, one file per process in the guest's tmpfs.
