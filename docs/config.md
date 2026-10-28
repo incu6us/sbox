@@ -294,7 +294,13 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
 
 - [x] **1. Egress wildcards.** `parse_allowlist` patterns, self-test, README
     table. Independent of the file; `-egress` accepts them too.
-- [ ] **2. Config loading.** `config.go`: the struct, `yaml.v3`, strict decode,
+- [x] **2. Config loading.** (Done: the loader with dev mode; for `run` and
+    `scan`, the user's file plus `-config`, never the target's; `vm`,
+    `timeouts.run|entry|prefetch`, `prefetch.enabled|registries`,
+    `rules.expected_hosts|severity|credential_paths|block_on|review_on`,
+    `report.format|max_listed|fail_on`, overrides in the header and in
+    JSON `config.overrides`; the behaviour flags removed. `sbox config`
+    names no source per key.) `config.go`: the struct, `yaml.v3`, strict decode,
     path expansion (`~`), precedence with flags, the "never from the
     target" rule. With it, the keys the Extensions table assigns to this
     commit: `vm`, `timeouts`, `prefetch.registries`, `rules`, `report`,

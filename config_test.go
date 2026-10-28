@@ -508,3 +508,39 @@ func TestToolConfig(t *testing.T) {
 		t.Errorf("no -config: %+v, %v", cfg, err)
 	}
 }
+
+// TestRulesAndReportKeys: sbox scan's calibration knobs. Lists append,
+// maps merge, scalars replace; the canary rules can't be overridden.
+func TestRulesAndReportKeys(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(
+		write(t, "rules: {expected_hosts: [telemetry.vercel.com], severity: {agent-dir-write: INFO}, credential_paths: [~/.config/myapp/], block_on: high}\nreport: {max_listed: 5}\n"),
+		write(t, "rules: {expected_hosts: [\"*.sentry.io\"], severity: {network-tool: low}, review_on: HIGH}\nreport: {fail_on: block, format: json}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := cfg.Rules
+	if !slices.Equal(r.ExpectedHosts, []string{"telemetry.vercel.com", "*.sentry.io"}) || r.Severity["agent-dir-write"] != "INFO" || r.Severity["network-tool"] != "LOW" ||
+		!slices.Equal(r.CredentialPaths, []string{"/home/runner/.config/myapp/"}) || r.BlockOn != "HIGH" || r.ReviewOn != "HIGH" {
+		t.Errorf("rules = %+v", r)
+	}
+	if cfg.Report.MaxListed != 5 || cfg.Report.FailOn != "block" || cfg.Report.Format != "json" {
+		t.Errorf("report = %+v", cfg.Report)
+	}
+	for _, bad := range []string{
+		"rules: {severity: {canary-exfiltration: INFO}}", "rules: {severity: {canary-argv: LOW}}", "rules: {severity: {no-such-rule: LOW}}",
+		"rules: {severity: {connect: LOUD}}", "rules: {block_on: MEDIUM, review_on: HIGH}", "rules: {credential_paths: [relative/path]}",
+		"rules: {expected_hosts: [\"https://x.example\"]}", "report: {fail_on: never}", "report: {format: xml}", "report: {max_listed: -1}",
+	} {
+		if _, err := loadConfig("", write(t, bad+"\n")); err == nil {
+			t.Errorf("%s: loaded, want a refusal", bad)
+		}
+	}
+}

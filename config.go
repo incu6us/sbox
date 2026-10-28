@@ -69,6 +69,20 @@ type config struct {
 		Enabled    *bool    `yaml:"enabled,omitempty"`    // sbox scan downloads dependencies first; true when unset
 		Registries []string `yaml:"registries,omitempty"` // hosts added to the prefetch proxy's three public registries
 	} `yaml:"prefetch,omitempty"`
+	// sbox scan's calibration. Each override that weakens a verdict is named
+	// in the report header and in JSON under config.overrides.
+	Rules struct {
+		ExpectedHosts   []string          `yaml:"expected_hosts,omitempty"`   // lookups of these drop to INFO, marked expected
+		Severity        map[string]string `yaml:"severity,omitempty"`         // rule → severity; not the canary rules
+		CredentialPaths []string          `yaml:"credential_paths,omitempty"` // guest paths (~/ or /) added to the credential list
+		BlockOn         string            `yaml:"block_on,omitempty"`         // BLOCK from this severity; CRITICAL when unset
+		ReviewOn        string            `yaml:"review_on,omitempty"`        // REVIEW from this severity; MEDIUM when unset
+	} `yaml:"rules,omitempty"`
+	Report struct {
+		Format    string `yaml:"format,omitempty"`     // text or json; -json wins
+		MaxListed int    `yaml:"max_listed,omitempty"` // per category; 15 when unset
+		FailOn    string `yaml:"fail_on,omitempty"`    // review (the default: non-zero at REVIEW or BLOCK) or block
+	} `yaml:"report,omitempty"`
 }
 
 // mount is a Mac file or folder copied into the guest's home at each
@@ -300,6 +314,17 @@ func loadConfig(userFile, projectFile string) (config, error) {
 			cfg.Prefetch.Enabled = c.Prefetch.Enabled
 		}
 		cfg.Prefetch.Registries = append(cfg.Prefetch.Registries, c.Prefetch.Registries...)
+		cfg.Rules.ExpectedHosts = append(cfg.Rules.ExpectedHosts, c.Rules.ExpectedHosts...)
+		cfg.Rules.CredentialPaths = append(cfg.Rules.CredentialPaths, c.Rules.CredentialPaths...)
+		if len(c.Rules.Severity) > 0 && cfg.Rules.Severity == nil {
+			cfg.Rules.Severity = map[string]string{}
+		}
+		maps.Copy(cfg.Rules.Severity, c.Rules.Severity)
+		cfg.Rules.BlockOn = cmp.Or(c.Rules.BlockOn, cfg.Rules.BlockOn)
+		cfg.Rules.ReviewOn = cmp.Or(c.Rules.ReviewOn, cfg.Rules.ReviewOn)
+		cfg.Report.Format = cmp.Or(c.Report.Format, cfg.Report.Format)
+		cfg.Report.MaxListed = cmp.Or(c.Report.MaxListed, cfg.Report.MaxListed)
+		cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
 		if c.Dev.VCPUs != 0 {
 			cfg.Dev.VCPUs = c.Dev.VCPUs
 		}
@@ -448,6 +473,50 @@ func (c *config) check() error {
 		if d != 0 && d < time.Second {
 			return fmt.Errorf("timeouts.%s: %v: want 1s or more", name, d)
 		}
+	}
+	for rule, sev := range c.Rules.Severity {
+		sev = strings.ToUpper(sev)
+		switch {
+		case !slices.Contains(_ruleNames, rule):
+			return fmt.Errorf("rules.severity: %q: no such rule", rule)
+		case strings.HasPrefix(rule, "canary-"):
+			return fmt.Errorf("rules.severity: %s: the canary rules can't be overridden", rule)
+		case !slices.Contains(_severityNames[:], sev):
+			return fmt.Errorf("rules.severity: %s: %q: want INFO, LOW, MEDIUM, HIGH or CRITICAL", rule, c.Rules.Severity[rule])
+		}
+		c.Rules.Severity[rule] = sev
+	}
+	for _, s := range []*string{&c.Rules.BlockOn, &c.Rules.ReviewOn} {
+		if *s = strings.ToUpper(*s); *s != "" && !slices.Contains(_severityNames[1:], *s) {
+			return fmt.Errorf("rules: %q: want LOW, MEDIUM, HIGH or CRITICAL", *s)
+		}
+	}
+	if b, r := c.Rules.BlockOn, c.Rules.ReviewOn; b != "" && r != "" && slices.Index(_severityNames[:], r) > slices.Index(_severityNames[:], b) {
+		return fmt.Errorf("rules: review_on %s is above block_on %s", r, b)
+	}
+	for i, p := range c.Rules.CredentialPaths {
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			p = _home + rest
+		}
+		if !strings.HasPrefix(p, "/") {
+			return fmt.Errorf("rules.credential_paths: %q: want a guest path under ~/ or /", c.Rules.CredentialPaths[i])
+		}
+		c.Rules.CredentialPaths[i] = p
+	}
+	for i, h := range c.Rules.ExpectedHosts {
+		if h = strings.ToLower(h); !_registryHost.MatchString(strings.TrimPrefix(h, "*.")) {
+			return fmt.Errorf("rules.expected_hosts: %q: want a host name or *.domain", c.Rules.ExpectedHosts[i])
+		}
+		c.Rules.ExpectedHosts[i] = h
+	}
+	if f := c.Report.Format; f != "" && f != "text" && f != "json" {
+		return fmt.Errorf("report.format: %q: want text or json", f)
+	}
+	if f := c.Report.FailOn; f != "" && f != "review" && f != "block" {
+		return fmt.Errorf("report.fail_on: %q: want review or block", f)
+	}
+	if c.Report.MaxListed < 0 {
+		return fmt.Errorf("report.max_listed: %d: want 1 or more", c.Report.MaxListed)
 	}
 	for i, r := range c.Prefetch.Registries {
 		r = strings.ToLower(r)

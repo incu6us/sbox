@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -116,7 +119,7 @@ func TestAnalyze(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := analyze(tt.give, "a1b2c3d4e5f6")
+			got := analyze(tt.give, "a1b2c3d4e5f6", nil)
 			var rules []string
 			for _, f := range got {
 				if !slices.Contains(rules, f.Rule) {
@@ -130,5 +133,103 @@ func TestAnalyze(t *testing.T) {
 				t.Errorf("verdict = %s, want %s", v, tt.wantVerdict)
 			}
 		})
+	}
+}
+
+// TestScanRules: the config's calibration on top of analyze: an extra
+// credential path, expected hosts, severity overrides and thresholds, and
+// the overrides the report names.
+func TestScanRules(t *testing.T) {
+	t.Parallel()
+	var cfg config
+	cfg.Rules.CredentialPaths = []string{"/home/runner/.config/myapp/"}
+	cfg.Rules.ExpectedHosts = []string{"telemetry.vercel.com", "*.sentry.io"}
+	cfg.Rules.Severity = map[string]string{"agent-dir-write": "INFO"}
+	rules := cfg.scanRules()
+	file := func(op, p, result string) traceEvent {
+		return traceEvent{kind: "file", op: op, path: p, result: result}
+	}
+	run := entryRun{
+		files: []traceEvent{file("read", "/home/runner/.config/myapp/token", "ok"), file("write", "/home/runner/.claude/cache", "ok")},
+		dns:   []dnsName{{name: "telemetry.vercel.com"}, {name: "o1.ingest.sentry.io"}, {name: "evil.example"}, {name: "x.sboxa1b2c3d4e5f6.example"}},
+	}
+	got := rules.apply(analyze(run, "a1b2c3d4e5f6", rules.credentialPaths))
+	has := func(sev severity, rule, detail string) bool {
+		return slices.Contains(got, finding{Severity: sev, Rule: rule, Detail: detail})
+	}
+	for _, want := range []finding{
+		{sevHigh, "credential-read", "reads /home/runner/.config/myapp/token"},
+		{sevInfo, "dns-lookup", "looks up telemetry.vercel.com (expected)"},
+		{sevInfo, "dns-lookup", "looks up o1.ingest.sentry.io (expected)"},
+		{sevMedium, "dns-lookup", "looks up evil.example"},
+		{sevCritical, "canary-exfiltration", "sends a planted credential out in a DNS lookup: x.sboxa1b2c3d4e5f6.example"},
+		{sevInfo, "agent-dir-write", "writes under an agent's folder: /home/runner/.claude/cache"},
+	} {
+		if !has(want.Severity, want.Rule, want.Detail) {
+			t.Errorf("findings lack %+v:\n%+v", want, got)
+		}
+	}
+	if got[0].Severity != sevCritical {
+		t.Errorf("findings not worst first after the overrides: %+v", got)
+	}
+
+	medium := []finding{{Severity: sevMedium, Rule: "dns-lookup"}}
+	high := []finding{{Severity: sevHigh, Rule: "connect"}}
+	cfg.Rules.ReviewOn, cfg.Rules.BlockOn = "HIGH", "HIGH"
+	if r := cfg.scanRules(); r.verdict(medium) != verdictPass || r.verdict(high) != verdictBlock {
+		t.Errorf("review_on and block_on HIGH: medium %s, high %s; want PASS, BLOCK", r.verdict(medium), r.verdict(high))
+	}
+	cfg.Rules.ReviewOn, cfg.Rules.BlockOn = "", "LOW"
+	if r := cfg.scanRules(); r.verdict([]finding{{Severity: sevLow}}) != verdictBlock {
+		t.Errorf("block_on LOW alone: want a low finding to block (review capped at block)")
+	}
+	if got := cfg.scanRules().overrides(); !slices.Equal(got, []string{"expected hosts: telemetry.vercel.com, *.sentry.io", "severity: agent-dir-write INFO", "block_on: LOW"}) {
+		t.Errorf("overrides = %q", got)
+	}
+	if (config{}).scanRules().overrides() != nil {
+		t.Error("no config, overrides listed")
+	}
+
+	for _, tt := range []struct {
+		verdict, failOn string
+		want            int
+	}{{verdictPass, "", exitOK}, {verdictReview, "", scanReview}, {verdictBlock, "", scanBlock}, {verdictReview, "block", exitOK}, {verdictBlock, "block", scanBlock}} {
+		if got := scanExit(tt.verdict, tt.failOn); got != tt.want {
+			t.Errorf("scanExit(%s, %q) = %d, want %d", tt.verdict, tt.failOn, got, tt.want)
+		}
+	}
+}
+
+func TestScanReportsTakeTheConfig(t *testing.T) {
+	t.Parallel()
+	var files []traceEvent
+	for _, p := range []string{"/a", "/b", "/c", "/d"} {
+		files = append(files, traceEvent{kind: "file", op: "read", path: p, result: "ok"})
+	}
+	runs := []entryRun{{ep: entryPoint{Kind: "hook", Name: "SessionStart", Command: "true"}, ran: true, files: files}}
+	findings := [][]finding{nil}
+
+	var text strings.Builder
+	writeScanReport(&text, nil, runs, findings, verdictPass, nil, 2)
+	if !strings.Contains(text.String(), "… 2 more") {
+		t.Errorf("max_listed 2: report\n%s\nwant the list cut after two", text.String())
+	}
+
+	var out bytes.Buffer
+	if err := writeScanJSON(&out, "github.com/o/r@abc", nil, runs, findings, verdictPass, nil, []string{"severity: connect LOW"}); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Target string `json:"target"`
+		Config struct {
+			Overrides []string `json:"overrides"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Target != "github.com/o/r@abc" || !slices.Equal(report.Config.Overrides, []string{"severity: connect LOW"}) {
+		t.Errorf("JSON %s: %v", out.String(), err)
+	}
+	out.Reset()
+	if err := writeScanJSON(&out, "x", nil, runs, findings, verdictPass, nil, nil); err != nil || strings.Contains(out.String(), `"config"`) {
+		t.Errorf("no overrides: %s, %v; want no config object", out.String(), err)
 	}
 }

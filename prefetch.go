@@ -161,7 +161,7 @@ func collectPrefetch(steps []prefetchStep, markers []string) *prefetchResult {
 	return res
 }
 
-func writePrefetchReport(b *strings.Builder, res *prefetchResult) {
+func writePrefetchReport(b *strings.Builder, res *prefetchResult, maxListed int) {
 	b.WriteString("\ndependencies (prefetched through a registry-only proxy)\n")
 	if !res.Ran {
 		b.WriteString("     the prefetch microVM did not start\n")
@@ -180,9 +180,9 @@ func writePrefetchReport(b *strings.Builder, res *prefetchResult) {
 	for i, f := range res.Fetched {
 		fetched[i] = fmt.Sprintf("%s ×%d", f.Target, f.Count)
 	}
-	writeList(b, "fetched", fetched)
+	writeList(b, "fetched", fetched, maxListed)
 	if len(res.Refused) > 0 {
-		writeList(b, "refused", res.Refused)
+		writeList(b, "refused", res.Refused, maxListed)
 	}
 	writeFindings(b, res.Findings)
 }

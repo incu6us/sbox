@@ -473,7 +473,25 @@ Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 From the config: `timeouts.entry` (each entry point, `20s`),
 `timeouts.prefetch` (the dependency download, `3m`), `prefetch.enabled`
 (`false` skips it), `prefetch.registries` (private registries the download
-may reach besides npm and PyPI), `vm.vcpus` and `vm.memory_mib`.
+may reach besides npm and PyPI), `vm.vcpus` and `vm.memory_mib`, and the
+calibration:
+
+```yaml
+rules:
+  expected_hosts: [telemetry.vercel.com, "*.sentry.io"]  # their lookups drop to INFO, marked (expected)
+  severity: {agent-dir-write: INFO}       # per rule; the canary rules can't be changed
+  credential_paths: [~/.config/myapp/]    # read as credentials, like ~/.aws
+  block_on: CRITICAL                      # BLOCK from here (the default)
+  review_on: MEDIUM                       # REVIEW from here (the default)
+report:
+  format: json                            # like -json
+  max_listed: 15                          # per list (the default)
+  fail_on: block                          # exit 0 on REVIEW; non-zero on BLOCK only
+```
+
+Every override that changes a verdict is printed under the header
+(`config: expected hosts: telemetry.vercel.com`) and in JSON under
+`config.overrides`, so a PASS with a downgraded rule says so.
 
 How it stays trustworthy: strace runs as root and writes each process's trace
 to a root-only directory, so an entry point can't edit the record of what it
