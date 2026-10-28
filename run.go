@@ -157,10 +157,11 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	apply := flags.Bool("apply", false, "show what the command changed in the folder, then write it there once you confirm")
 	patchFile := flags.String("patch", "", "write what the command changed in the folder to this `file`, as a patch")
 	refetch := flags.Bool("refetch", false, "download a GitHub target again, even a commit already cached")
+	workspaceFlag := flags.String("workspace", "", "take this workspace's grants instead of the folder's")
 	push := flags.Bool("push", false, "as -apply, then commit those files with -m and push the branch (its remote must be in push:)")
 	message := flags.String("m", "", "the commit message for -push")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-workspace <name>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -174,17 +175,24 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		flags.Usage()
 		return exitInfra
 	}
-	cfg, err := toolConfig(userConfig, *configFile)
+	home, _ := os.UserHomeDir()
+	target := rest[0]
+	if _, ok := parseTarget(target); ok {
+		target = "" // a GitHub download: no folder of yours, so no workspace's grants
+	}
+	cfg, ws, err := runConfig(userConfig, *configFile, target, *workspaceFlag, home)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
+	}
+	if ws != "default" {
+		_, _ = fmt.Fprintln(stderr, "sbox: workspace", ws)
 	}
 	job, timeout := cfg.runJob(rest[2:]), cfg.runTimeout()
 	if job.secrets, err = cfg.secretValues(os.LookupEnv); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
 	}
-	home, _ := os.UserHomeDir()
 	srcs, err := cfg.mountSources(home)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)

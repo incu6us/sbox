@@ -125,16 +125,48 @@ func (c config) workspaceFor(dir, override, home string) (string, error) {
 		}
 		return override, nil
 	}
+	name, _ := c.workspaceMatch(dir, home)
+	return name, nil
+}
+
+// workspaceMatch is the workspace whose paths hold the longest folder
+// containing dir, with that folder; default and "" when none does.
+func (c config) workspaceMatch(dir, home string) (name, path string) {
+	if dir == "" {
+		return "default", ""
+	}
 	dir = macPath(dir, home)
-	best, longest := "default", -1
-	for _, name := range slices.Sorted(maps.Keys(c.Workspaces)) { // a tie goes to the first name
-		for _, p := range c.Workspaces[name].Paths {
-			if p = macPath(p, home); under(dir, p) && len(p) > longest {
-				best, longest = name, len(p)
+	name = "default"
+	for _, n := range slices.Sorted(maps.Keys(c.Workspaces)) { // a tie goes to the first name
+		for _, p := range c.Workspaces[n].Paths {
+			if p = macPath(p, home); under(dir, p) && len(p) > len(path) {
+				name, path = n, p
 			}
 		}
 	}
-	return best, nil
+	return name, path
+}
+
+// grants is a workspace's grants as a config layer.
+func (w workspace) grants() config {
+	return config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
+}
+
+// runConfig is sbox run's config: the user's file and -config, as
+// toolConfig reads them, with the target folder's workspace grants (or
+// override's) on top. A run reads no project file, so nothing is asked.
+func runConfig(userFile, configFile, dir, override, home string) (config, string, error) {
+	cfg, err := toolConfig(userFile, configFile)
+	if err != nil {
+		return config{}, "", err
+	}
+	ws, err := cfg.workspaceFor(dir, override, home)
+	if err != nil {
+		return config{}, "", err
+	}
+	cfg.merge(cfg.Workspaces[ws].grants())
+	cfg, err = cfg.finish()
+	return cfg, ws, err
 }
 
 // allowsEgress reports whether an egress request (host:port, the host a
@@ -246,7 +278,7 @@ func layered(userFile, projectFile, dir, override, home string, approved map[str
 		return config{}, "", nil, err
 	}
 	w := user.Workspaces[ws]
-	grants := config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
+	grants := w.grants()
 
 	// What the project may have: the grants, and the workspace's allow.
 	egress := slices.Concat(user.Egress, w.Egress, w.Allow.Egress)
