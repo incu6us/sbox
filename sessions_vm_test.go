@@ -511,7 +511,7 @@ func TestDevHooksOnVM(t *testing.T) {
 	config := func(setup string) {
 		t.Helper()
 		yaml := "dev:\n  env: {GREETING: hello world}\n  setup: [\"" + setup + "\"]\n" +
-			"  start: [\"echo \\\"$GREETING\\\" > ~/started\", \"sleep 1; echo bg-ran > ~/bg &\"]\n"
+			"  start: [\"echo \\\"$GREETING\\\" > ~/started\", \"sleep 1; echo bg-ran > ~/bg; echo bg-log &\"]\n"
 		if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte(yaml), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -557,6 +557,19 @@ func TestDevHooksOnVM(t *testing.T) {
 	}
 	if out, _ := dev(); strings.Count(out, "setup-env") != 2 {
 		t.Errorf("after two sbox setup-env: %q, want the steps run each time, and not again by sbox dev", out)
+	}
+
+	// A kept session's background output, through sbox log -start.
+	var kept string
+	keep := func(id string, _ int) bool { kept = id; return true }
+	var out2, errOut2 bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sleep", "2"}, strings.NewReader(""), &out2, &errOut2, sboxRun, devHost{stateDir: state, keep: keep}); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s", code, errOut2.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	var logged bytes.Buffer
+	if code := logMain(ctx, []string{"-start", kept}, &logged, io.Discard, sboxRun, 0); code != exitOK || !strings.Contains(logged.String(), "bg-log") {
+		t.Errorf("sbox log -start: exit %d, %q", code, logged.String())
 	}
 }
 

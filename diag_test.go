@@ -236,6 +236,49 @@ func TestLogMain(t *testing.T) {
 	}
 }
 
+// startLogVM plays a session whose ~/.sbox/start.log grows by a line per
+// read, answering the read's byte offset, and is gone after rounds reads.
+type startLogVM struct {
+	rounds, reads int
+	scripts       []string
+}
+
+func (v *startLogVM) run(_ context.Context, _ io.Reader, out, _ io.Writer, args ...string) error {
+	if args[0] != "attach" {
+		return fmt.Errorf("unexpected %q", args)
+	}
+	v.reads++
+	if v.reads > v.rounds {
+		return errors.New("sbox-run: no session")
+	}
+	script := args[len(args)-1]
+	v.scripts = append(v.scripts, script)
+	log := strings.Repeat("ready\r\n", v.reads)
+	var from int
+	if _, err := fmt.Sscanf(script, "tail -c +%d", &from); err != nil {
+		return err
+	}
+	_, _ = io.WriteString(out, log[from-1:])
+	return nil
+}
+
+func TestLogMainStart(t *testing.T) {
+	t.Parallel()
+	vm := &startLogVM{rounds: 3}
+	var stdout, stderr bytes.Buffer
+	if code := logMain(context.Background(), []string{"-start", "-f", "0123abcd"}, &stdout, &stderr, vm.run, time.Millisecond); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if stdout.String() != "ready\nready\nready\n" || !strings.Contains(vm.scripts[0], "~/.sbox/start.log") {
+		t.Errorf("-start -f printed %q with scripts %q; want each line once, from start.log", stdout.String(), vm.scripts)
+	}
+	once := &startLogVM{rounds: 1}
+	stdout.Reset()
+	if code := logMain(context.Background(), []string{"-start", "0123abcd"}, &stdout, &stderr, once.run, time.Millisecond); code != exitOK || stdout.String() != "ready\n" {
+		t.Errorf("-start: exit %d, %q", code, stdout.String())
+	}
+}
+
 func TestLogMainConsole(t *testing.T) {
 	t.Parallel()
 	for raw, want := range map[string]string{
