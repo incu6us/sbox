@@ -222,6 +222,27 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 				body, _ := io.ReadAll(tr)
 				g.files[strings.TrimPrefix(hdr.Name, "./")] = string(body)
 			}
+		case len(cmd) == 3 && strings.HasPrefix(cmd[2], "cd /home/runner && rm -rf -- "): // copyMounts
+			rels, _, _ := strings.Cut(strings.TrimPrefix(cmd[2], "cd /home/runner && rm -rf -- "), " && ")
+			for _, rel := range strings.Fields(rels) {
+				rel = strings.TrimPrefix(strings.Trim(rel, "'"), "work/")
+				for p := range g.files {
+					if p == rel || strings.HasPrefix(p, rel+"/") {
+						delete(g.files, p)
+					}
+				}
+			}
+			tr := tar.NewReader(in)
+			for {
+				hdr, err := tr.Next()
+				if err != nil {
+					break
+				}
+				if hdr.Typeflag == tar.TypeReg {
+					body, _ := io.ReadAll(tr)
+					g.files[strings.TrimPrefix(hdr.Name, "work/")] = string(body)
+				}
+			}
 		case slices.Contains(cmd, _denialScript): // sbox dev's summary: no transcripts here
 		case slices.Equal(cmd, []string{"sh", "-c", sumScript(g.pullRules())}):
 			for _, p := range slices.Sorted(maps.Keys(g.files)) {
@@ -374,6 +395,35 @@ func TestDevMainPushesMacEditsOnBoot(t *testing.T) {
 	host, _ := readManifest(dir, syncRules(nil))
 	if base["mac-edits"] != host["mac-edits"] || base["guest-edits"] == (fileState{}) {
 		t.Errorf("base after boot %v: want the pushed paths moved, the guest's change still pending", base)
+	}
+}
+
+// TestDevMainRefreshesGitOnBoot: sync leaves .git out, so a kept drive's
+// history would stop at its first boot; each boot copies the Mac's in.
+func TestDevMainRefreshesGitOnBoot(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "refs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for p, body := range map[string]string{"main.go": "v1\n", ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/main": "new\n"} {
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project := mustProjectID(t, dir)
+	if err := recordBase(state, project, dir, syncRules(nil)); err != nil {
+		t.Fatal(err)
+	}
+	guest := &fakeSyncGuest{t: t, project: project, files: map[string]string{"main.go": "v1\n", ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/main": "old\n", ".git/refs/guest": "x\n"}}
+
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	want := map[string]string{"main.go": "v1\n", ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/main": "new\n"}
+	if !maps.Equal(guest.files, want) {
+		t.Errorf("guest after boot: %v; want the Mac's .git in place of its own", guest.files)
 	}
 }
 

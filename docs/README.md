@@ -43,7 +43,7 @@ Conventions shared by every plan:
 
 ## Status
 
-- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: the end-to-end verification list, which needs a real token; live egress and port changes)
+- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: the verification steps that need a real token; live egress and port changes)
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`

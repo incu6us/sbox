@@ -36,20 +36,26 @@ var _sessionID = regexp.MustCompile(`^[a-f0-9]{8,32}$`)
 // _sessionDone is what each session action prints on success.
 var _sessionDone = map[string]string{"stop": "stopped", "pause": "paused", "resume": "resumed"}
 
-// sessionMain implements `sbox ps`, `sbox clean`, and
-// `sbox stop|pause|resume <id>`.
-func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer, vm sboxRunFunc) int {
-	if cmd == "clean" {
-		if len(args) != 0 {
-			_, _ = fmt.Fprintln(stderr, "usage: sbox clean")
-			return exitUsage
-		}
-		if err := vm(ctx, nil, io.Discard, stderr, "clean"); err != nil {
-			return vmFailed(stderr, err)
-		}
-		_, _ = fmt.Fprintln(stdout, "removed every project's saved state")
-		return exitOK
+// cleanMain implements `sbox clean`: every project's work drive in the VM,
+// then its sync base and boot record on the Mac.
+func cleanMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, stateDir string) int {
+	if len(args) != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox clean")
+		return exitUsage
 	}
+	if err := vm(ctx, nil, io.Discard, stderr, "clean"); err != nil {
+		return vmFailed(stderr, err)
+	}
+	if err := os.RemoveAll(filepath.Join(stateDir, "projects")); err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitFail
+	}
+	_, _ = fmt.Fprintln(stdout, "removed every project's saved state")
+	return exitOK
+}
+
+// sessionMain implements `sbox ps` and `sbox stop|pause|resume <id>`.
+func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer, vm sboxRunFunc) int {
 	if cmd == "ps" {
 		if len(args) != 0 {
 			_, _ = fmt.Fprintln(stderr, "usage: sbox ps")

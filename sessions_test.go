@@ -459,13 +459,27 @@ func TestProjectID(t *testing.T) {
 
 func TestCleanMain(t *testing.T) {
 	t.Parallel()
+	state := t.TempDir()
+	base := filepath.Join(state, "projects", "abc", "base.json")
+	if err := os.MkdirAll(filepath.Dir(base), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	vm := fakeVM{}
 	var stdout, stderr bytes.Buffer
-	if code := sessionMain(context.Background(), "clean", nil, &stdout, &stderr, vm.run); code != exitOK ||
+	if code := cleanMain(context.Background(), nil, &stdout, &stderr, vm.run, state); code != exitOK ||
 		!slices.EqualFunc(vm.calls, [][]string{{"clean"}}, slices.Equal) || !strings.Contains(stdout.String(), "removed") {
 		t.Errorf("sbox clean: exit %d, calls %q, stdout %q", code, vm.calls, stdout.String())
 	}
-	if code := sessionMain(context.Background(), "clean", []string{"x"}, &stdout, &stderr, vm.run); code != exitUsage {
+	if _, err := os.Stat(filepath.Join(state, "projects")); !os.IsNotExist(err) {
+		t.Errorf("the Mac's project state is still there (%v); want it removed with the VM's", err)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("the state folder itself went too: %v", err)
+	}
+	if code := cleanMain(context.Background(), []string{"x"}, &stdout, &stderr, vm.run, state); code != exitUsage {
 		t.Errorf("sbox clean x: exit %d, want usage", code)
 	}
 }

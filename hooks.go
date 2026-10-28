@@ -14,15 +14,19 @@ import (
 // hash differs from the one its last successful run stamped on the home
 // (the project's kept drive). A failed step stops the script, before any
 // start step and without the stamp. A start step ending in & runs
-// detached, its output appended to ~/.sbox/start.log.
+// detached, its output appended to ~/.sbox/start.log; one still running
+// after 30 s gets a line saying the & may be missing.
 func hookScript(setup, start []string, timeout time.Duration, force bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `cd "$HOME/work" || exit 1
 mkdir -p "$HOME/.sbox"
 step() {
 	echo "sbox: $1: $2" >&2
+	w=
+	[ "$1" = start ] && { (sleep 30 </dev/null >/dev/null 2>&1; echo "sbox: start: still running after 30s: $2 (end a server's line with & to run it in the background)" >&2) & w=$!; }
 	timeout %d sh -c "$2" </dev/null
 	s=$?
+	[ -n "$w" ] && kill $w 2>/dev/null
 	[ $s -eq 0 ] && return
 	[ $s -eq 124 ] && echo "sbox: $1 timed out after %v: $2" >&2 || echo "sbox: $1 failed (exit $s): $2" >&2
 	exit $s
