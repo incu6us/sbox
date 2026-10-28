@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	_defaultEntryTimeout = 20 * time.Second
-	_maxTraceLines       = 3000 // per entry point, sent from the guest
-	_maxListed           = 15   // per category in the report
+	_maxTraceLines = 3000 // per entry point, sent from the guest
+	_maxListed     = 15   // per category in the report
 
 	// _traced are the syscalls that show what an entry point did, plus
 	// process creation, to rebuild the process tree.
@@ -88,17 +87,15 @@ func (e traceEvent) String() string {
 	return s
 }
 
-// scanMain implements `sbox scan [-timeout d] [-v] <dir>`: runs every
+// scanMain implements `sbox scan [-config file] [-v] [-json] <dir>`: runs every
 // automatic entry point of the skill in one microVM, each under strace,
 // and reports what it did.
-func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, userConfig string) int {
 	flags := flag.NewFlagSet("sbox scan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	perEntry := flags.Duration("timeout", _defaultEntryTimeout, "stop each entry point after this long")
+	configFile := flags.String("config", "", "a config `file` read after ~/.config/sbox/config.yaml (timeouts.entry, prefetch, vm)")
 	verbose := flags.Bool("v", false, "also show the entry points' own output")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
-	noPrefetch := flags.Bool("no-prefetch", false, "don't download dependencies first")
-	preLimit := flags.Duration("prefetch-timeout", 3*time.Minute, "stop the dependency download after this long")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir | GitHub URL>\n\n")
 		flags.PrintDefaults()
@@ -106,10 +103,16 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err := flags.Parse(args); err != nil {
 		return exitInfra
 	}
-	if flags.NArg() != 1 || *perEntry < time.Second {
+	if flags.NArg() != 1 {
 		flags.Usage()
 		return exitInfra
 	}
+	cfg, err := toolConfig(userConfig, *configFile)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
+	perEntry := cfg.entryTimeout()
 	dir, name, err := resolveTarget(flags.Arg(0), githubFetch(ctx))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -127,12 +130,12 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	var steps []prefetchStep
-	if !*noPrefetch {
+	if cfg.prefetchOn() {
 		steps = planPrefetch(dir, eps)
 	}
-	job := guestJob{}
+	job := guestJob{vcpus: cfg.VM.VCPUs, memoryMiB: cfg.VM.MemoryMiB, registries: cfg.Prefetch.Registries}
 	if len(steps) > 0 {
-		job.prefetch, job.preLimit = prefetchScript(steps), *preLimit
+		job.prefetch, job.preLimit = prefetchScript(steps), cfg.prefetchTimeout()
 		if hasNPMDependencies(dir) {
 			// The dependencies' install scripts run here, under strace. npm
 			// itself is sbox's harness, not the skill's code: without a user
@@ -148,13 +151,13 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if !*asJSON {
 		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), name)
 	}
-	script, files := scanScript(eps, *perEntry)
+	script, files := scanScript(eps, perEntry)
 	job.scan, job.files = script, files
 	live := io.Discard
 	if *verbose {
 		live = stdout
 	}
-	vmTimeout := time.Duration(len(eps))*(*perEntry+5*time.Second) + 30*time.Second
+	vmTimeout := time.Duration(len(eps))*(perEntry+5*time.Second) + 30*time.Second
 	res, err := runVM(ctx, dir, job, vmTimeout, false, live, stderr)
 	switch {
 	case err != nil:

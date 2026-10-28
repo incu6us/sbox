@@ -609,7 +609,12 @@ if [[ -f $run/drive/sbox/prefetch.sh && $prefetch_timeout -gt 0 ]]; then
 	mkfs.ext4 -q -F "$run/deps.ext4"
 	chown sbox-vm "$run/deps.ext4"
 
-	start_egress "$run/prefetch.log"
+	# The public registries, and the config's prefetch.registries.
+	registries=(registry.npmjs.org:443 pypi.org:443 files.pythonhosted.org:443)
+	for host in $(cat "$run/drive/sbox/registries" 2>/dev/null); do
+		[[ $host =~ ^[a-z0-9.-]+$ ]] && registries+=("$host:443")
+	done
+	start_egress "$run/prefetch.log" "${registries[@]}"
 	pre_status=0
 	boot "$id-pre" "$prefetch_timeout" prefetch rw || pre_status=$?
 	stop_egress # no way out for the main microVM, unless it declares egress

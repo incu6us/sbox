@@ -40,8 +40,8 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir | GitHub URL> -- <command> [args...]
-sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir | GitHub URL>
+sbox run [-config <file>] [-v] <dir | GitHub URL> -- <command> [args...]
+sbox scan [-config <file>] [-v] [-json] <dir | GitHub URL>
 
 sbox init [dir]
 sbox config [-config <file>] [dir]
@@ -348,7 +348,7 @@ A GitHub URL works wherever a folder does: `https://github.com/o/r`,
 
 ```sh
 ./sbox run ./some-skill -- node --version
-./sbox run -timeout 30s ./some-skill -- sh -c 'ls; python3 x.py'
+./sbox run -config ci.yaml ./some-skill -- sh -c 'ls; python3 x.py'
 ./sbox run -v ./some-skill -- npm test          # also kernel and Firecracker output
 ```
 
@@ -358,9 +358,18 @@ command, passed through exactly (quotes, spaces and `$` arrive intact).
 
 | Flag | Meaning |
 |---|---|
-| `-timeout <duration>` | Stop the microVM after this long (Go duration: `30s`, `5m`). Default `1m`, minimum `1s`. |
+| `-config <file>` | A config file read after `~/.config/sbox/config.yaml`. A file inside the target is never read. |
 | `-v` | Also show kernel and Firecracker output, marked `·`. Useful when a run fails to start. |
-| `-egress <host:port,...>` | Let the command reach these hosts, and nothing else, through a CONNECT proxy outside the guest (`HTTPS_PROXY` is set for it). The summary lists allowed and refused connections. Without it, the guest has no way out. |
+
+The rest comes from the config:
+
+```yaml
+egress: [api.github.com, "*.npmjs.org"]   # through a CONNECT proxy (HTTPS_PROXY is set); nothing else gets out
+timeouts: {run: 5m}                       # 1m when unset
+vm: {vcpus: 4, memory_mib: 4096}          # 2 and 1024 when unset
+```
+
+The summary lists allowed and refused connections.
 
 Guest output is shown live, marked `│`, then a summary line on stderr
 (`sbox: exit 3 in 1.4s`).
@@ -392,7 +401,7 @@ What each run gets:
 
 ```sh
 ./sbox scan ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>
-./sbox scan -timeout 30s -v ./some-skill      # longer per entry point, show their output
+./sbox scan -v ./some-skill                    # show the entry points' output
 ```
 
 Finds the skill's automatic entry points and runs each one in a single
@@ -457,11 +466,14 @@ Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 
 | Flag | Meaning |
 |---|---|
-| `-timeout <duration>` | Stop each entry point after this long. Default `20s`. |
+| `-config <file>` | A config file read after `~/.config/sbox/config.yaml`; never one from the target. |
 | `-v` | Also show the entry points' own output. |
 | `-json` | Print the report as JSON. |
-| `-no-prefetch` | Don't download dependencies first. |
-| `-prefetch-timeout <duration>` | Stop the dependency download after this long. Default `3m`. |
+
+From the config: `timeouts.entry` (each entry point, `20s`),
+`timeouts.prefetch` (the dependency download, `3m`), `prefetch.enabled`
+(`false` skips it), `prefetch.registries` (private registries the download
+may reach besides npm and PyPI), `vm.vcpus` and `vm.memory_mib`.
 
 How it stays trustworthy: strace runs as root and writes each process's trace
 to a root-only directory, so an entry point can't edit the record of what it

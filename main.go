@@ -40,8 +40,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprint(stderr, "usage: sbox <command>\n\n"+
 			"  setup    create and provision the sbox VM (Lima + Firecracker), then run doctor\n"+
 			"  doctor   check the VM, KVM, pinned artifacts, a microVM boot and its network boundary\n"+
-			"  run      run a command on a directory in a fresh microVM: sbox run <dir> -- <command>\n"+
-			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan <dir>\n"+
+			"  run      run a command on a directory in a fresh microVM (egress, timeouts.run, vm from the config): sbox run [-config <file>] [-v] <dir> -- <command>\n"+
+			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan [-config <file>] [-v] [-json] <dir>\n"+
 			"\nsessions (a microVM that keeps running):\n"+
 			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept); -restart applies config changes: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir> [-- <command>]\n"+
 			"  setup-env run the project's dev.setup steps again: sbox setup-env <dir>\n"+
@@ -68,9 +68,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "run":
-		return runMain(ctx, args[1:], stdout, stderr)
+		return runMain(ctx, args[1:], stdout, stderr, userConfigFile())
 	case "scan":
-		return scanMain(ctx, args[1:], stdout, stderr)
+		return scanMain(ctx, args[1:], stdout, stderr, userConfigFile())
 	case "start":
 		return startMain(ctx, args[1:], stdout, stderr, sboxRun)
 	case "attach":

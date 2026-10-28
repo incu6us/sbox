@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,8 +31,7 @@ var (
 )
 
 const (
-	_defaultTimeout = 60 * time.Second
-	_maxRunBytes    = 256 << 20 // ponytail: whole skill in one tar; raise if real skills need more
+	_maxRunBytes = 256 << 20 // ponytail: whole skill in one tar; raise if real skills need more
 
 	exitTimeout = 124 // like timeout(1)
 	exitInfra   = 125 // like docker run: sbox itself failed
@@ -69,8 +67,6 @@ func addDNS(list []dnsName, qtype, name string) []dnsName {
 	}
 	return append(list, dnsName{name: name, types: []string{qtype}})
 }
-
-var _egressEntry = regexp.MustCompile(`^[a-z0-9.-]+:[0-9]{1,5}$`)
 
 // egressLog counts the main microVM's proxy log ("EGRESS ALLOW|DENY target").
 func egressLog(markers []string) (allowed, refused []string) {
@@ -121,21 +117,22 @@ func dnsLookups(markers []string) []dnsName {
 // script as root (it drops to the runner for what it runs), with input
 // files for it under sbox/in/.
 type guestJob struct {
-	command   []string
-	scan      string
-	files     map[string]string
-	prefetch  string            // optional: runs first, in a microVM with registry-only egress
-	preLimit  time.Duration     // the prefetch microVM's timeout
-	egress    []string          // optional: host:port the main microVM may reach through the proxy
-	ports     []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
-	services  []int             // Mac ports the guest reaches at host.sbox
-	env       map[string]string // set in every ssh login to the guest
-	secrets   map[string]string // the same, but root-only on the drive and never on the kept home
-	vcpus     int               // the main microVM's size; 0 keeps sbox-run's default
-	memoryMiB int
-	claude    []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
-	mounts    []mountCopy // Mac files and folders the guest init copies into the home
-	ignore    ignoreRules // what the project copy leaves out (sbox dev); everything when nil
+	command    []string
+	scan       string
+	files      map[string]string
+	prefetch   string            // optional: runs first, in a microVM with registry-only egress
+	preLimit   time.Duration     // the prefetch microVM's timeout
+	registries []string          // hosts the prefetch proxy allows besides the public registries
+	egress     []string          // optional: host:port the main microVM may reach through the proxy
+	ports      []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
+	services   []int             // Mac ports the guest reaches at host.sbox
+	env        map[string]string // set in every ssh login to the guest
+	secrets    map[string]string // the same, but root-only on the drive and never on the kept home
+	vcpus      int               // the main microVM's size; 0 keeps sbox-run's default
+	memoryMiB  int
+	claude     []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
+	mounts     []mountCopy // Mac files and folders the guest init copies into the home
+	ignore     ignoreRules // what the project copy leaves out (sbox dev); everything when nil
 	// pauseAfter pauses a session when nothing has been connected to the
 	// guest (a terminal, a forwarded port) for this long; 0 never.
 	pauseAfter time.Duration
@@ -145,13 +142,13 @@ type guestJob struct {
 // mountCopy is one mount: a resolved Mac path and where it goes.
 type mountCopy struct{ src, guest string }
 
-// runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
+// runMain implements `sbox run [-config file] [-v] <dir> -- <command...>`,
+// with egress, the timeout and the microVM's size from the config.
 // It exits with the command's status, 124 on timeout, 125 when sbox fails.
-func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userConfig string) int {
 	flags := flag.NewFlagSet("sbox run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	timeout := flags.Duration("timeout", _defaultTimeout, "stop the microVM after this long")
-	egress := flags.String("egress", "", "comma-separated `host:port` list the command may reach through a proxy (HTTPS_PROXY)")
+	configFile := flags.String("config", "", "a config `file` read after ~/.config/sbox/config.yaml (egress, timeouts.run, vm)")
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox run [flags] <dir | GitHub URL> -- <command> [args...]\n\n")
@@ -161,21 +158,16 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitInfra
 	}
 	rest := flags.Args()
-	if len(rest) < 3 || rest[1] != "--" || *timeout < time.Second {
+	if len(rest) < 3 || rest[1] != "--" {
 		flags.Usage()
 		return exitInfra
 	}
-
-	job := guestJob{command: rest[2:]}
-	if *egress != "" {
-		for _, e := range strings.Split(*egress, ",") {
-			if !_egressEntry.MatchString(e) {
-				_, _ = fmt.Fprintf(stderr, "sbox: -egress %q: want host:port, lowercase\n", e)
-				return exitInfra
-			}
-			job.egress = append(job.egress, e)
-		}
+	cfg, err := toolConfig(userConfig, *configFile)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
 	}
+	job, timeout := cfg.runJob(rest[2:]), cfg.runTimeout()
 
 	dir, name, err := resolveTarget(rest[0], githubFetch(ctx))
 	if err != nil {
@@ -186,7 +178,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "sbox: running on", name)
 	}
 	start := time.Now()
-	res, err := runVM(ctx, dir, job, *timeout, *verbose, stdout, stderr)
+	res, err := runVM(ctx, dir, job, timeout, *verbose, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
@@ -204,7 +196,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	switch {
 	case res.timedOut:
-		_, _ = fmt.Fprintf(stderr, "sbox: timed out after %s\n", *timeout)
+		_, _ = fmt.Fprintf(stderr, "sbox: timed out after %s (timeouts.run)\n", timeout)
 		return exitTimeout
 	case !res.started:
 		_, _ = fmt.Fprintln(stderr, "sbox: the microVM stopped before the command started (-v shows why)")
@@ -440,6 +432,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if len(job.egress) > 0 {
 		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})
+	}
+	if len(job.registries) > 0 {
+		files = append(files, file{"sbox/registries", strings.Join(job.registries, "\n") + "\n", 0o644})
 	}
 	for name, list := range map[string][]int{"sbox/ports": job.ports, "sbox/services": job.services} {
 		if len(list) > 0 {

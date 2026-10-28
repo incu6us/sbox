@@ -846,6 +846,28 @@ func TestSboxRunReconfigure(t *testing.T) {
 	}
 }
 
+// TestSboxRunPrefetchRegistries: prefetch.registries join the three public
+// registries the prefetch proxy allows.
+func TestSboxRunPrefetchRegistries(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000006"
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, prefetch: "true", registries: []string{"npm.internal.example.com"}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5", "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	want := "--reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py") + " serve " + run + "/proxy/sock " + run +
+		"/prefetch.log registry.npmjs.org:443 pypi.org:443 files.pythonhosted.org:443 npm.internal.example.com:443"
+	if !slices.Contains(e.calls("setpriv"), want) {
+		t.Errorf("setpriv calls %q lack %q", e.calls("setpriv"), want)
+	}
+}
+
 func TestSboxRunSizesTheMicroVM(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
