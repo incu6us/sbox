@@ -103,7 +103,7 @@ func TestProxyExposeAndRelay(t *testing.T) {
 
 func TestPythonSelftests(t *testing.T) {
 	t.Parallel()
-	for _, script := range []string{"scripts/sbox-proxy.py", "scripts/sbox-dns.py", "scripts/sbox-claude.py"} {
+	for _, script := range []string{"scripts/sbox-proxy.py", "scripts/sbox-dns.py", "scripts/sbox-claude.py", "scripts/sbox-redact.py"} {
 		out, err := exec.Command("python3", script, "--selftest").CombinedOutput()
 		if err != nil || string(out) != "ok\n" {
 			t.Errorf("%s --selftest: %v\n%s", script, err, out)

@@ -91,10 +91,16 @@ against `file` events on their `file_path` instead.
     `coverage.go`, the ELF, Mach-O and PE sniff with byte-literal tests,
     report and JSON, `unscanned-binary` rule, REVIEW for binary-only
     targets. README findings table gets the rule.
-- [ ] **2. Redaction.** `redact` and its test; wired into the four writers;
+- [x] **2. Redaction.** (Done VM-side for sessions, where secrets exist:
+    `scripts/sbox-redact.py` takes each secret, its hex in either case and
+    its base64 forms out of `sbox-run log` and `events`, so the summary,
+    `sbox log` and `sbox watch` never show one. The interactive terminal
+    is yours and isn't filtered. `run` and `scan` carry no secrets yet.) `redact` and its test; wired into the four writers;
     `runResult.secrets`. No behaviour change until a secret exists (the
     agent plan's commit 2 fills the list).
-- [ ] **3. Hostname and work directory.** `guest-init.sh`, `_work` readers,
+- [ ] **3. Hostname and work directory.** (Hostname done: six letters from
+    the nonce, in `/etc/hosts`. The work directory stays
+    `/home/runner/work`: dev mode's sync, hooks and attach use it.) `guest-init.sh`, `_work` readers,
     probe suite green, Known limits updated.
 - [ ] **4. Transcript cross-check.** After the agent plan's commit 3:
     matching, the two INFO rules, tests on a transcript and trace pair.

