@@ -300,7 +300,8 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     `rules.expected_hosts|severity|credential_paths|block_on|review_on`,
     `report.format|max_listed|fail_on`, overrides in the header and in
     JSON `config.overrides`; the behaviour flags removed. `sbox config`
-    names no source per key.) `config.go`: the struct, `yaml.v3`, strict decode,
+    comments each key with the file it came from, `# user`, `# project`
+    or both; keys left unset aren't printed, so there is no `# default`.) `config.go`: the struct, `yaml.v3`, strict decode,
     path expansion (`~`), precedence with flags, the "never from the
     target" rule. With it, the keys the Extensions table assigns to this
     commit: `vm`, `timeouts`, `prefetch.registries`, `rules`, `report`,
