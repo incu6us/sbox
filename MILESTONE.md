@@ -522,6 +522,19 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     terminal-attributes ioctl now, tested against `/dev/null`, a pipe, a
     file and a real pseudo-terminal.
 
+- ✅ Config: read-only mounts, for dev mode. `mounts` (`host`, absolute or
+  `~/`; `guest`, a clean path under `/home/runner` outside the project;
+  `mode: ro` the only mode, `rw` pointed at `sbox sync`). The host path is
+  resolved and must exist before any VM call, the tar packs it under
+  `mounts/<n>/` (the walk now shared with the project's), and the guest
+  init copies each one in at every boot, parents made by the runner and a
+  path resolving outside the home skipped. The preflight lists them.
+  - Verified on the real VM: a file and a nested folder arrive owned by
+    the runner; a guest edit is replaced by the Mac's version next boot.
+  - Not done, by design for dev mode: rw mounts and `push` (the config
+    plan's commits 5 and 6, written for one-shot `sbox run`), since
+    `sbox sync` carries the project and `.git` stays the Mac's.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

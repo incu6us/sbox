@@ -61,7 +61,7 @@ Conventions shared by every plan:
   - [x] 2 `limactlPath()`
   - [x] 3 pinned Lima download
   - [x] 4 verified on a Mac without Lima
-- [ ] 2. Config ([config.md](config.md)): the loader is in, with `ports`, `services` and `egress` (commit 1 done); the other keys and commits 3 to 7 remain
+- [ ] 2. Config ([config.md](config.md)): the loader and every dev-mode key are in, with read-only mounts (commit 3); secrets partly (commit 4, scan side left); rw mounts and push (5, 6) are for `sbox run` and wait for it
 - [ ] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3
 - [ ] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4
 - [ ] 5. Snapshots ([snapshots.md](snapshots.md)): commit 0, then decide

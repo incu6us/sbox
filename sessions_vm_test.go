@@ -651,3 +651,39 @@ sleep 2`
 		t.Errorf("sbox watch: exit %d:\n%s", code, watched.String())
 	}
 }
+
+// TestDevMountsOnVM copies a Mac file and folder into the guest's home and
+// checks that each boot brings the Mac's version back.
+func TestDevMountsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, home := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts:\n  - {host: ~/.gitconfig, guest: /home/runner/.gitconfig}\n  - {host: ~/kit, guest: /home/runner/.config/kit}\n")
+	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\tname = mac\n")
+	if err := os.MkdirAll(filepath.Join(home, "kit", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, "kit", "sub", "tool.conf"), "from the mac\n")
+	dev := func(script string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), home: home}); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String()
+	}
+	out := dev(`git config user.name; cat ~/.config/kit/sub/tool.conf; stat -c %U ~/.config ~/.config/kit/sub/tool.conf; echo guest > ~/.config/kit/sub/tool.conf`)
+	if out != "mac\nfrom the mac\nrunner\nrunner\n" {
+		t.Errorf("first session: %q, want the Mac's files, owned by the runner", out)
+	}
+	if out := dev(`cat ~/.config/kit/sub/tool.conf`); out != "from the mac\n" {
+		t.Errorf("second session: %q, want the Mac's version back", out)
+	}
+}

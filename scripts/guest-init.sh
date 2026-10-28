@@ -122,6 +122,22 @@ if [ -b /dev/vdc ]; then
 	fi
 fi
 
+# Mounts: Mac files and folders copied into the home at each boot, so the
+# Mac's version wins. Parents are made by the runner, and a path that
+# resolves outside the home (a link the runner left) is skipped.
+if [ -f /drive/sbox/mounts ]; then
+	while read -r n guest; do
+		setpriv --reuid=runner --regid=runner --init-groups mkdir -p "$(dirname "$guest")"
+		case $(realpath -m "$guest") in
+		/home/runner/?*) ;;
+		*) echo "sbox: mount $guest leaves the home, skipped"; continue ;;
+		esac
+		rm -rf "$guest"
+		cp -a "/drive/mounts/$n" "$guest"
+		chown -R runner:runner "$guest"
+	done </drive/sbox/mounts
+fi
+
 # Dev sessions: Claude Code's permissions and MCP servers from the config,
 # merged into the runner's files by the runner, keeping Claude Code's own.
 if [ -f /drive/sbox/claude.json ]; then
