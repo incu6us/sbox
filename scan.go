@@ -100,7 +100,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	noPrefetch := flags.Bool("no-prefetch", false, "don't download dependencies first")
 	preLimit := flags.Duration("prefetch-timeout", 3*time.Minute, "stop the dependency download after this long")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir>\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir | GitHub URL>\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -110,7 +110,11 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		flags.Usage()
 		return exitInfra
 	}
-	dir := flags.Arg(0)
+	dir, name, err := resolveTarget(flags.Arg(0), githubFetch(ctx))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
 
 	eps, err := findEntryPoints(dir)
 	if err != nil {
@@ -142,7 +146,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 	}
 	if !*asJSON {
-		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), dir)
+		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), name)
 	}
 	script, files := scanScript(eps, *perEntry)
 	job.scan, job.files = script, files

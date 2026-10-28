@@ -12,7 +12,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 5 | Dependency prefetch | ✅ |
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
-| v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
+| v2 | Agent mode 🟡, snapshots ⬜, GitHub URLs ✅ | 🟡 |
 | Dev | Build projects with an agent inside a session microVM: sessions, terminal, kept state, sync, ports, egress, hooks, secrets, the agent's config, diagnostics ✅; `-trace`, `sync -patch` ⬜ | ✅ |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
@@ -317,9 +317,27 @@ that ship real hooks.
       credential from the host environment, and wiring the transcript in.
   - ⬜ Then a Cursor profile.
 - Firecracker snapshots for sub-second starts.
-- GitHub URLs as targets (v1: fetch locally first).
+- ✅ GitHub URLs as targets. `sbox dev`, `sbox run` and `sbox scan` take
+  `https://github.com/o/r[/tree/<ref>[/<path>]]` or
+  `github.com/o/r[@ref][/path]`. The tarball comes from codeload with
+  `net/http` (no git on the host, so no hooks, filters or submodules), is
+  capped at the run tar's 256 MiB, and is unpacked with the safe
+  extractor into `~/Library/Caches/sbox/targets/<o>/<r>/<ref>/`; the
+  commit is read from the tarball's pax header and shown
+  (`github.com/o/r@58d6da1e34d6`). A commit ref is reused from the cache,
+  branches and tags are fetched again. `sbox dev <url>` copies the tree
+  into a new `./<repo>` (refused if it exists) and works there, so
+  `sbox sync` has somewhere to write.
+  - Verified: `sbox run github.com/anthropics/claude-code -- ls`; ponytail
+    scanned by tag (`@v4.7.0`) matches the installed copy (2 entry points,
+    PASS, one low); a marketplace subfolder
+    (`claude-plugins-official/plugins/code-review`) matches its local copy.
+    Ponytail's default branch has since moved its hooks into files the
+    scan's discovery doesn't read, so it finds none there.
+  - Not done: `-refetch`, removing cache entries older than 30 days, the
+    JSON report's `target` field, private repositories.
 
-## Dev mode 🟡
+## Dev mode ✅
 
 The direction since 2026-10-27: sbox is for building projects with an
 agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).

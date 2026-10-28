@@ -65,17 +65,22 @@ it is executed on the host. The host-side readers (`findEntryPoints`,
 
 ## Commits
 
-- [ ] **1. `target.go`.** URL parsing (`parseTarget`), fetch, safe extraction,
+- [x] **1. `target.go`.** URL parsing (`parseTarget`), fetch, safe extraction,
     cache path. Tests with `httptest.Server` serving a tarball built in the
     test: the happy path, a `..` entry, an escaping symlink, the size cap,
     a 404 (clear error naming the ref).
-- [ ] **2. Wire in.** `scanMain` and `runMain` call `resolveTarget(arg)` which
+- [x] **2. Wire in.** `scanMain` and `runMain` call `resolveTarget(arg)` which
     returns a local dir and a display name; the report header and JSON use
     the display name. `-refetch` flag. README: the URL forms in `sbox scan`
     and `sbox run`.
-- [ ] **3. Verify and document.** Scan three public plugins by URL (one by
+- [x] **3. Verify and document.** Scan three public plugins by URL (one by
     branch, one by tag, one subfolder of a marketplace repo); compare with
     the local clone's result. `MILESTONE.md` v2 "GitHub URLs as targets" ✅.
+
+Done with these differences: `sbox dev <url>` copies the fetched tree
+into a new `./<repo>` folder and works there (sync needs a folder you can
+find); the commit comes from the tarball's pax header, not `ETag`. Not
+done: `-refetch`, the 30-day cache cleanup, the JSON `target` field.
 
 ## Out of scope
 

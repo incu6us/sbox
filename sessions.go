@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -179,8 +181,15 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		args = args[1:]
 	}
 	if len(args) == 0 || !attachArgs(args) {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh] <dir> [-- <command> [args...]]")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh] <dir | GitHub URL> [-- <command> [args...]]")
 		return exitUsage
+	}
+	if t, ok := parseTarget(args[0]); ok {
+		dir, code := host.checkout(ctx, t, stderr)
+		if code != exitOK {
+			return code
+		}
+		args = append([]string{dir}, args[1:]...)
 	}
 	project, err := projectID(args[0])
 	if err != nil {
@@ -287,6 +296,37 @@ type devHost struct {
 	keep                 func(id string) bool
 	lookupEnv            func(string) (string, bool) // the Mac's environment, for secrets; os.LookupEnv when nil
 	home                 string                      // for ~ in mounts; the user's home when empty
+	cwd                  string                      // where sbox dev <GitHub URL> makes its folder; "." when empty
+	fetch                fetchFunc                   // GitHub downloads; githubFetch when nil
+}
+
+// checkout copies a GitHub target into a new folder named after it in
+// h.cwd, for sbox dev to work on (sbox sync writes there), and returns
+// the folder.
+func (h devHost) checkout(ctx context.Context, t target, stderr io.Writer) (string, int) {
+	name := t.repo
+	if t.path != "" {
+		name = path.Base(t.path)
+	}
+	local := filepath.Join(cmp.Or(h.cwd, "."), name)
+	if _, err := os.Lstat(local); err == nil {
+		_, _ = fmt.Fprintf(stderr, "sbox: %s exists; sbox dev %s works on it\n", local, local)
+		return "", exitUsage
+	}
+	fetch := h.fetch
+	if fetch == nil {
+		fetch = githubFetch(ctx)
+	}
+	src, commit, err := fetch(t)
+	if err == nil {
+		err = os.CopyFS(local, os.DirFS(src))
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return "", exitFail
+	}
+	_, _ = fmt.Fprintf(stderr, "sbox: %s copied to %s; sbox sync brings the agent's work there\n", t.display(commit), local)
+	return local, exitOK
 }
 
 // devConfig loads the project's config and builds the session's job: the
