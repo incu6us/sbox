@@ -40,12 +40,12 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
-sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
+sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir | GitHub URL> -- <command> [args...]
+sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir | GitHub URL>
 
 sbox init [dir]
 sbox config [dir]
-sbox dev [-fresh] <dir> [-- <command> [args...]]
+sbox dev [-fresh] <dir | GitHub URL> [-- <command> [args...]]
 sbox setup-env <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
@@ -291,6 +291,13 @@ A session ends when its command exits or on `sbox stop`. One started more
 than a day ago is stopped by the next `sbox start`. Pause and resume go
 through Firecracker's API; the session's memory stays allocated while
 paused.
+
+A GitHub URL works wherever a folder does: `https://github.com/o/r`,
+`.../tree/<ref>` or `.../tree/<ref>/<folder>`, or the short
+`github.com/o/r[@ref][/folder]`. The tarball is downloaded without git
+(so no hooks or filters run on the Mac), unpacked into
+`~/Library/Caches/sbox/targets/`, and its commit is printed. `sbox dev
+<url>` copies it into a new `./<repo>` folder and works there.
 
 ### `sbox run`
 

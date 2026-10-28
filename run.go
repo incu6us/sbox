@@ -149,7 +149,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	egress := flags.String("egress", "", "comma-separated `host:port` list the command may reach through a proxy (HTTPS_PROXY)")
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox run [flags] <dir> -- <command> [args...]\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox run [flags] <dir | GitHub URL> -- <command> [args...]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -172,8 +172,16 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	dir, name, err := resolveTarget(rest[0], githubFetch(ctx))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
+	if name != dir {
+		_, _ = fmt.Fprintln(stderr, "sbox: running on", name)
+	}
 	start := time.Now()
-	res, err := runVM(ctx, rest[0], job, *timeout, *verbose, stdout, stderr)
+	res, err := runVM(ctx, dir, job, *timeout, *verbose, stdout, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
