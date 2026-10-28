@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"cmp"
@@ -17,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -238,7 +240,16 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
-		warnConfigChanged(stderr, host.stateDir, project, id, args[0], cfg)
+		if changed := configChanged(host.stateDir, project, id, cfg); len(changed) > 0 {
+			applied, rest := applyLive(ctx, vm, id, cfg, job, changed, stderr)
+			if len(applied) > 0 {
+				_, _ = fmt.Fprintf(stderr, "sbox: applied %s to session %s\n", strings.Join(applied, ", "), id)
+				if err := markApplied(host.stateDir, project, id, cfg, applied); err != nil {
+					_, _ = fmt.Fprintln(stderr, "sbox: recording the session's config:", err)
+				}
+			}
+			warnChanged(stderr, id, args[0], rest)
+		}
 	} else {
 		for _, line := range devPreflight(cfg, job.secrets, readMCPJSON(args[0])) {
 			_, _ = fmt.Fprintln(stderr, line)
@@ -481,10 +492,86 @@ func configChanged(stateDir, project, id string, cfg config) []string {
 // warnConfigChanged says so when session id booted with another config
 // than dir's now, and how to apply it.
 func warnConfigChanged(stderr io.Writer, stateDir, project, id, dir string, cfg config) {
-	if changed := configChanged(stateDir, project, id, cfg); len(changed) > 0 {
+	warnChanged(stderr, id, dir, configChanged(stateDir, project, id, cfg))
+}
+
+// warnChanged names the changed keys only a restart applies.
+func warnChanged(stderr io.Writer, id, dir string, changed []string) {
+	if len(changed) > 0 {
 		_, _ = fmt.Fprintf(stderr, "sbox: the config changed since session %s started (%s): sbox dev -restart %s applies it; the home is kept, running processes aren't\n",
 			id, strings.Join(changed, ", "), dir)
 	}
+}
+
+// _claudeKeys are the boot keys that end up in Claude Code's files, which
+// it reads when it starts: rewriting them applies to the next claude run.
+var _claudeKeys = []string{"dev.permissions", "mcp", "permissions"}
+
+// applyLive applies the changed keys a running session can take without a
+// reboot (Claude Code's settings, the mounts) and returns them, sorted,
+// and the rest.
+func applyLive(ctx context.Context, vm sboxRunFunc, id string, cfg config, job guestJob, changed []string, stderr io.Writer) (applied, rest []string) {
+	claude := slices.ContainsFunc(changed, func(k string) bool { return slices.Contains(_claudeKeys, k) })
+	if claude {
+		err := vm(ctx, bytes.NewReader(cfg.claudeSettings()), io.Discard, stderr, "attach", id, "--", "python3", "-I", "/drive/sbox/claude.py", "-", "/home/runner")
+		claude = err == nil
+	}
+	mounts := slices.Contains(changed, "mounts")
+	if mounts {
+		mounts = copyMounts(ctx, vm, id, job.mounts, stderr) == nil
+	}
+	for _, k := range changed {
+		if (claude && slices.Contains(_claudeKeys, k)) || (mounts && k == "mounts") {
+			applied = append(applied, k)
+		} else {
+			rest = append(rest, k)
+		}
+	}
+	return applied, rest
+}
+
+// copyMounts copies the mounts into a running guest's home as the runner,
+// replacing what's there, as the guest init does at boot.
+func copyMounts(ctx context.Context, vm sboxRunFunc, id string, mounts []mountCopy, stderr io.Writer) error {
+	if len(mounts) == 0 {
+		return nil
+	}
+	var tarball bytes.Buffer
+	tw := tar.NewWriter(&tarball)
+	var rels []string
+	total := int64(0)
+	for _, m := range mounts {
+		rel := strings.TrimPrefix(m.guest, "/home/runner/")
+		rels = append(rels, rel)
+		if err := packTree(tw, m.src, rel, nil, &total); err != nil {
+			return err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	script := "cd /home/runner && rm -rf -- " + shellJoin(rels) + " && tar -xf -"
+	return vm(ctx, &tarball, io.Discard, stderr, "attach", id, "--", "sh", "-c", script)
+}
+
+// markApplied records that session id now has cfg's values for keys.
+func markApplied(stateDir, project, id string, cfg config, keys []string) error {
+	var rec bootRecord
+	data, err := os.ReadFile(bootFile(stateDir, project))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &rec); err != nil || rec.ID != id {
+		return fmt.Errorf("no record of session %s", id)
+	}
+	now := cfg.bootKeys()
+	for _, k := range keys {
+		rec.Keys[k] = now[k]
+	}
+	if data, err = json.Marshal(rec); err != nil {
+		return err
+	}
+	return os.WriteFile(bootFile(stateDir, project), data, 0o644)
 }
 
 // devJob is what a dev session runs: nothing but the guest's sshd, with

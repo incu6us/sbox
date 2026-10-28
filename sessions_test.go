@@ -1087,3 +1087,50 @@ func TestSyncSetupEnvConfigTakeConfigFlag(t *testing.T) {
 		t.Errorf("sbox sync -config of a missing file: exit %d, %q", code, stderr.String())
 	}
 }
+
+func TestDevMainAppliesLiveChanges(t *testing.T) {
+	t.Parallel()
+	dir, state, home := t.TempDir(), t.TempDir(), t.TempDir()
+	project := mustProjectID(t, dir)
+	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\tname = new\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com]\n")
+	old, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
+	if err := recordBoot(state, project, "0123abcd", old); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, x.example]\npermissions: {deny: [WebFetch]}\nmounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig}]\n")
+	vm := &fakeVM{answer: func(args []string) string {
+		if args[0] == "ps" {
+			return "0123abcd running 1700000000 " + project + "\n"
+		}
+		return ""
+	}}
+	dev := func() string {
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, home: home}); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return stderr.String()
+	}
+	notes := dev()
+	cfg, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
+	var claude, mounts []byte
+	for i, c := range vm.calls {
+		switch {
+		case slices.Equal(c, []string{"attach", "0123abcd", "--", "python3", "-I", "/drive/sbox/claude.py", "-", "/home/runner"}):
+			claude = vm.stdins[i]
+		case c[0] == "attach" && len(c) == 6 && strings.Contains(c[5], "rm -rf -- '.gitconfig'"):
+			mounts = vm.stdins[i]
+		}
+	}
+	if string(claude) != string(cfg.claudeSettings()) || tarFiles(t, mounts)[".gitconfig"] != "[user]\n\tname = new\n" {
+		t.Errorf("live apply: claude settings %q, mounts tar %v; calls %q", claude, tarFiles(t, mounts), vm.calls)
+	}
+	if !strings.Contains(notes, "applied mounts, permissions to session 0123abcd") || !strings.Contains(notes, "the config changed since session 0123abcd started (egress)") {
+		t.Errorf("notes %q: want what was applied, and a restart only for egress", notes)
+	}
+	vm.calls, vm.stdins = nil, nil
+	if notes := dev(); strings.Contains(notes, "applied") || !strings.Contains(notes, "(egress)") {
+		t.Errorf("second attach: %q, want nothing applied again, egress still pending", notes)
+	}
+}

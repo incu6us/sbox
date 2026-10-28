@@ -562,9 +562,12 @@ writes a commented starter file and `sbox config` prints the effective one.
 - [x] **6b. Config changes under a running session.** The config a
     session booted with is recorded on the Mac; attaching again and
     `sbox setup-env` name the keys that changed; `sbox dev -restart`
-    reboots on the same home to apply them. Live apply without a reboot
-    (permissions, mcp, mounts; egress and ports with a proxy reload) is
-    left until restarting proves too slow.
+    reboots on the same home to apply them.
+    - [x] live apply on reattach for what needs no reboot: `permissions`,
+      `dev.permissions` and `mcp` (the guest's settings helper rerun as
+      the runner, read by the next `claude`) and `mounts` (copied in
+      again); the rest still asks for `-restart`
+    - [ ] egress and ports live, with a proxy and relay reload
 - [x] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
     the BLOCKED/MISSING line format with hints, the guest watcher's port
     and tool-denial records (transcript format confirmed here), `sbox
