@@ -314,6 +314,54 @@ var (
 // guest's project.
 const _deleteScript = "cd /home/runner/work && xargs -0 rm -f --"
 
+// sumScript prints a SHA-256 per regular file of the guest's project, in
+// sha256sum's format, without what the rules ignore: cheaper than a pull
+// when only the count of changes is wanted.
+func sumScript(rules ignoreRules) string {
+	return `cd /home/runner/work && find . ` + rules.findPrune() + ` -prune -o -type f -print0 | xargs -0 -r sha256sum`
+}
+
+// countChanges counts the paths where the guest's sums (sumScript's
+// output, from the guest, so parsed strictly) differ from the base: edited,
+// added or deleted. A name sha256sum had to escape counts as changed.
+func countChanges(base manifest, sums string) int {
+	seen := make(map[string]bool)
+	n := 0
+	for _, line := range strings.Split(sums, "\n") {
+		hash, file, ok := strings.Cut(line, "  ./")
+		switch {
+		case strings.HasPrefix(line, "\\"):
+			n++
+		case !ok || len(hash) != 64:
+		default:
+			seen[file] = true
+			if base[file].Hash != hash {
+				n++
+			}
+		}
+	}
+	for p := range base {
+		if !seen[p] {
+			n++
+		}
+	}
+	return n
+}
+
+// guestChanges counts the guest's changes not yet synced, or returns -1
+// when there is no base to count against or the guest doesn't answer.
+func guestChanges(ctx context.Context, vm sboxRunFunc, id, stateDir, project string, rules ignoreRules) int {
+	base, err := loadBase(stateDir, project)
+	if err != nil {
+		return -1
+	}
+	var sums bytes.Buffer
+	if err := vm(ctx, strings.NewReader(""), &sums, io.Discard, "attach", id, "--", "sh", "-c", sumScript(rules)); err != nil {
+		return -1
+	}
+	return countChanges(base, sums.String())
+}
+
 // pullScript sends the guest's project as a tar of its regular files,
 // without what the rules ignore.
 func pullScript(rules ignoreRules) string {

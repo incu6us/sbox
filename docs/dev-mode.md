@@ -448,7 +448,9 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] push the Mac's changes automatically when `sbox dev` reuses a home
       (only the Mac-to-guest half, before the hooks; the guest's own
       changes wait for `sbox sync`, with a line saying how many)
-    - [ ] the change-count notice in the terminal
+    - [x] the change-count notice in the terminal: in its title, not on
+      the screen (that would garble Claude Code's display), counted every
+      10 s from the guest's `sha256sum`s against the base
 - [x] **5. Ports and services.** From the config: `ports` (guest to the
     Mac's localhost) and `services` (the Mac's localhost to the guest, as
     `host.sbox`). Each is `sbox-proxy.py relay` and `expose` joined by a
@@ -485,12 +487,9 @@ writes a commented starter file and `sbox config` prints the effective one.
       again (it used to try a second session and fail on "in use")
     - [x] tested with fakes, then on the real VM (kept, paused, reattached
       to the same guest's process, stopped)
-    - [ ] keep as the default only when the guest has unsynced changes:
-      the question always defaults to keep for now
-- [x] **5d. Toolchains.** `image.packages` through setup and the stamp,
-    `pids.max` in the jailer cgroup, the read-only-root line in preflight.
-    Probe: `go version` after adding `golang-go`; a fork bomb in the guest
-    ends with the session still attached.
+    - [x] keep as the default only when the guest has unsynced changes
+      (or the count is unknown); with nothing to sync the default is stop,
+      and the summary says which
     - [x] `image.packages`: Debian names only, user config only, sorted;
       `provision.sh` adds them to mmdebstrap's list and a hash of them to
       the stamp (no list, old stamp: nothing rebuilds)

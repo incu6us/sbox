@@ -73,13 +73,13 @@ LISTEN 0 511 0.0.0.0:80 0.0.0.0:*
 
 func TestSessionSummary(t *testing.T) {
 	t.Parallel()
-	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
-	for _, want := range []string{"session 2h5m", "sbox sync ./app", "egress   api.anthropic.com:443 ×2", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
+	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", 3, parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
+	for _, want := range []string{"session 2h5m · the guest has 3 changes: sbox sync ./app", "egress   api.anthropic.com:443 ×2", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary lacks %q:\n%s", want, got)
 		}
 	}
-	if quiet := sessionSummary(time.Minute, "./app", parseEvents(""), nil); strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
+	if quiet := sessionSummary(time.Minute, "./app", 0, parseEvents(""), nil); !strings.Contains(quiet, "nothing to sync") || strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
 		t.Errorf("a quiet session's summary %q, want just the first line", quiet)
 	}
 }
