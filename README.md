@@ -260,6 +260,7 @@ BLOCKED dns     registry.yarnpkg.com (A, AAAA) ×3  not in egress → egress: [r
 BLOCKED port    3000  listening on loopback only, the forward can't reach it → listen on 0.0.0.0 (e.g. --host 0.0.0.0)
 BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]
 BLOCKED mcp     docs  host mcp.example.com:443 not in egress → egress: [mcp.example.com]
+BLOCKED mcp     pg  could not start: ENOENT: Executable not found in $PATH: "pg-mcp"
 BLOCKED tool    mcp__pg__execute ×2  denied by a permission rule (permissions.deny or mcp.deny)
 BLOCKED service host.sbox:6379  not in services → services: [6379]
 BLOCKED connect 140.82.112.3:443  straight to an address: the guest goes out only by name, through egress

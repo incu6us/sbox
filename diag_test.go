@@ -317,3 +317,22 @@ func TestDevTrace(t *testing.T) {
 		t.Errorf("a refused write in the home is the runner's own business, not the sandbox's:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+func TestMCPLines(t *testing.T) {
+	t.Parallel()
+	out := "Checking MCP server health…\n\n" +
+		"broken: does-not-exist-sbox  - ✘ Failed to connect — ENOENT: Executable not found in $PATH: \"does-not-exist-sbox\"\n" +
+		"hang: node -e process.stdin.on('data',()=>{}) - ✘ Failed to connect — MCP server \"hang\" connection timed out after 30000ms\n" +
+		"pg: npx -y pg - ✓ Connected\n" +
+		"docs: https://mcp.example.com/mcp (HTTP) - ⏸ Pending approval (run `claude` to approve)\n" +
+		"bad name!: x - ✘ Failed to connect — y\n" +
+		"esc: x - ✘ Failed to connect — \x1b[2J\n"
+	want := []string{
+		`BLOCKED mcp     broken  could not start: ENOENT: Executable not found in $PATH: "does-not-exist-sbox"`,
+		`BLOCKED mcp     hang  could not start: MCP server "hang" connection timed out after 30000ms`,
+		`BLOCKED mcp     esc  could not start: \x1b[2J`,
+	}
+	if got := mcpLines(out); !slices.Equal(got, want) {
+		t.Errorf("mcpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
