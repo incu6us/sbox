@@ -411,8 +411,9 @@ writes a commented starter file and `sbox config` prints the effective one.
       matched the host to the second (Firecracker's kvm-clock follows the
       host), so the planned clock fix and its restricted root key are not
       needed
-    - [ ] window resize with a real terminal (not testable without one;
-      ssh forwards it by design)
+    - [x] window resize: a pseudo-terminal that is the attach's controlling
+      terminal, resized mid-command, and the guest's `stty size` follows
+      (`TestAttachWindowResizeOnVM`)
 - [x] **3. Writable work drive and persistence.** A project id (the
     SHA-256 of the folder's resolved path, 16 hex digits) names a sparse
     20 GiB ext4 drive labelled `sbox-work` under
