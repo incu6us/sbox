@@ -78,9 +78,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if isTerminal(os.Stdin) {
 			keep = askKeep(os.Stdin, stderr)
 		}
-		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), userConfigFile(), keep)
+		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile(), keep: keep})
 	case "setup-env":
-		return setupEnvMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir(), userConfigFile())
+		return setupEnvMain(ctx, args[1:], stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":

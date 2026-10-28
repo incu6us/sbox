@@ -126,6 +126,7 @@ type guestJob struct {
 	ports    []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
 	services []int             // Mac ports the guest reaches at host.sbox
 	env      map[string]string // set in every ssh login to the guest
+	secrets  map[string]string // the same, but root-only on the drive and never on the kept home
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -367,12 +368,18 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	if job.prefetch != "" {
 		files = append(files, file{"sbox/prefetch.sh", job.prefetch, 0o700})
 	}
-	if len(job.env) > 0 {
-		var b strings.Builder
-		for _, k := range slices.Sorted(maps.Keys(job.env)) {
-			fmt.Fprintf(&b, "%s=%s\n", k, job.env[k])
+	for name, vars := range map[string]map[string]string{"sbox/env": job.env, "sbox/secrets": job.secrets} {
+		if len(vars) > 0 {
+			var b strings.Builder
+			for _, k := range slices.Sorted(maps.Keys(vars)) {
+				fmt.Fprintf(&b, "%s=%s\n", k, vars[k])
+			}
+			mode := int64(0o644)
+			if name == "sbox/secrets" {
+				mode = 0o400
+			}
+			files = append(files, file{name, b.String(), mode})
 		}
-		files = append(files, file{"sbox/env", b.String(), 0o644})
 	}
 	if len(job.egress) > 0 {
 		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})
