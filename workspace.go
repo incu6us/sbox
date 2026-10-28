@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"maps"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -84,4 +87,47 @@ func (w *workspace) check(name string) error {
 		}
 	}
 	return nil
+}
+
+// macPath expands ~/ against home and resolves symlinks, so two spellings
+// of a folder compare equal; a path that doesn't exist is only cleaned.
+func macPath(p, home string) string {
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		p = filepath.Join(home, rest)
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
+}
+
+// under reports whether p is dir or inside it.
+func under(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// workspaceFor is the workspace a project folder belongs to: the one whose
+// paths include the longest folder containing it, or default. override,
+// from -workspace, is the user's choice for one run; it must name a
+// workspace (or default).
+func (c config) workspaceFor(dir, override, home string) (string, error) {
+	if override != "" {
+		if _, ok := c.Workspaces[override]; !ok && override != "default" {
+			return "", fmt.Errorf("-workspace %s: no such workspace in your config", override)
+		}
+		return override, nil
+	}
+	dir = macPath(dir, home)
+	best, longest := "default", -1
+	for _, name := range slices.Sorted(maps.Keys(c.Workspaces)) { // a tie goes to the first name
+		for _, p := range c.Workspaces[name].Paths {
+			if p = macPath(p, home); under(dir, p) && len(p) > longest {
+				best, longest = name, len(p)
+			}
+		}
+	}
+	return best, nil
 }
