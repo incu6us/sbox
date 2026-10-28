@@ -178,9 +178,14 @@ func TestDevStateIsKeptOnVM(t *testing.T) {
 		return out.String()
 	}
 
-	session("echo kept > ~/state.txt && echo guest edit > README")
-	if out := session("cat ~/state.txt README"); !strings.Contains(out, "kept") || !strings.Contains(out, "guest edit") {
-		t.Errorf("second session sees %q, want the home file and the guest's edit", out)
+	// The tools' own files in the home are yours too: no fake credentials
+	// written over them at boot (those are for scan's throwaway homes).
+	if out := session("test -e ~/.aws/credentials && echo fake-credentials; echo kept > ~/state.txt && echo guest edit > README && npm config set prefix ~/.local && echo mine > ~/.netrc"); strings.Contains(out, "fake-credentials") {
+		t.Errorf("a session's home has fake credentials: %q", out)
+	}
+	if out := session("cat ~/state.txt README ~/.netrc; npm config get prefix"); !strings.Contains(out, "kept") || !strings.Contains(out, "guest edit") ||
+		!strings.Contains(out, "mine") || !strings.Contains(out, "/home/runner/.local") {
+		t.Errorf("second session sees %q, want the home file, the guest's edit, its .netrc and npm prefix", out)
 	}
 	forget()
 	if out := session("cat README; test -e ~/state.txt && echo still-there || echo gone"); !strings.Contains(out, "host version") || !strings.Contains(out, "gone") {
@@ -1032,17 +1037,30 @@ func TestDevTraceOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
-	script := "cat ~/.aws/credentials >/dev/null; touch /usr/local/sbox-probe 2>/dev/null; echo done"
+	// A planted dependency whose postinstall reads the AWS credentials,
+	// installed by dev.setup: the read shows, marked as setup's.
+	if err := os.MkdirAll(filepath.Join(dir, "probe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"package.json":       `{"name": "app", "version": "1.0.0", "dependencies": {"probe": "file:./probe"}}`,
+		"probe/package.json": `{"name": "probe", "version": "1.0.0", "scripts": {"postinstall": "node -e \"try { require('fs').readFileSync(require('os').homedir() + '/.aws/credentials') } catch {}\""}}`,
+		"sbox.yaml":          "dev: {setup: [\"npm install --offline --no-audit --no-fund --foreground-scripts\"]}\n",
+	} {
+		writeTestFile(t, filepath.Join(dir, name), body)
+	}
+	script := "cat ~/.ssh/id_ed25519 >/dev/null 2>&1; touch /usr/local/sbox-probe 2>/dev/null; echo done"
 	var out, errOut bytes.Buffer
 	if code := devMain(ctx, []string{"-trace", dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
 		t.Fatalf("sbox dev -trace: exit %d: %s%s", code, out.String(), errOut.String())
 	}
-	for _, want := range []string{"INFO    credential-read  reads /home/runner/.aws/credentials", "BLOCKED write   /usr/local/sbox-probe  EROFS"} {
+	for _, want := range []string{"INFO    credential-read  reads /home/runner/.aws/credentials (missing) (in dev.setup)",
+		"INFO    credential-read  reads /home/runner/.ssh/id_ed25519 (missing)", "BLOCKED write   /usr/local/sbox-probe  EROFS"} {
 		if !strings.Contains(errOut.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, errOut.String())
 		}
 	}
-	if out.String() != "done\n" {
-		t.Errorf("the command's own output %q, want it untouched by strace", out.String())
+	if !strings.HasSuffix(out.String(), "\ndone\n") {
+		t.Errorf("output %q, want setup's then the command's, untouched by strace", out.String())
 	}
 }

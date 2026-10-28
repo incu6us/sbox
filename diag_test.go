@@ -288,7 +288,7 @@ func TestDevTrace(t *testing.T) {
 	t.Parallel()
 	wrapped := traceCommand([]string{"claude", "--continue"})
 	if len(wrapped) != 3 || wrapped[0] != "bash" || wrapped[1] != "-lc" ||
-		!strings.Contains(wrapped[2], "exec strace -ff -qq -s 200 -e trace="+_traced+" -o /tmp/sbox-trace/t -- 'claude' '--continue'") {
+		!strings.Contains(wrapped[2], "exec strace -ff -qq -s 200 -e trace="+_traced+" -o /tmp/sbox-trace/terminal/t -- 'claude' '--continue'") {
 		t.Errorf("traceCommand = %q", wrapped)
 	}
 	if shell := traceCommand(nil); !strings.HasSuffix(shell[2], "-- bash -l") {

@@ -57,7 +57,7 @@ func TestHookScript(t *testing.T) {
 		t.Parallel()
 		home := newHome(t)
 		for range 2 {
-			if out, err := shHooks(t, home, hookScript(setup, start, time.Minute, false)); err != nil {
+			if out, err := shHooks(t, home, hookScript(setup, start, time.Minute, false, false)); err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
 		}
@@ -69,10 +69,10 @@ func TestHookScript(t *testing.T) {
 		}
 
 		changed := append([]string{"echo setup-0 >> ~/log"}, setup...)
-		if out, err := shHooks(t, home, hookScript(changed, nil, time.Minute, false)); err != nil {
+		if out, err := shHooks(t, home, hookScript(changed, nil, time.Minute, false, false)); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
-		if out, err := shHooks(t, home, hookScript(changed, nil, time.Minute, true)); err != nil {
+		if out, err := shHooks(t, home, hookScript(changed, nil, time.Minute, true, false)); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
 		if got := readFile(t, filepath.Join(home, "log")); strings.Count(got, "setup-0") != 2 {
@@ -84,14 +84,14 @@ func TestHookScript(t *testing.T) {
 		t.Parallel()
 		home := newHome(t)
 		failing := []string{"echo before >> ~/log", "exit 3", "echo after >> ~/log"}
-		out, err := shHooks(t, home, hookScript(failing, start, time.Minute, false))
+		out, err := shHooks(t, home, hookScript(failing, start, time.Minute, false, false))
 		if err == nil || !strings.Contains(out, "setup failed (exit 3): exit 3") {
 			t.Errorf("err %v, output %q; want a failure naming the step", err, out)
 		}
 		if got := readFile(t, filepath.Join(home, "log")); got != "before\n" {
 			t.Errorf("log %q, want only the steps before the failure, and no start", got)
 		}
-		if out, _ := shHooks(t, home, hookScript(failing, nil, time.Minute, false)); !strings.Contains(out, "setup failed") {
+		if out, _ := shHooks(t, home, hookScript(failing, nil, time.Minute, false, false)); !strings.Contains(out, "setup failed") {
 			t.Errorf("second run %q: want setup tried again, since the failure left no stamp", out)
 		}
 	})
@@ -105,7 +105,7 @@ func TestHookScript(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(home, ".fakebin", "timeout"), []byte("#!/bin/sh\nexit 124\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		out, err := shHooks(t, home, hookScript([]string{"npm ci"}, nil, 10*time.Minute, false))
+		out, err := shHooks(t, home, hookScript([]string{"npm ci"}, nil, 10*time.Minute, false, false))
 		if err == nil || !strings.Contains(out, "setup timed out after 10m0s: npm ci") {
 			t.Errorf("err %v, output %q; want the timeout named", err, out)
 		}
@@ -125,7 +125,7 @@ func TestHookScript(t *testing.T) {
 				t.Fatal(err)
 			}
 			began := time.Now()
-			out, err := shHooks(t, home, hookScript(nil, []string{step}, time.Minute, false))
+			out, err := shHooks(t, home, hookScript(nil, []string{step}, time.Minute, false, false))
 			if err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
@@ -140,12 +140,34 @@ func TestHookScript(t *testing.T) {
 		}
 	})
 
+	t.Run("with trace, setup steps run under strace and start steps don't", func(t *testing.T) {
+		t.Parallel()
+		home := newHome(t)
+		if err := os.MkdirAll(filepath.Join(home, ".fakebin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		fake := "#!/bin/sh\necho \"$*\" >> \"$HOME/strace.log\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(home, ".fakebin", "strace"), []byte(fake), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := shHooks(t, home, hookScript([]string{"echo s >> ~/log"}, []string{"echo t >> ~/log"}, time.Minute, false, true)); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		calls := readFile(t, filepath.Join(home, "strace.log"))
+		if strings.Count(calls, "\n") != 1 || !strings.Contains(calls, "-o /tmp/sbox-trace/setup/t -- sh -c echo s >> ~/log") {
+			t.Errorf("strace calls %q, want the setup step alone, writing to /tmp/sbox-trace/setup", calls)
+		}
+		if got := readFile(t, filepath.Join(home, "log")); got != "s\nt\n" {
+			t.Errorf("log %q, want both steps run", got)
+		}
+	})
+
 	t.Run("a start step ending in & runs detached", func(t *testing.T) {
 		t.Parallel()
 		home := newHome(t)
 		bg := []string{"sleep 1; echo served; echo done > ~/bg &"}
 		began := time.Now()
-		if out, err := shHooks(t, home, hookScript(nil, bg, time.Minute, false)); err != nil {
+		if out, err := shHooks(t, home, hookScript(nil, bg, time.Minute, false, false)); err != nil {
 			t.Fatalf("%v: %s", err, out)
 		}
 		if waited := time.Since(began); waited > 900*time.Millisecond {

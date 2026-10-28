@@ -526,21 +526,23 @@ func traceCommand(cmd []string) []string {
 	if len(cmd) > 0 {
 		run = shellJoin(cmd)
 	}
-	return []string{"bash", "-lc", "rm -rf /tmp/sbox-trace && mkdir -p /tmp/sbox-trace && exec strace -ff -qq -s 200 -e trace=" +
-		_traced + " -o /tmp/sbox-trace/t -- " + run}
+	return []string{"bash", "-lc", "rm -rf /tmp/sbox-trace/terminal && mkdir -p /tmp/sbox-trace/terminal && exec strace -ff -qq -s 200 -e trace=" +
+		_traced + " -o /tmp/sbox-trace/terminal/t -- " + run}
 }
 
-// _traceReadBack sends a -trace session's traces: "T <pid> <line>" for
-// what scan's rules read (the quiet paths dropped), "D <pid> <line>" for
-// every refused write, quiet or not.
-var _traceReadBack = `for f in /tmp/sbox-trace/t.*; do
+// traceReadBack sends one phase's traces (terminal or setup) of a -trace
+// session: "T <pid> <line>" for what scan's rules read (the quiet paths
+// dropped), "D <pid> <line>" for every refused write, quiet or not.
+func traceReadBack(phase string) string {
+	return `for f in /tmp/sbox-trace/` + phase + `/t.*; do
 	[ -f "$f" ] || continue
 	pid=${f##*.}
 	grep -avE '` + _quietPaths + `' "$f" | sed "s/^/T $pid /"
 	grep -aE ' = -1 E(ROFS|ACCES) ' "$f" | sed "s/^/D $pid /"
 done | head -n ` + strconv.Itoa(_maxTraceLines)
+}
 
-// traceLines turns _traceReadBack's output (written by the runner, so it
+// traceLines turns traceReadBack's output (written by the runner, so it
 // informs and never judges) into scan's findings at INFO and a BLOCKED
 // line per refused write outside the home.
 func traceLines(out, canary string) []string {

@@ -689,7 +689,7 @@ func TestDevMainRunsHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	project := mustProjectID(t, dir)
-	script := hookScript([]string{"npm ci"}, []string{"npm run dev &"}, 10*time.Minute, false)
+	script := hookScript([]string{"npm ci"}, []string{"npm run dev &"}, 10*time.Minute, false, false)
 	run := func(ps string, hooksFail bool) (*fakeVM, string) {
 		vm := &fakeVM{answer: func(args []string) string {
 			switch args[0] {
@@ -740,7 +740,7 @@ func TestSetupEnvMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	project := mustProjectID(t, dir)
-	script := hookScript([]string{"npm ci"}, nil, 10*time.Minute, true)
+	script := hookScript([]string{"npm ci"}, nil, 10*time.Minute, true, false)
 	vmWith := func(ps string) *fakeVM {
 		return &fakeVM{answer: func(args []string) string {
 			switch args[0] {
@@ -1158,12 +1158,15 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 func TestDevMainTrace(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {setup: [npm ci]}\n")
 	vm := &fakeVM{answer: func(args []string) string {
 		switch {
 		case args[0] == "start":
 			return "READY " + args[1] + "\n"
-		case args[0] == "attach" && slices.Contains(args, _traceReadBack):
-			return `T 7 openat(AT_FDCWD, "/home/runner/.aws/credentials", O_RDONLY) = 3` + "\n"
+		case args[0] == "attach" && slices.Contains(args, traceReadBack("terminal")):
+			return `T 7 openat(AT_FDCWD, "/home/runner/.netrc", O_RDONLY) = -1 ENOENT (No such file or directory)` + "\n"
+		case args[0] == "attach" && slices.Contains(args, traceReadBack("setup")):
+			return `T 9 openat(AT_FDCWD, "/home/runner/.aws/credentials", O_RDONLY) = -1 ENOENT (No such file or directory)` + "\n"
 		}
 		return ""
 	}}
@@ -1172,10 +1175,15 @@ func TestDevMainTrace(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	id := vm.calls[1][1]
-	if want := append([]string{"attach", id, "--"}, traceCommand([]string{"npm", "install"})...); !slices.Equal(withoutSummary(vm.calls)[2], want) {
-		t.Errorf("attach %q, want the command under strace", withoutSummary(vm.calls)[2])
+	if want := append([]string{"attach", id, "--"}, traceCommand([]string{"npm", "install"})...); !slices.Equal(withoutSummary(vm.calls)[3], want) {
+		t.Errorf("attach %q, want the command under strace", withoutSummary(vm.calls)[3])
 	}
-	if canary := tarFiles(t, vm.stdins[1])["sbox/canary"]; canary == "" || !strings.Contains(stderr.String(), "INFO    credential-read  reads /home/runner/.aws/credentials") {
-		t.Errorf("canary %q, stderr:\n%s\nwant the trace's findings", canary, stderr.String())
+	for _, want := range []string{"INFO    credential-read  reads /home/runner/.netrc (missing)", "INFO    credential-read  reads /home/runner/.aws/credentials (missing) (in dev.setup)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
+		}
+	}
+	if hooks := strings.Join(withoutSummary(vm.calls)[2], " "); !strings.Contains(hooks, "strace") {
+		t.Errorf("hooks attach %q, want setup under strace", hooks)
 	}
 }

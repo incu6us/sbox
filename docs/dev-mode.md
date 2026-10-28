@@ -608,6 +608,14 @@ writes a commented starter file and `sbox config` prints the effective one.
       lines with no verdict, the fake credentials' canary kept in the
       session record, and every refused write outside the home (EROFS,
       EACCES) as a BLOCKED line
+    - [x] `-trace` covers `dev.setup` too, when it runs, its lines marked
+      `(in dev.setup)`; `start` steps aren't traced (strace would hold a
+      background server's step open)
+    - [x] no fake credentials in a session's kept home. Found while
+      adding the above: the guest init wrote them on every boot, over the
+      home's `.npmrc` (the npm prefix the preflight suggests), `.netrc`,
+      gh login and ssh key; the credential-read rule still fires on the
+      attempt, the file missing
     - [x] Claude Code's denied tool calls, from the transcripts in the
       guest's `~/.claude/projects/` (format confirmed on 2.1: a user entry
       with `toolDenialKind`, `permission-rule` or `user-rejected`, answering
@@ -675,8 +683,12 @@ a real token, and a push with a scoped GitHub token, are still to do.
   the guest; a denied tool is refused by Claude Code; a remote server whose
   host is not in `egress` shows under `refused` and in the could-not-start
   list.
-- [ ] `~/.aws/credentials` read by a planted-probe dependency during
-    install shows in the summary with the canary rule.
+- [x] `~/.aws/credentials` read by a planted-probe dependency during
+    install shows in the summary with the canary rule. (With `-trace`: a
+    `file:` dependency's postinstall under `npm install` in `dev.setup`
+    gives `INFO credential-read reads /home/runner/.aws/credentials
+    (missing) (in dev.setup)`; the file is missing since sessions no
+    longer get fake credentials, so the canary has nothing to mark.)
 
 ## Out of scope for this version
 
