@@ -187,12 +187,13 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // says whether the session stays up; with none (no terminal to ask on) it
 // is stopped.
 func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
-	const usage = "usage: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]"
+	const usage = "usage: sbox dev [-fresh | -restart] [-config <file>] [-workspace <name>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]"
 	flags := flag.NewFlagSet("sbox dev", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	fresh := flags.Bool("fresh", false, "")
 	restart := flags.Bool("restart", false, "")
 	flags.StringVar(&host.projectConfig, "config", "", "")
+	flags.StringVar(&host.workspace, "workspace", "", "")
 	command := flags.String("command", "", "")
 	trace := flags.Bool("trace", false, "")
 	if flags.Parse(args) != nil {
@@ -217,12 +218,24 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return exitUsage
 	}
 	cfg, job, err := host.devConfig(args[0])
-	if err != nil {
+	var blocked *blockedError
+	if err != nil && !errors.As(err, &blocked) {
 		return configFailed(stderr, err)
 	}
 	live, found, code := liveSession(ctx, project, stderr, vm)
 	if code != exitOK {
 		return code
+	}
+	if blocked != nil {
+		if !found || *fresh || *restart {
+			return configFailed(stderr, err)
+		}
+		if !blocked.shown {
+			for _, line := range blocked.lines() {
+				_, _ = fmt.Fprintln(stderr, line)
+			}
+		}
+		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps what it booted with for those\n", live.ID)
 	}
 	if found && (*fresh || *restart) {
 		if err := vm(ctx, nil, io.Discard, stderr, "stop", live.ID); err != nil {
@@ -348,8 +361,9 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	flags := flag.NewFlagSet("sbox setup-env", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&host.projectConfig, "config", "", "")
+	flags.StringVar(&host.workspace, "workspace", "", "")
 	if flags.Parse(args) != nil || flags.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env [-config <file>] <dir>")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env [-config <file>] [-workspace <name>] <dir>")
 		return exitUsage
 	}
 	args = flags.Args()
@@ -520,9 +534,22 @@ func configFailed(stderr io.Writer, err error) int {
 // are an error here, before anything starts.
 func (h devHost) devConfig(dir string) (config, guestJob, error) {
 	cfg, err := h.loadConfig(dir)
-	if err != nil {
+	var blocked *blockedError
+	if err != nil && !errors.As(err, &blocked) {
 		return config{}, guestJob{}, err
 	}
+	if blocked != nil { // the job without the refused requests, for a session that keeps running
+		c, job, err := h.devConfigFrom(dir, blocked.cfg)
+		if err != nil {
+			return config{}, guestJob{}, err
+		}
+		return c, job, blocked
+	}
+	return h.devConfigFrom(dir, cfg)
+}
+
+// devConfigFrom is devConfig's second half, for a config already loaded.
+func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error) {
 	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
 	lookup := h.lookupEnv
 	if lookup == nil {

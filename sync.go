@@ -464,8 +464,9 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 	applyFlag := flags.Bool("apply", false, "")
 	patchFlag := flags.Bool("patch", false, "")
 	flags.StringVar(&mac.projectConfig, "config", "", "")
+	flags.StringVar(&mac.workspace, "workspace", "", "")
 	if flags.Parse(args) != nil || flags.NArg() != 1 || (*applyFlag && *patchFlag) {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply | -patch] [-config <file>] <dir>")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply | -patch] [-config <file>] [-workspace <name>] <dir>")
 		return exitUsage
 	}
 	apply := *applyFlag

@@ -91,7 +91,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "init":
 		return initMain(args[1:], stdout, stderr)
 	case "config":
-		return configMain(args[1:], stdout, stderr, devHost{userConfig: userConfigFile()})
+		return configMain(args[1:], stdout, stderr, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
 	case "setup-env":
 		return setupEnvMain(ctx, args[1:], stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
 	case "log":

@@ -210,8 +210,8 @@ egress: [evil.example]
 			t.Errorf("stderr lacks %q:\n%s", want, notes)
 		}
 	}
-	if code != exitFail || len(vm.calls) != 0 {
-		t.Errorf("the stranger's repo: exit %d, calls %q; want nothing done", code, vm.calls)
+	if code != exitFail || !slices.EqualFunc(vm.calls, [][]string{{"ps"}}, slices.Equal) {
+		t.Errorf("the stranger's repo: exit %d, calls %q; want only a look for a running session", code, vm.calls)
 	}
 
 	project := filepath.Join(home, "work", "client-a", "api")
@@ -296,5 +296,89 @@ func TestDevMainApproveOnce(t *testing.T) {
 	answer = false
 	if _, code := dev(); code != exitFail || len(asked) != 2 || len(asked[1]) != 1 || !strings.Contains(asked[1][0], "two.example:443") {
 		t.Errorf("a new request, declined: exit %d, asked %q; want two.example alone, and a refusal", code, asked)
+	}
+}
+
+// TestWorkspaceFlagLiveRunConfig: -workspace picks the workspace for one
+// run; a running session keeps what it booted with when a new request is
+// refused; sbox run takes the target's workspace grants; sbox config says
+// which workspace, why, and what it would refuse.
+func TestWorkspaceFlagLiveRunConfig(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, `egress: [api.anthropic.com]
+workspaces:
+  personal:
+    paths: [~/src]
+    egress: [personal.example]
+    allow: {egress: ["*"]}
+  client-a:
+    paths: [~/work/client-a]
+    egress: ["*.client-a.com"]
+`)
+	dir := filepath.Join(home, "Downloads", "r")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [registry.npmjs.org]\n")
+	start := func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}
+
+	// -workspace personal: its allow lets registry.npmjs.org through.
+	vm := &fakeVM{answer: start}
+	var stdout, stderr bytes.Buffer
+	host := devHost{stateDir: t.TempDir(), userConfig: user, home: home}
+	if code := devMain(context.Background(), []string{"-workspace", "personal", dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
+		t.Errorf("-workspace personal: exit %d\n%s", code, stderr.String())
+	}
+
+	// A running session, a refused request: attached, the request left out.
+	project := mustProjectID(t, dir)
+	live := &fakeVM{answer: func(args []string) string {
+		if args[0] == "ps" {
+			return "0123abcd running 1700000000 " + project + "\n"
+		}
+		return ""
+	}}
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, live.run, host); code != exitOK ||
+		!strings.Contains(stderr.String(), "BLOCKED egress  registry.npmjs.org:443") || !strings.Contains(stderr.String(), "session 0123abcd keeps what it booted with") ||
+		slices.ContainsFunc(live.calls, func(c []string) bool { return c[0] == "reconfigure" }) {
+		t.Errorf("reattach with a refused request: exit %d, calls %q\n%s", code, live.calls, stderr.String())
+	}
+
+	// sbox run: the target's workspace grants, nothing of the others'.
+	target := filepath.Join(home, "work", "client-a", "x")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, ws, err := runConfig(user, "", target, "", home)
+	if err != nil || ws != "client-a" || !slices.Equal(cfg.Egress, []string{"*.client-a.com:443", "api.anthropic.com:443"}) {
+		t.Errorf("runConfig: %q %q %v", ws, cfg.Egress, err)
+	}
+
+	// sbox config: the workspace, why, the sources, what it would refuse.
+	stdout.Reset()
+	if code := configMain([]string{dir}, &stdout, &stderr, devHost{userConfig: user, home: home}); code != exitOK {
+		t.Fatalf("sbox config: exit %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{
+		"# workspace default (no workspace's paths contain this folder)",
+		"# BLOCKED egress  registry.npmjs.org:443  not allowed in workspace default",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("sbox config lacks %q:\n%s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	if code := configMain([]string{target}, &stdout, &stderr, devHost{userConfig: user, home: home}); code != exitOK ||
+		!strings.Contains(stdout.String(), "# workspace client-a ("+macPath("~/work/client-a", home)+" contains this folder)") ||
+		!strings.Contains(stdout.String(), "egress: # user, workspace client-a") {
+		t.Errorf("sbox config in client-a: exit %d\n%s", code, stdout.String())
 	}
 }

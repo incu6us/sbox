@@ -88,20 +88,39 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	flags := flag.NewFlagSet("sbox config", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&host.projectConfig, "config", "", "")
+	flags.StringVar(&host.workspace, "workspace", "", "")
 	err := flags.Parse(args)
 	dir, ok := oneDir(flags.Args())
 	if err != nil || !ok {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox config [-config <file>] [dir]")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox config [-config <file>] [-workspace <name>] [dir]")
 		return exitUsage
 	}
 	cfg, err := host.loadConfig(dir)
+	var blocked *blockedError
+	if err != nil && !errors.As(err, &blocked) {
+		return configFailed(stderr, err)
+	}
+	if blocked != nil {
+		cfg = blocked.cfg // and the refused requests listed below
+	}
+	home := cmp.Or(host.home, os.Getenv("HOME"))
+	ws, err := cfg.workspaceFor(dir, host.workspace, home)
 	if err != nil {
 		return configFailed(stderr, err)
 	}
+	var b strings.Builder
+	switch _, matched := cfg.workspaceMatch(dir, home); {
+	case host.workspace != "":
+		fmt.Fprintf(&b, "# workspace %s (-workspace)\n", ws)
+	case matched != "":
+		fmt.Fprintf(&b, "# workspace %s (%s contains this folder)\n", ws, matched)
+	default:
+		b.WriteString("# workspace default (no workspace's paths contain this folder)\n")
+	}
 	project := cmp.Or(host.projectConfig, filepath.Join(dir, "sbox.yaml"))
-	sources := keySources(host.userConfig, project)
+	sources := keySources(host.userConfig, project, ws, cfg.Workspaces[ws])
 	secrets := cfg.Secrets
-	cfg.Secrets = nil
+	cfg.Secrets, cfg.Workspaces = nil, nil
 	var doc yaml.Node
 	if err := doc.Encode(cfg); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -117,7 +136,6 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 			val.Content[j].LineComment = sources[key.Value+"."+val.Content[j].Value]
 		}
 	}
-	var b strings.Builder
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
 	if err := errors.Join(enc.Encode(&doc), enc.Close()); err != nil {
@@ -145,34 +163,59 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	if note := gitignoreNote(dir, syncRules(append(gitignoreRules(dir), cfg.Dev.Ignore...))); note != "" {
 		b.WriteString("# " + note + "\n")
 	}
+	if blocked != nil {
+		for _, line := range blocked.lines() {
+			b.WriteString("# " + line + "\n")
+		}
+	}
+	if id, err := projectID(dir); err == nil && host.stateDir != "" {
+		approved := loadApproved(host.stateDir, id)
+		for _, r := range slices.Sorted(maps.Keys(approved)) {
+			fmt.Fprintf(&b, "# approved for this project on %s: %s\n", approved[r], r)
+		}
+	}
 	_, _ = io.WriteString(stdout, b.String())
 	return exitOK
 }
 
 // keySources names, per key two levels deep ("egress", "timeouts.run",
-// "secrets.GITHUB_TOKEN"), the files that set it: "user", "project" or
-// both, for sbox config's comments.
-func keySources(userFile, projectFile string) map[string]string {
+// "secrets.GITHUB_TOKEN"), where it came from: "user", "workspace <ws>"
+// (its grants), "project", in that order, for sbox config's comments.
+func keySources(userFile, projectFile, ws string, w workspace) map[string]string {
 	sources := map[string]string{}
-	for _, f := range []struct{ label, path string }{{"user", userFile}, {"project", projectFile}} {
-		data, err := os.ReadFile(f.path)
+	add := func(key, label string) { sources[key] = strings.TrimPrefix(sources[key]+", "+label, ", ") }
+	read := func(label, path string) {
+		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			return
 		}
 		var top map[string]any
 		if yaml.Unmarshal(data, &top) != nil {
-			continue
+			return
 		}
-		add := func(key string) { sources[key] = strings.TrimPrefix(sources[key]+", "+f.label, ", ") }
 		for k, v := range top {
-			add(k)
+			if k == "workspaces" {
+				continue
+			}
+			add(k, label)
 			if sub, ok := v.(map[string]any); ok {
 				for s := range sub {
-					add(k + "." + s)
+					add(k+"."+s, label)
 				}
 			}
 		}
 	}
+	read("user", userFile)
+	label := "workspace " + ws
+	for key, n := range map[string]int{"egress": len(w.Egress), "mounts": len(w.Mounts), "services": len(w.Services), "secrets": len(w.Secrets)} {
+		if n > 0 {
+			add(key, label)
+		}
+	}
+	for name := range w.Secrets {
+		add("secrets."+name, label)
+	}
+	read("project", projectFile)
 	return sources
 }
 
