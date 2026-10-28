@@ -20,6 +20,10 @@ import (
 // host reachable, and every other key commented with an example.
 const _starter = `# sbox.yaml: how sbox dev runs this project. Lists here are added to the
 # ones in ~/.config/sbox/config.yaml; sbox config shows the result.
+#
+# egress, services, mounts and secrets reach past the VM, so this file only
+# asks for them: your own config grants them, globally or per workspace
+# (workspaces.<name>.allow), or sbox dev asks once in the terminal.
 
 dev:
   command: claude              # what sbox dev runs; leave out for a shell
@@ -30,14 +34,12 @@ dev:
   # vcpus: 2
   # memory_mib: 2048
 
-egress:                        # the only hosts the guest can reach
-  - api.anthropic.com
-  # - registry.npmjs.org
-  # - "*.github.com"
-  # - github.com:22            # raw TCP: git over SSH
+# egress:                      # hosts beyond what your config grants (api.anthropic.com there)
+#   - registry.npmjs.org
+#   - "*.github.com"
+#   - github.com:22            # raw TCP: git over SSH
 
 # secrets:                     # read from your Mac's environment at start
-#   CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN   # claude setup-token prints one
 #   GITHUB_TOKEN: env:GITHUB_SBOX_TOKEN
 
 # ports: [3000]                # the guest's dev server on your Mac's localhost:3000
@@ -78,6 +80,10 @@ func initMain(args []string, stdout, stderr io.Writer) int {
 		return exitFail
 	}
 	_, _ = fmt.Fprintln(stdout, "wrote", file)
+	_, _ = fmt.Fprint(stdout, `the agent's host and token go in your own ~/.config/sbox/config.yaml, for every project:
+  egress: [api.anthropic.com]
+  secrets: {CLAUDE_CODE_OAUTH_TOKEN: "env:CLAUDE_CODE_OAUTH_TOKEN"}   # claude setup-token prints one
+`)
 	return exitOK
 }
 

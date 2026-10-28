@@ -256,63 +256,73 @@ split: the project file asks, your file grants.
 
 ## Commits
 
-- [ ] **1. Config.** The `workspaces` key: struct, strict decoding,
+- [x] **1. Config.** The `workspaces` key: struct, strict decoding,
     validation (names `[a-z0-9-]+`, `default` reserved but optional; paths
     absolute or `~/`; `allow` entries in the same forms as their keys, plus
     `*` for egress and services). Refused outside your user file. Tests:
     a full file, each bad form, a workspace in a project file.
-- [ ] **2. Membership.** `workspaceFor`: `~` expansion, symlinks resolved on
+- [x] **2. Membership.** `workspaceFor`: `~` expansion, symlinks resolved on
     both sides, longest prefix, `default`, the `-workspace` override, and
     an override naming no workspace refused. Table test with nested and
     symlinked folders.
-- [ ] **3. Matching.** `allowsEgress|Mount|Secret|Service` per the table,
+- [x] **3. Matching.** `allowsEgress|Mount|Secret|Service` per the table,
     and grants covering a request. Table tests, including `*.a.com` vs
     `*.b.a.com`, ports, a mount under a symlinked allowed folder, rw asked
     under a read-only allowance.
-- [ ] **4. The effective config and refusal.** `effectiveConfig` builds the
+- [x] **4. The effective config and refusal.** `effectiveConfig` builds the
     three layers; `devConfig` returns the misses as BLOCKED lines and
     `devMain`, `setupEnvMain` and `syncMain` stop before booting. Tests
     with fakes: the downloaded-repo case above refused with all three
     lines and nothing started; an allowed request applied; workspace grants
     reaching the job without a request.
-- [ ] **5. Approve once.** `approved.json`, the terminal question, asking
+- [x] **5. Approve once.** `approved.json`, the terminal question, asking
     again only for new entries, `sbox clean` forgetting them. Tests: a
     first run asked and recorded, a second not asked, a new egress host
     asked alone, no terminal refused.
-- [ ] **6. Live changes, `sbox run`, `sbox config`.** The check on reattach
+- [x] **6. Live changes, `sbox run`, `sbox config`.** The check on reattach
     (refused keys left as booted); `run` taking the target's workspace
     grants; `sbox config`'s header, sources and BLOCKED lines. Tests for
     each.
-- [ ] **7. Docs and verification.** README Workspaces section, the
+- [x] **7. Docs and verification.** README Workspaces section, the
     dev-mode, config and hardening plans, `sbox init`'s starter file,
     `MILESTONE.md`; the verification below on the real VM.
 
 ## Verification
 
-- [ ] A repository whose `sbox.yaml` mounts `~/.ssh`, reads
+Checked 2026-10-28: `TestWorkspacesOnVM` on the real VM, unit tests
+with fakes, and by hand in a terminal.
+
+- [x] A repository whose `sbox.yaml` mounts `~/.ssh`, reads
     `AWS_SECRET_ACCESS_KEY` and allows `evil.example`, opened with `sbox dev`
     from `~/Downloads`: three BLOCKED lines, no session, nothing copied
     (`sbox ps` empty, no work drive). Without a terminal, exit 1.
-- [ ] The same repository opened from a folder in `personal` (egress `*`):
+    (`TestWorkspacesOnVM`; exit 1 by hand.)
+- [x] The same repository opened from a folder in `personal` (egress `*`):
     egress passes, the mount and the secret are still refused.
-- [ ] A project in `client-a` that asks for `registry.npmjs.org` and
+    (`TestWorkspaceFlagLiveRunConfig`, through `-workspace personal`.)
+- [x] A project in `client-a` that asks for `registry.npmjs.org` and
     service 5432: starts, and `npm ci` and `psql` work; asking for
     `pypi.org` instead: refused with `workspaces.client-a.allow.egress:
-    [pypi.org]`.
-- [ ] client-a's granted mount and token reach a client-a project's guest
+    [pypi.org]`. (On the VM with `api.github.com` and `example.com` as the
+    allowed hosts, `curl` answered; the service and `pypi.org` refusal in
+    `TestDevMainWorkspaces` with fakes.)
+- [x] client-a's granted mount and token reach a client-a project's guest
     without the project asking; a `personal` project doesn't get them.
-- [ ] Approving once in a terminal: the session starts; the next `sbox dev`
+- [x] Approving once in a terminal: the session starts; the next `sbox dev`
     doesn't ask; adding a host to `sbox.yaml` asks for that host alone;
-    `sbox clean` makes it ask again.
-- [ ] Under a running session: adding an allowed egress host to `sbox.yaml`
+    `sbox clean` makes it ask again. (By hand with `expect`;
+    `TestDevMainApproveOnce`.)
+- [x] Under a running session: adding an allowed egress host to `sbox.yaml`
     applies on reattach; adding a refused one prints BLOCKED and the
     session keeps its egress.
-- [ ] `sbox run ~/work/client-a/x -- …` gets client-a's grants; the same
+- [x] `sbox run ~/work/client-a/x -- …` gets client-a's grants; the same
     command on a folder in `personal` doesn't.
-- [ ] `sbox config` in a client-a project names the workspace and why, and
+- [x] `sbox config` in a client-a project names the workspace and why, and
     each key's source; a refused request shows as BLOCKED there too.
-- [ ] Unchanged without workspaces for projects whose `sbox.yaml` asks for
+- [x] Unchanged without workspaces for projects whose `sbox.yaml` asks for
     none of the four keys: the existing dev-mode VM tests pass as they are.
+    (They pass, now with a user config that allows what their project
+    files ask for.)
 
 ## Considered and left out
 

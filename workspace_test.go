@@ -336,6 +336,17 @@ workspaces:
 	if code := devMain(context.Background(), []string{"-workspace", "personal", dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
 		t.Errorf("-workspace personal: exit %d\n%s", code, stderr.String())
 	}
+	// Any egress there, but still no mount or secret it doesn't list.
+	asks := filepath.Join(home, "Downloads", "asks")
+	if err := os.MkdirAll(asks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(asks, "sbox.yaml"), "egress: [evil.example]\nmounts: [{host: ~/.ssh, guest: /home/runner/.ssh}]\nsecrets: {X: \"env:AWS_SECRET_ACCESS_KEY\"}\n")
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{"-workspace", "personal", asks, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitFail ||
+		strings.Contains(stderr.String(), "BLOCKED egress") || !strings.Contains(stderr.String(), "BLOCKED mount") || !strings.Contains(stderr.String(), "BLOCKED secret") {
+		t.Errorf("personal with a mount and a secret: exit %d\n%s", code, stderr.String())
+	}
 
 	// A running session, a refused request: attached, the request left out.
 	project := mustProjectID(t, dir)

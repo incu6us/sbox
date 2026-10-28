@@ -1349,3 +1349,110 @@ func TestRunRWMountOnVM(t *testing.T) {
 			read(filepath.Join(notes, ".git", "HEAD")), read(filepath.Join(other, "ro.txt")))
 	}
 }
+
+// TestWorkspacesOnVM: the workspaces plan's verification on the real VM.
+func TestWorkspacesOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	home := t.TempDir()
+	for _, d := range []string{"Downloads/stranger", "work/client-a/api", "work/client-a/x", "src/mine"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(home, ".ssh-stand-in"), "secret key\n")
+	writeTestFile(t, filepath.Join(home, "client-a.gitconfig"), "[user]\n\tname = client-a\n")
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, `workspaces:
+  client-a:
+    paths: [~/work/client-a]
+    mounts: [{host: ~/client-a.gitconfig, guest: /home/runner/.gitconfig}]
+    secrets: {CLIENT_A_TOKEN: "env:SBOX_WS_TEST_TOKEN"}
+    allow:
+      egress: [api.github.com, example.com]
+  personal:
+    paths: [~/src]
+`)
+	t.Setenv("SBOX_WS_TEST_TOKEN", "client-a-token-value")
+	var kept []string
+	state := t.TempDir() // one for every call: reattaching reads what a session booted with
+	t.Cleanup(func() {
+		for _, id := range kept {
+			_ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun)
+		}
+	})
+	dev := func(dir, script string) (string, string, int) {
+		t.Helper()
+		project, err := projectID(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+		var out, notes bytes.Buffer
+		host := devHost{stateDir: state, userConfig: user, home: home, keep: func(id string, _ int) bool { kept = append(kept, id); return true }}
+		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, host)
+		return out.String(), notes.String(), code
+	}
+
+	// The stranger's repository: refused, nothing booted, no work drive.
+	stranger := filepath.Join(home, "Downloads", "stranger")
+	writeTestFile(t, filepath.Join(stranger, "sbox.yaml"), "mounts: [{host: ~/.ssh-stand-in, guest: /home/runner/.ssh/id_ed25519}]\nsecrets: {X: \"env:SBOX_WS_TEST_TOKEN\"}\negress: [example.com]\n")
+	if _, notes, code := dev(stranger, "cat ~/.ssh/id_ed25519"); code != exitFail || strings.Count(notes, "BLOCKED") != 3 {
+		t.Errorf("the stranger's repo: exit %d\n%s", code, notes)
+	}
+	var ps bytes.Buffer
+	_ = sboxRun(ctx, nil, &ps, io.Discard, "ps")
+	strangerID, _ := projectID(stranger)
+	if strings.Contains(ps.String(), strangerID) {
+		t.Errorf("a session for the stranger's repo:\n%s", ps.String())
+	}
+
+	// A client-a project: its allowed host, the workspace's mount and secret.
+	api := filepath.Join(home, "work", "client-a", "api")
+	writeTestFile(t, filepath.Join(api, "sbox.yaml"), "egress: [api.github.com]\n")
+	out, notes, code := dev(api, `cat ~/.gitconfig; echo "token=$CLIENT_A_TOKEN"; curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 https://api.github.com`)
+	if code != exitOK || !strings.Contains(out, "name = client-a") || !strings.Contains(out, "token=client-a-token-value") || strings.Contains(out, "\n000\n") || !strings.Contains(out, "\n") {
+		t.Errorf("client-a project: exit %d, output %q\n%s", code, out, notes)
+	}
+
+	// Under its running session: an allowed host applies live, a refused one doesn't.
+	writeTestFile(t, filepath.Join(api, "sbox.yaml"), "egress: [api.github.com, example.com]\n")
+	if out, notes, code := dev(api, "curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://example.com"); code != exitOK || out == "000" || !strings.Contains(notes, "applied egress") {
+		t.Errorf("an allowed host added live: exit %d, %q\n%s", code, out, notes)
+	}
+	writeTestFile(t, filepath.Join(api, "sbox.yaml"), "egress: [api.github.com, example.com, pypi.org]\n")
+	if _, notes, code := dev(api, "true"); code != exitOK || !strings.Contains(notes, "BLOCKED egress  pypi.org:443") || !strings.Contains(notes, "keeps what it booted with") {
+		t.Errorf("a refused host added live: exit %d\n%s", code, notes)
+	}
+
+	// A personal project gets none of client-a's grants.
+	mine := filepath.Join(home, "src", "mine")
+	if out, notes, code := dev(mine, `cat ~/.gitconfig 2>/dev/null || echo no-gitconfig; echo "token=$CLIENT_A_TOKEN"`); code != exitOK || !strings.Contains(out, "no-gitconfig") || !strings.Contains(out, "token=\n") {
+		t.Errorf("personal project: exit %d, %q\n%s", code, out, notes)
+	}
+
+	// sbox run in a client-a folder: the workspace's grants.
+	target := filepath.Join(home, "work", "client-a", "x")
+	cfg, ws, err := runConfig(user, "", target, "", home)
+	if err != nil || ws != "client-a" {
+		t.Fatalf("runConfig: %q, %v", ws, err)
+	}
+	job := cfg.runJob([]string{"sh", "-c", `cat ~/.gitconfig; echo "token=$CLIENT_A_TOKEN"`})
+	if job.secrets, err = cfg.secretValues(os.LookupEnv); err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := cfg.mountSources(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, src := range srcs {
+		job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+	}
+	var runOut, runErr bytes.Buffer
+	res, err := runVM(ctx, target, job, 30*time.Second, false, &runOut, &runErr)
+	if err != nil || res.exitCode != 0 || !strings.Contains(runOut.String(), "name = client-a") || !strings.Contains(runOut.String(), "token=[redacted:CLIENT_A_TOKEN]") {
+		t.Errorf("sbox run in client-a: %v, exit %d, %q %s", err, res.exitCode, runOut.String(), runErr.String())
+	}
+}
