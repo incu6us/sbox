@@ -17,7 +17,7 @@ import (
 // _fakes stand in for the VM's tools when sbox-run.sh runs on the test
 // machine. Each logs its call to $FAKE_LOG, one line per call.
 var _fakes = map[string]string{
-	"ip":         `log ip "$@"`,
+	"ip":         `log ip "$@"; case "$*" in *" ss "*) printf '%s' "$FAKE_NS_SS" ;; esac`,
 	"id":         `echo 999`,
 	"mkfs.ext4":  `log mkfs.ext4 "$@"; if [ -n "$FAKE_DRIVE_COPY" ] && [ "$2" = -d ]; then cp -R "$3" "$FAKE_DRIVE_COPY"; fi`,
 	"setpriv":    `log setpriv "$@"`,
@@ -828,5 +828,48 @@ func TestSboxRunRedactsSecrets(t *testing.T) {
 		if code != 0 || strings.Contains(stdout, secret) || strings.Contains(stdout, hexed) || !strings.Contains(stdout, "[redacted:GITHUB_TOKEN]") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q; want the secret redacted", cmd, code, stdout, stderr)
 		}
+	}
+}
+
+func TestSboxRunPausesAnIdleSession(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"FAKE_JAILER=sleep", "SBOX_IDLE_POLL=0.2"}
+	const id = "9999999999999999"
+	e.killSessionOnCleanup(id)
+	var tarball bytes.Buffer
+	if err := writeRunTar(&tarball, t.TempDir(), guestJob{command: []string{"true"}, pauseAfter: time.Second}, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarball.Bytes(), "start", id); code != 0 {
+		t.Fatalf("start: exit %d, %q, %q", code, stdout, stderr)
+	}
+	for deadline := time.Now().Add(6 * time.Second); e.sessionFile(id, "state") != "paused" && time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := e.sessionFile(id, "state"); got != "paused" || !slices.ContainsFunc(e.calls("curl"), func(c string) bool { return strings.Contains(c, `{"state":"Paused"}`) }) {
+		t.Errorf("state %q, curl calls %q; want the idle session paused through the API", got, e.calls("curl"))
+	}
+	if !slices.ContainsFunc(e.calls("ip"), func(c string) bool { return strings.Contains(c, "ss -Htn state established dst 172.16.0.2") }) {
+		t.Errorf("ip calls %q: want connections to the guest checked in the namespace", e.calls("ip"))
+	}
+}
+
+func TestSboxRunLeavesABusySessionRunning(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"FAKE_JAILER=sleep", "SBOX_IDLE_POLL=0.2", "FAKE_NS_SS=ESTAB 0 0 172.16.0.1:50000 172.16.0.2:22\n"}
+	const id = "aaaa999999999999"
+	e.killSessionOnCleanup(id)
+	var tarball bytes.Buffer
+	if err := writeRunTar(&tarball, t.TempDir(), guestJob{command: []string{"true"}, pauseAfter: time.Second}, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarball.Bytes(), "start", id); code != 0 {
+		t.Fatalf("start: exit %d, %q, %q", code, stdout, stderr)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if got := e.sessionFile(id, "state"); got != "running" {
+		t.Errorf("state %q with a terminal attached, want running", got)
 	}
 }

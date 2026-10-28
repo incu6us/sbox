@@ -903,3 +903,70 @@ func TestDevLiveApplyOnVM(t *testing.T) {
 		t.Errorf("reattach: session %s (was %s), %q, notes %q; want both applied to the same session", kept, first, out, notes)
 	}
 }
+
+// TestIdlePauseOnVM: a session with pauseAfter stays running while a
+// terminal is attached and pauses once nothing is connected.
+func TestIdlePauseOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}, pauseAfter: 3 * time.Second}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+	state := func() string {
+		var ps bytes.Buffer
+		_ = sboxRun(ctx, nil, &ps, io.Discard, "ps")
+		for _, s := range parseSessions(ps.String()) {
+			if s.ID == id {
+				return s.State
+			}
+		}
+		return ""
+	}
+	attached := make(chan int)
+	go func() {
+		attached <- attachMain(ctx, []string{id, "--", "sleep", "9"}, strings.NewReader(""), io.Discard, io.Discard, sboxRun)
+	}()
+	time.Sleep(7 * time.Second)
+	if got := state(); got != "running" {
+		t.Errorf("with a terminal attached: %q, want running", got)
+	}
+	<-attached
+	got := ""
+	for deadline := time.Now().Add(20 * time.Second); got != "paused" && time.Now().Before(deadline); time.Sleep(time.Second) {
+		got = state()
+	}
+	if got != "paused" {
+		t.Errorf("idle: %q, want paused", got)
+	}
+}
+
+// TestToolDenialsOnVM plants a Claude Code transcript with a denied call
+// in a guest and reads it back through the attach, quoting and all.
+func TestToolDenialsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	var errOut bytes.Buffer
+	since := time.Now().Add(-time.Minute)
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	transcript := `{"type":"assistant","timestamp":"` + now + `","message":{"content":[{"type":"tool_use","id":"t1","name":"WebFetch","input":{}}]}}` + "\n" +
+		`{"type":"user","timestamp":"` + now + `","toolDenialKind":"permission-rule","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true}]}}` + "\n"
+	plant := "mkdir -p ~/.claude/projects/-home-runner-work && cat > ~/.claude/projects/-home-runner-work/s.jsonl"
+	if code := attachMain(ctx, []string{id, "--", "sh", "-c", plant}, strings.NewReader(transcript), io.Discard, &errOut, sboxRun); code != exitOK {
+		t.Fatalf("plant: exit %d: %s", code, errOut.String())
+	}
+	if got := toolDenials(ctx, sboxRun, id, since); !slices.Equal(got, []string{"BLOCKED tool    WebFetch ×1  denied by a permission rule (permissions.deny or mcp.deny)"}) {
+		t.Errorf("toolDenials = %q", got)
+	}
+}

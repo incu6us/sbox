@@ -198,6 +198,7 @@ set on this Mac:
 dev:
   command: claude         # what sbox dev runs when given no command
   permissions: skip       # the default: no prompts, the VM is the boundary; or ask
+  pause_after: 30m        # pause a session nothing is connected to; sbox dev resumes it
   vcpus: 4                # the session's size (2 and 1024 MiB by default)
   memory_mib: 4096
 egress: [api.anthropic.com]
@@ -259,6 +260,7 @@ BLOCKED dns     registry.yarnpkg.com (A, AAAA) ×3  not in egress → egress: [r
 BLOCKED port    3000  listening on loopback only, the forward can't reach it → listen on 0.0.0.0 (e.g. --host 0.0.0.0)
 BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]
 BLOCKED mcp     docs  host mcp.example.com:443 not in egress → egress: [mcp.example.com]
+BLOCKED tool    mcp__pg__execute ×2  denied by a permission rule (permissions.deny or mcp.deny)
 ```
 
 `sbox watch [id]` shows these as they happen, in a second terminal;

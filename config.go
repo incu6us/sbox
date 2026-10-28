@@ -39,7 +39,8 @@ type config struct {
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
-		Ignore      []string          `yaml:"ignore,omitempty"` // names or root paths neither copied in nor synced, besides node_modules and the like
+		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules and the like
+		PauseAfter  time.Duration     `yaml:"pause_after,omitempty"` // pause the session after this long with no terminal or forwarded connection; off when unset
 	} `yaml:"dev,omitempty"`
 	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot
 	Secrets map[string]string `yaml:"secrets,omitempty"` // guest variable → env:HOST_VARIABLE, read when a session starts
@@ -110,7 +111,7 @@ func (c config) bootKeys() map[string]string {
 	keys := map[string]any{
 		"egress": c.Egress, "ports": c.Ports, "services": c.Services, "secrets": c.Secrets, "mounts": c.Mounts,
 		"dev.env": c.Dev.Env, "dev.setup": c.Dev.Setup, "dev.start": c.Dev.Start,
-		"dev.vcpus": c.Dev.VCPUs, "dev.memory_mib": c.Dev.MemoryMiB, "dev.permissions": c.Dev.Permissions,
+		"dev.vcpus": c.Dev.VCPUs, "dev.memory_mib": c.Dev.MemoryMiB, "dev.permissions": c.Dev.Permissions, "dev.pause_after": c.Dev.PauseAfter,
 		"permissions": c.Permissions, "mcp": c.MCP,
 	}
 	out := make(map[string]string, len(keys))
@@ -245,6 +246,9 @@ func loadConfig(userFile, projectFile string) (config, error) {
 		}
 		if c.Dev.Permissions != "" {
 			cfg.Dev.Permissions = c.Dev.Permissions
+		}
+		if c.Dev.PauseAfter != 0 {
+			cfg.Dev.PauseAfter = c.Dev.PauseAfter
 		}
 		if c.Dev.VCPUs != 0 {
 			cfg.Dev.VCPUs = c.Dev.VCPUs
@@ -385,6 +389,9 @@ func (c *config) check() error {
 	}
 	if c.Dev.MemoryMiB != 0 && (c.Dev.MemoryMiB < 256 || c.Dev.MemoryMiB > 65536) {
 		return fmt.Errorf("dev.memory_mib: %d: want 256 to 65536", c.Dev.MemoryMiB)
+	}
+	if p := c.Dev.PauseAfter; p != 0 && p < time.Minute {
+		return fmt.Errorf("dev.pause_after: %v: want a minute or more", p)
 	}
 	if c.Timeouts.Setup < 0 {
 		return fmt.Errorf("timeouts.setup: %v: want a positive duration", c.Timeouts.Setup)

@@ -136,6 +136,9 @@ type guestJob struct {
 	claude    []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
 	mounts    []mountCopy // Mac files and folders the guest init copies into the home
 	ignore    ignoreRules // what the project copy leaves out (sbox dev); everything when nil
+	// pauseAfter pauses a session when nothing has been connected to the
+	// guest (a terminal, a forwarded port) for this long; 0 never.
+	pauseAfter time.Duration
 }
 
 // mountCopy is one mount: a resolved Mac path and where it goes.
@@ -427,6 +430,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if job.claude != nil {
 		files = append(files, file{"sbox/claude.json", string(job.claude), 0o644}, file{"sbox/claude.py", _claudeScript, 0o644})
+	}
+	if job.pauseAfter > 0 {
+		files = append(files, file{"sbox/pause_after", fmt.Sprintf("%d\n", int(job.pauseAfter.Seconds())), 0o644})
 	}
 	if job.vcpus > 0 || job.memoryMiB > 0 {
 		files = append(files, file{"sbox/vm", fmt.Sprintf("%d %d\n", job.vcpus, job.memoryMiB), 0o644})

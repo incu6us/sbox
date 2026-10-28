@@ -89,7 +89,8 @@ type fakeVM struct {
 func withoutSummary(calls [][]string) [][]string {
 	return slices.DeleteFunc(slices.Clone(calls), func(c []string) bool {
 		return c[0] == "events" || (c[0] == "attach" && slices.Equal(c[2:], []string{"--", "ss", "-Hltn"})) ||
-			(c[0] == "attach" && len(c) == 6 && strings.Contains(c[5], "sha256sum"))
+			(c[0] == "attach" && len(c) == 6 && strings.Contains(c[5], "sha256sum")) ||
+			(c[0] == "attach" && slices.Contains(c, _denialScript))
 	})
 }
 
@@ -857,6 +858,8 @@ func TestDevMainPreflightAndSummary(t *testing.T) {
 			return "RULE api.anthropic.com:443\nEGRESS ALLOW api.anthropic.com:443\nEGRESS DENY telemetry.example:443\n"
 		case args[0] == "attach" && slices.Contains(args, "ss"):
 			return "LISTEN 0 511 0.0.0.0:5173 0.0.0.0:*\n"
+		case args[0] == "attach" && slices.Contains(args, _denialScript):
+			return "permission-rule\tWebFetch\n"
 		}
 		return ""
 	}}
@@ -866,11 +869,14 @@ func TestDevMainPreflightAndSummary(t *testing.T) {
 	}
 	id := vm.calls[1][1]
 	want := [][]string{{"ps"}, {"start", id, mustProjectID(t, dir)}, {"attach", id, "--", "claude"}, {"events", id}, {"attach", id, "--", "ss", "-Hltn"}, {"stop", id}}
-	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
+	if !slices.EqualFunc(withoutSummary(vm.calls), [][]string{want[0], want[1], want[2], want[5]}, slices.Equal) ||
+		!slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Equal(c, want[3]) }) ||
+		!slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Equal(c, want[4]) }) {
 		t.Errorf("calls %q, want %q", vm.calls, want)
 	}
 	out := stderr.String()
-	for _, want := range []string{"egress   api.anthropic.com:443", "ports    3000", "session 0s", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
+	for _, want := range []string{"egress   api.anthropic.com:443", "ports    3000", "session 0s", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173",
+		"BLOCKED tool    WebFetch ×1  denied by a permission rule"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, out)
 		}

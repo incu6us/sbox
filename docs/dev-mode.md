@@ -558,7 +558,9 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] `-config <file>` (instead of the project's `sbox.yaml`, on
       `dev`, `sync`, `setup-env` and `config`, so the ignore rules agree)
       and `-command <cmd>` (instead of `dev.command`, this once)
-    - [ ] `dev.pause_after`
+    - [x] `dev.pause_after` (a minute or more): a watcher next to the
+      microVM pauses it once no TCP connection to the guest (a terminal, a
+      forwarded port) has been open that long; `sbox dev` resumes it
 - [x] **6b. Config changes under a running session.** The config a
     session booted with is recorded on the Mac; attaching again and
     `sbox setup-env` name the keys that changed; `sbox dev -restart`
@@ -585,8 +587,12 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] tested with fakes, then on the real VM (`TestDiagnosticsOnVM`)
     - [ ] `-trace`: strace in dev mode with the scan rules at INFO, and
       EROFS/EACCES as events
-    - [ ] Claude Code's denied tool calls from the session transcript
-      (marked experimental in the design)
+    - [x] Claude Code's denied tool calls, from the transcripts in the
+      guest's `~/.claude/projects/` (format confirmed on 2.1: a user entry
+      with `toolDenialKind`, `permission-rule` or `user-rejected`, answering
+      an earlier `tool_use`): `BLOCKED tool` lines in the summary and
+      `sbox watch`. It follows Claude Code's format, so it may need
+      updating when that changes
 - [x] **8. Docs.** README gets a `sbox dev` section first, scan second.
     `MILESTONE.md` gets a dev-mode milestone with timings: boot to prompt,
     sync of a 1,000-file project.

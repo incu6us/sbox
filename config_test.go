@@ -422,3 +422,24 @@ func TestLoadConfigDevIgnore(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigPauseAfter(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(write(t, "dev: {pause_after: 30m}\n"), "")
+	if err != nil || cfg.Dev.PauseAfter != 30*time.Minute || devJob(cfg, nil).pauseAfter != 30*time.Minute {
+		t.Errorf("pause_after = %v, %v; want 30m, in the job", cfg.Dev.PauseAfter, err)
+	}
+	if _, ok := cfg.bootKeys()["dev.pause_after"]; !ok {
+		t.Error("dev.pause_after is set at boot, so it is a boot key")
+	}
+	if _, err := loadConfig(write(t, "dev: {pause_after: 10s}\n"), ""); err == nil || !strings.Contains(err.Error(), "dev.pause_after") {
+		t.Errorf("10s: err %v, want a refusal (a minute at least)", err)
+	}
+}
