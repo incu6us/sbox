@@ -136,6 +136,49 @@ egress:               # hosts the guest may reach; nothing else is reachable
   - github.com:22     # raw TCP: git over SSH
 ```
 
+**Workspaces: the project asks, your file grants.** `egress`, `services`,
+`mounts` and `secrets` reach past the VM, so a project's `sbox.yaml` can
+only ask for them; a repository you just downloaded can't give itself your
+`~/.ssh` or the network. Your own file grants them: its top-level keys for
+every project, and named workspaces for the projects in a folder:
+
+```yaml
+# ~/.config/sbox/config.yaml
+egress: [api.anthropic.com]                   # every project
+secrets: {CLAUDE_CODE_OAUTH_TOKEN: "env:CLAUDE_CODE_OAUTH_TOKEN"}
+workspaces:
+  client-a:
+    paths: [~/work/client-a]                  # projects under here are in client-a
+    egress: ["*.client-a.com"]                # every client-a project gets these
+    mounts: [{host: ~/.config/client-a/gitconfig, guest: /home/runner/.gitconfig}]
+    allow:                                    # what a client-a project may ask for
+      egress: [registry.npmjs.org, "*.github.com"]
+      services: ["5432"]
+      mounts: [~/work/client-a/shared]        # read-only; rw: [...] for read-write
+      secrets: [CLIENT_A_NPM_TOKEN]           # Mac variables it may read
+  personal:
+    paths: [~/src]
+    allow: {egress: ["*"], services: ["*"]}   # your own code: any host or port
+```
+
+A project belongs to the workspace whose `paths` hold the deepest folder
+containing it, never by its own say; one outside every workspace is in
+`default`, which allows nothing more unless your file gives it an `allow`.
+`-workspace <name>` picks one for a single command. A request outside the
+allowance stops `sbox dev` before anything boots, one line each with the
+key to add:
+
+```
+BLOCKED mount   ~/.ssh → /home/runner/.ssh  not allowed in workspace default → workspaces.default.allow.mounts: [~/.ssh]
+BLOCKED egress  evil.example:443  not allowed in workspace default → workspaces.default.allow.egress: [evil.example]
+```
+
+In a terminal it then offers to allow them for that project alone and
+remembers the answer (asking again only for something new; `sbox clean`
+forgets). Under a running session a refused request is left out and the
+session keeps what it booted with. `sbox run` takes the target folder's
+workspace grants; `sbox scan` reads no project file and ignores workspaces.
+
 Egress entries on port 443 (or `:*`) go through an HTTPS proxy that
 tunnels to the listed hosts only; the guest's `HTTPS_PROXY` points at it,
 in the command and in every terminal. An exact host on another port, like
@@ -193,10 +236,12 @@ history stay, running processes don't. `dev.command` applies at every
 attach; `image.packages` needs `sbox setup`.
 
 Running Claude Code in the guest takes a token from your Mac and its API
-host in egress. `sbox init` writes a starter `sbox.yaml` that does the
-second; `sbox config` prints the effective config, each key commented with
-the file it came from (`# user`, `# project`), and which secrets are
-set on this Mac:
+host in egress, both in your own file (`sbox init` writes a starter
+`sbox.yaml` and prints the two lines). `sbox config` prints the effective
+config: the workspace and why, each key commented with where it came from
+(`# user`, `# workspace client-a`, `# project`), which secrets are set on
+this Mac, what the project asks for that would be refused, and what you
+approved for it:
 
 ```yaml
 dev:

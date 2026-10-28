@@ -20,8 +20,14 @@ func TestInitMain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the starter file doesn't load: %v", err)
 	}
-	if cfg.devCommand() != "claude" || len(cfg.Egress) == 0 {
-		t.Errorf("starter config %+v: want claude as the command and its API host in egress", cfg)
+	if cfg.devCommand() != "claude" {
+		t.Errorf("starter config %+v: want claude as the command", cfg)
+	}
+	if _, _, misses, err := layered("", file, dir, "", t.TempDir(), nil); err != nil || len(misses) != 0 {
+		t.Errorf("the starter asks for %v, %v; want nothing a workspace must allow, so sbox dev starts", misses, err)
+	}
+	if !strings.Contains(stdout.String(), "~/.config/sbox/config.yaml") || !strings.Contains(stdout.String(), "api.anthropic.com") {
+		t.Errorf("sbox init says %q; want where the agent's host and token go", stdout.String())
 	}
 	starter, _ := os.ReadFile(file)
 	for _, key := range []string{"secrets:", "ports:", "services:", "setup:", "start:", "mcp:", "permissions:"} {

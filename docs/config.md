@@ -55,7 +55,9 @@ removed in config commit 2, since they have no users outside this repo.
 A flag and a key never carry the same setting, so there is no precedence
 between them to explain.
 
-**Layering.** Two files, fixed names, no includes:
+**Layering.** Two files, fixed names, no includes (and, since
+[workspaces.md](workspaces.md), the user's file grants `egress`,
+`services`, `mounts` and `secrets`; a project's file only asks):
 
 1. `~/.config/sbox/config.yaml`: the user's defaults (model, credentials
    as `env:` references, registries, egress always wanted).

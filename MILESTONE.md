@@ -700,6 +700,19 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   (`TestRunRWMountOnVM`: the rw folder's change applied, a ro mount's and
   a planted `.git` left in the guest).
 
+- ✅ Workspaces (2026-10-28, [docs/workspaces.md](docs/workspaces.md)): a
+  project's `sbox.yaml` only asks for `egress`, `services`, `mounts` and
+  `secrets`; your file grants them, globally or per named workspace
+  (`paths` decide membership, never the project; `allow` is the ceiling;
+  `-workspace` overrides for one command). A request outside it stops
+  `sbox dev` before boot with BLOCKED lines and the key to add, or, in a
+  terminal, can be approved for that project alone and is remembered.
+  Closes the hole where a downloaded repository's file could copy
+  `~/.ssh` into a guest allowed to reach `evil.example`. `sbox run` takes
+  the folder's workspace grants; `sbox config` names the workspace, the
+  sources, refusals and approvals; `sbox init`'s starter asks for none of
+  the four. `TestWorkspacesOnVM`.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,
