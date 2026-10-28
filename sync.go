@@ -21,7 +21,9 @@ import (
 )
 
 // ignoreRules are what sync skips: a name (globs allowed) at any depth, or
-// a path from the project root when it has a slash.
+// a path from the project root when it has a slash (a leading one ties a
+// plain name to the root). A rule starting with ! takes what it matches
+// back out, whatever its place in the list.
 type ignoreRules []string
 
 // copyRules are what sbox dev leaves out of the project it copies in:
@@ -37,33 +39,111 @@ func syncRules(extra []string) ignoreRules {
 	return append(ignoreRules{".git"}, copyRules(extra)...)
 }
 
+// gitignoreRules turns the project's root .gitignore into rules: git's
+// trailing / and leading **/ dropped, a slash before the end anchoring to
+// the root. ponytail: root file only, and a ** in the middle drops the
+// line; nested .gitignore files and git's ** would need a real matcher.
+func gitignoreRules(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		return nil
+	}
+	var rules []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		pat, negated := strings.CutPrefix(line, "!")
+		pat = strings.TrimSuffix(pat, "/")
+		if rest, ok := strings.CutPrefix(pat, "**/"); ok && !strings.Contains(rest, "/") {
+			pat = rest
+		} else if strings.Contains(pat, "/") && !strings.HasPrefix(pat, "/") {
+			pat = "/" + pat
+		}
+		pat = strings.TrimSuffix(pat, "/**")
+		if _, err := path.Match(pat, ""); err != nil || strings.Contains(pat, "**") || strings.Trim(pat, "/") == "" {
+			continue
+		}
+		if negated {
+			pat = "!" + pat
+		}
+		rules = append(rules, pat)
+	}
+	return rules
+}
+
+// gitignoreNote is the preflight line naming what at the project's root
+// rules leave out because .gitignore lists it (a .env the app reads, say),
+// or "" when nothing is.
+func gitignoreNote(dir string, rules ignoreRules) string {
+	gitignore := ignoreRules(gitignoreRules(dir))
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		if n := e.Name(); rules.skip(n) && gitignore.skip(n) && !syncRules(nil).skip(n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	list := names
+	if len(list) > 5 {
+		list = list[:5]
+	}
+	more := ""
+	if n := len(names) - len(list); n > 0 {
+		more = fmt.Sprintf(" and %d more", n)
+	}
+	return fmt.Sprintf("left out by .gitignore: %s%s (dev.ignore: [\"!%s\"] copies one in)", printable(strings.Join(list, ", ")), more, printable(names[0]))
+}
+
 // skip reports whether the path rel (slash-separated, from the root) is
 // ignored.
 func (r ignoreRules) skip(rel string) bool {
-	name := path.Base(rel)
+	hit := false
 	for _, pat := range r {
-		subject := name
-		if strings.Contains(pat, "/") {
-			subject = rel
+		pat, negated := strings.CutPrefix(pat, "!")
+		if negated && ruleMatches(pat, rel) {
+			return false
 		}
-		if ok, _ := path.Match(pat, subject); ok { // patterns are checked when the config loads
-			return true
-		}
+		hit = hit || !negated && ruleMatches(pat, rel)
 	}
-	return false
+	return hit
 }
 
-// findPrune is find's test for the rules: -name for names, -path for paths.
+// ruleMatches reports whether one rule, without its !, matches rel.
+func ruleMatches(pat, rel string) bool {
+	subject := path.Base(rel)
+	if strings.Contains(pat, "/") {
+		pat, subject = strings.TrimPrefix(pat, "/"), rel
+	}
+	ok, _ := path.Match(pat, subject) // patterns are checked when the config loads
+	return ok
+}
+
+// findPrune is find's test for the rules: -name for names, -path for paths,
+// the ! rules taken out.
 func (r ignoreRules) findPrune() string {
-	var tests []string
+	var tests, negated []string
 	for _, pat := range r {
+		pat, neg := strings.CutPrefix(pat, "!")
+		test := "-name " + shellJoin([]string{pat})
 		if strings.Contains(pat, "/") {
-			tests = append(tests, "-path "+shellJoin([]string{"./" + pat}))
+			test = "-path " + shellJoin([]string{"./" + strings.TrimPrefix(pat, "/")})
+		}
+		if neg {
+			negated = append(negated, test)
 		} else {
-			tests = append(tests, "-name "+shellJoin([]string{pat}))
+			tests = append(tests, test)
 		}
 	}
-	return `\( ` + strings.Join(tests, " -o ") + ` \)`
+	prune := `\( ` + strings.Join(tests, " -o ") + ` \)`
+	if len(negated) > 0 {
+		prune = `\( ` + prune + ` ! \( ` + strings.Join(negated, " -o ") + ` \) \)`
+	}
+	return prune
 }
 
 // readManifest hashes the regular files under dir. Symlinks and what the
@@ -400,6 +480,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
+	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
 	if _, err := loadBase(stateDir, project); err != nil {
 		_, _ = fmt.Fprintf(stderr, "sbox: no sync base for %s: sbox dev records one when it first copies the project in (sbox dev -fresh starts over)\n", dir)
 		return exitFail

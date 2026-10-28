@@ -247,6 +247,42 @@ func TestSyncOnVM(t *testing.T) {
 // TestPortsAndServicesOnVM serves a page from the guest on a forwarded
 // port and fetches it on the Mac, and reaches a service on the Mac from
 // the guest as host.sbox.
+// TestGitignoreOnVM: the project's .gitignore, negation included, holds
+// for the copy-in and for the guest's find in sync.
+func TestGitignoreOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	for name, body := range map[string]string{".gitignore": "/.next/\n.env*\n!.env.example\n", ".env": "SECRET=1\n", ".env.example": "SECRET=\n", "index.js": "home\n"} {
+		writeTestFile(t, filepath.Join(dir, name), body)
+	}
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	var out, notes bytes.Buffer
+	script := "ls -A; mkdir .next && echo built > .next/b && echo x > .env.local && echo SECRET=2 > .env.example"
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
+	}
+	if out.String() != ".env.example\n.git\n.gitignore\nindex.js\n" && out.String() != ".env.example\n.gitignore\nindex.js\n" {
+		t.Errorf("the guest's project: %q; want it without .env", out.String())
+	}
+	if !strings.Contains(notes.String(), "left out by .gitignore: .env") {
+		t.Errorf("preflight lacks the .gitignore line:\n%s", notes.String())
+	}
+	var plan, errOut bytes.Buffer
+	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("sync: exit %d: %s", code, errOut.String())
+	}
+	if p := plan.String(); !strings.Contains(p, "changed  .env.example") || strings.Contains(p, ".next") || strings.Contains(p, ".env.local") {
+		t.Errorf("sync plan:\n%s\nwant .env.example alone", p)
+	}
+}
+
 func TestPortsAndServicesOnVM(t *testing.T) {
 	ctx := context.Background()
 	if ok, _ := doctor(ctx, io.Discard); !ok {
@@ -626,10 +662,11 @@ func TestDiagnosticsOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
-	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("egress: [api.github.com]\nports: [3000]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("egress: [api.github.com]\nports: [3000]\nservices: [5432]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	script := `for i in 1 2 3; do curl -s --max-time 5 -o /dev/null https://example.com; getent hosts registry.yarnpkg.com; done
+for target in host.sbox:8765 host.sbox:5432 10.9.8.7:80; do curl -s --noproxy '*' --max-time 2 -o /dev/null http://$target/; done
 nohup python3 -m http.server 3000 --bind 127.0.0.1 >/dev/null 2>&1 &
 nohup python3 -m http.server 5173 >/dev/null 2>&1 &
 sleep 2`
@@ -646,10 +683,15 @@ sleep 2`
 		"BLOCKED dns     registry.yarnpkg.com",
 		"BLOCKED port    3000  listening on loopback only",
 		"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]",
+		"BLOCKED service host.sbox:8765  not in services → services: [8765]",
+		"BLOCKED connect 10.9.8.7:80  straight to an address",
 	} {
 		if !strings.Contains(notes.String(), want) {
 			t.Errorf("sbox dev's output lacks %q:\n%s", want, notes.String())
 		}
+	}
+	if strings.Contains(notes.String(), "BLOCKED service host.sbox:5432") {
+		t.Errorf("a listed service shows as blocked:\n%s", notes.String())
 	}
 
 	var blocked bytes.Buffer

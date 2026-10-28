@@ -30,9 +30,13 @@ type sessionEvents struct {
 	failed  map[string]int      // allowed host:port whose connection failed
 	lookups map[string]int      // name → queries
 	qtypes  map[string][]string // name → query types, in order seen
+	refused []string            // address:port the guest tried with nothing of sbox's there, in order
 }
 
-var _hostPort = regexp.MustCompile(`^[a-z0-9.-]+:[0-9]{1,5}$`)
+var (
+	_hostPort = regexp.MustCompile(`^[a-z0-9.-]+:[0-9]{1,5}$`)
+	_addrPort = regexp.MustCompile(`^[0-9.]+:[0-9]{1,5}$`)
+)
 
 // parseEvents reads sbox-run events lines.
 func parseEvents(out string) sessionEvents {
@@ -65,6 +69,10 @@ func parseEvents(out string) sessionEvents {
 			ev.lookups[name]++
 			if !slices.Contains(ev.qtypes[name], qtype) {
 				ev.qtypes[name] = append(ev.qtypes[name], qtype)
+			}
+		case "REFUSED":
+			if _addrPort.MatchString(rest) && !slices.Contains(ev.refused, rest) {
+				ev.refused = append(ev.refused, rest)
 			}
 		}
 	}
@@ -100,8 +108,9 @@ func byCount(m map[string]int) []string {
 // usually right to stay refused.
 const _hintAt = 3
 
-// blocked is the BLOCKED and FAILED lines for the session's egress and
-// lookups, each with its cause and, when seen often, the key to add.
+// blocked is the BLOCKED and FAILED lines for the session's egress,
+// lookups and refused connections, each with its cause and, when seen
+// often (a refused service port at once), the key to add.
 func (ev sessionEvents) blocked() []string {
 	var lines, plain []string
 	for _, t := range byCount(ev.denied) {
@@ -127,6 +136,13 @@ func (ev sessionEvents) blocked() []string {
 			line += fmt.Sprintf(" → egress: [%s]", printable(name))
 		}
 		lines = append(lines, line)
+	}
+	for _, t := range ev.refused {
+		if port, ok := strings.CutPrefix(t, "172.16.0.1:"); ok {
+			lines = append(lines, fmt.Sprintf("BLOCKED service host.sbox:%s  not in services → services: [%s]", port, port))
+		} else {
+			lines = append(lines, fmt.Sprintf("BLOCKED connect %s  straight to an address: the guest goes out only by name, through egress", t))
+		}
 	}
 	return lines
 }

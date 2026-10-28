@@ -17,7 +17,7 @@ import (
 // _fakes stand in for the VM's tools when sbox-run.sh runs on the test
 // machine. Each logs its call to $FAKE_LOG, one line per call.
 var _fakes = map[string]string{
-	"ip":         `log ip "$@"; case "$*" in *" ss "*) printf '%s' "$FAKE_NS_SS" ;; esac`,
+	"ip":         `log ip "$@"; case "$*" in *" ss "*) printf '%s' "$FAKE_NS_SS" ;; *" nft -f -"*) cat >"${FAKE_NFT:-/dev/null}" ;; *" nft list "*) printf '%s' "$FAKE_NS_NFT" ;; esac`,
 	"id":         `echo 999`,
 	"mkfs.ext4":  `log mkfs.ext4 "$@"; if [ -n "$FAKE_DRIVE_COPY" ] && [ "$2" = -d ]; then cp -R "$3" "$FAKE_DRIVE_COPY"; fi`,
 	"setpriv":    `log setpriv "$@"`,
@@ -738,6 +738,42 @@ func TestSboxRunEgressPatternsAndRawTCP(t *testing.T) {
 		if !slices.Contains(e.calls(want.prog), want.call) {
 			t.Errorf("%s calls %q lack %q", want.prog, e.calls(want.prog), want.call)
 		}
+	}
+}
+
+// TestSboxRunRecordsRefusedConnections: the namespace's nft set records
+// each address and port the guest tried that nothing of sbox's listens on
+// (its DNS, proxy, raw TCP and service relays are left out), and events
+// prints them.
+func TestSboxRunRecordsRefusedConnections(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000004"
+	nft := filepath.Join(t.TempDir(), "ruleset")
+	e.extra = []string{"FAKE_NFT=" + nft}
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, egress: []string{"api.anthropic.com:443", "github.com:22"}, services: []int{5432}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	ruleset, _ := os.ReadFile(nft)
+	for _, want := range []string{`iifname "tap0"`, "add @refused { ip daddr . tcp dport }",
+		"172.16.0.1 . 53", "172.16.0.1 . 3128", "172.16.0.1 . 22", "172.16.0.1 . 5432"} {
+		if !strings.Contains(string(ruleset), want) {
+			t.Errorf("ruleset lacks %q:\n%s", want, ruleset)
+		}
+	}
+
+	const sid = "6666666666666667"
+	e.extra = []string{"FAKE_NS_NFT=table ip sbox {\n\tset refused {\n\t\ttype ipv4_addr . inet_service\n\t\tflags dynamic\n" +
+		"\t\telements = { 172.16.0.1 . 8765,\n\t\t\t     192.168.31.56 . 80 }\n\t}\n}\n"}
+	e.startSession(sid)
+	stdout, stderr, code := e.run(nil, "events", sid)
+	if code != 0 || !strings.HasSuffix(stdout, "REFUSED 172.16.0.1:8765\nREFUSED 192.168.31.56:80\n") {
+		t.Errorf("events: exit %d, stdout %q, stderr %q; want the refused connections last", code, stdout, stderr)
 	}
 }
 

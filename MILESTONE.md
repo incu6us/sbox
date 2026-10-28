@@ -640,9 +640,13 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     Mac's in); a start step without its `&` held the terminal for the
     whole step timeout silently (a line after 30 s now); `sbox clean` left
     the Mac's sync bases and boot records.
-  - Found, not fixed: Next's `.next` counted as 106 changes to sync until
-    `dev.ignore` listed it, since `.gitignore` isn't read; a connection to
-    an unlisted Mac port is refused without a BLOCKED line.
+  - Found, then built: Next's `.next` counted as 106 changes to sync,
+    since `.gitignore` wasn't read (the root `.gitignore` now joins
+    `dev.ignore`, which gained `!` and `/name`; the preflight names what it
+    left out, a `.env` say); a connection to an unlisted Mac port was
+    refused without a word (an nft set in the namespace records refused
+    connections: `BLOCKED service host.sbox:8765 … → services: [8765]`,
+    `BLOCKED connect <addr>:<port>`).
 
 ## Prerequisites ✅
 

@@ -51,13 +51,16 @@ func TestConfigMain(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("ports: [3000]\nsecrets: {GITHUB_TOKEN: env:GH_SBOX}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestFile(t, filepath.Join(dir, ".gitignore"), ".env\n")
+	writeTestFile(t, filepath.Join(dir, ".env"), "X=1\n")
 	lookup := func(k string) (string, bool) { return "secret-value", k == "CLAUDE_CODE_OAUTH_TOKEN" }
 	var stdout, stderr bytes.Buffer
 	if code := configMain([]string{dir}, &stdout, &stderr, devHost{userConfig: user, lookupEnv: lookup}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"api.anthropic.com:443", "3000", "CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN # set", "GITHUB_TOKEN: env:GH_SBOX # unset on this Mac", "# ports    3000 → the Mac's localhost:3000"} {
+	for _, want := range []string{"api.anthropic.com:443", "3000", "CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN # set", "GITHUB_TOKEN: env:GH_SBOX # unset on this Mac", "# ports    3000 → the Mac's localhost:3000",
+		"# left out by .gitignore: .env"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sbox config lacks %q:\n%s", want, out)
 		}

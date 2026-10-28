@@ -412,11 +412,11 @@ func TestLoadConfigDevIgnore(t *testing.T) {
 		}
 		return p
 	}
-	cfg, err := loadConfig(write(t, "dev: {ignore: [\"*.log\"]}\n"), write(t, "dev: {ignore: [dist, build/cache]}\n"))
-	if err != nil || !slices.Equal(cfg.Dev.Ignore, []string{"*.log", "dist", "build/cache"}) {
+	cfg, err := loadConfig(write(t, "dev: {ignore: [\"*.log\"]}\n"), write(t, "dev: {ignore: [dist, build/cache, /out, \"!.env.example\"]}\n"))
+	if err != nil || !slices.Equal(cfg.Dev.Ignore, []string{"*.log", "dist", "build/cache", "/out", "!.env.example"}) {
 		t.Errorf("dev.ignore = %q, %v; want both files', in order", cfg.Dev.Ignore, err)
 	}
-	for _, bad := range []string{"../up", "/abs", "a/../b", "", "[", "./x"} {
+	for _, bad := range []string{"../up", "//abs", "/", "!", "!../up", "a/../b", "", "[", "./x"} {
 		if _, err := loadConfig("", write(t, "dev: {ignore: [\""+bad+"\"]}\n")); err == nil || !strings.Contains(err.Error(), "dev.ignore") {
 			t.Errorf("dev.ignore %q: err %v, want a refusal", bad, err)
 		}

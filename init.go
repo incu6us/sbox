@@ -125,6 +125,9 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	for _, line := range devPreflight(cfg, secrets, readMCPJSON(dir)) {
 		b.WriteString("# " + line + "\n")
 	}
+	if note := gitignoreNote(dir, syncRules(append(gitignoreRules(dir), cfg.Dev.Ignore...))); note != "" {
+		b.WriteString("# " + note + "\n")
+	}
 	_, _ = io.WriteString(stdout, b.String())
 	return exitOK
 }

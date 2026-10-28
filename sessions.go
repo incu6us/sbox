@@ -261,6 +261,9 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		for _, line := range devPreflight(cfg, job.secrets, readMCPJSON(args[0])) {
 			_, _ = fmt.Fprintln(stderr, line)
 		}
+		if note := gitignoreNote(args[0], syncRules(cfg.Dev.Ignore)); note != "" {
+			_, _ = fmt.Fprintln(stderr, note)
+		}
 		started = time.Now()
 		var err error
 		if job.canary, err = randomHex(6); err != nil {
@@ -454,13 +457,15 @@ func (h devHost) loadConfig(dir string) (config, error) {
 }
 
 // devConfig loads the project's config and builds the session's job: the
-// secrets read from the Mac's environment, the mounts' host paths found.
-// Either missing is an error here, before anything starts.
+// secrets read from the Mac's environment, the mounts' host paths found,
+// the project's .gitignore ahead of dev.ignore. Secrets or mounts missing
+// are an error here, before anything starts.
 func (h devHost) devConfig(dir string) (config, guestJob, error) {
 	cfg, err := h.loadConfig(dir)
 	if err != nil {
 		return config{}, guestJob{}, err
 	}
+	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
 	lookup := h.lookupEnv
 	if lookup == nil {
 		lookup = os.LookupEnv
