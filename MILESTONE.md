@@ -12,7 +12,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 5 | Dependency prefetch | ✅ |
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
-| v2 | Agent mode 🟡, snapshots ⬜, GitHub URLs ✅ | 🟡 |
+| v2 | Agent mode 🟡, snapshots (measured, deferred), GitHub URLs ✅ | 🟡 |
 | Dev | Build projects with an agent inside a session microVM: sessions, terminal, kept state, sync, ports, egress, hooks, secrets, the agent's config, diagnostics ✅; `-trace`, `sync -patch` ⬜ | ✅ |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
@@ -316,7 +316,12 @@ that ship real hooks.
       `claude` as its harness, egress to the API host), the user's
       credential from the host environment, and wiring the transcript in.
   - ⬜ Then a Cursor profile.
-- Firecracker snapshots for sub-second starts.
+- Firecracker snapshots: measured and deferred. A session start is 2.4 s,
+  of which kernel boot and guest init are about 1.8 s and the host side
+  about 0.6 s (`limactl shell` itself 0.05 s); attach is 0.5 s. A
+  snapshot would roughly halve a start, but dev mode starts once per
+  working session and reattaches after that, so the restore machinery
+  waits until one-shot `run` or `scan` speed matters again.
 - ✅ GitHub URLs as targets. `sbox dev`, `sbox run` and `sbox scan` take
   `https://github.com/o/r[/tree/<ref>[/<path>]]` or
   `github.com/o/r[@ref][/path]`. The tarball comes from codeload with

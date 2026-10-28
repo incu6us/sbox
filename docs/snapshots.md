@@ -69,9 +69,20 @@ to its drive, and the 1 s saved isn't worth a second snapshot flavour.
 
 ## Commits
 
-- [ ] **0. Measure.** A `-timing` flag on `sbox run` printing phase timestamps
+- [x] **0. Measure.** A `-timing` flag on `sbox run` printing phase timestamps
     from markers the guest already prints plus a few new ones (`SBOX-$nonce
     T <phase>`). Numbers into the milestone; decision made here.
+    - Measured without the flag, from the guest's `/proc/uptime` at the
+      first attach (2026-10-28, M4 Pro): a session start is 2.4 s, of
+      which kernel boot and guest init are about 1.8 s and the host side
+      (`limactl shell` 0.05 s, tar, `mkfs.ext4`, keys, jailer) about
+      0.6 s; attach 0.5 s, stop 0.4 s.
+    - Decision: deferred. Boot is three quarters of a start, so a snapshot
+      would roughly halve it, but in dev mode a start happens once per
+      working session and coming back is a 0.5 s attach; restoring
+      per-session drives, nonce and network into a snapshot isn't worth
+      1.8 s once a session. Revisit if one-shot `run` or `scan` speed
+      matters again.
 - [ ] **1. Fixed drive sizes and `sbox/phase` on the drive.** No snapshot yet;
     verifies nothing else depends on the drive size or the command line.
 - [ ] **2. Snapshot at setup.** The `READY` stub, `sbox setup` takes the
