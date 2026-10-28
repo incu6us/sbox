@@ -1,11 +1,13 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -129,6 +131,49 @@ func TestLoadConfigImage(t *testing.T) {
 				project = write(t, tt.project)
 			}
 			if _, err := loadConfig(user, project); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigDevHooks(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := write(t, "dev:\n  env: {EDITOR: vi, NODE_ENV: production}\n  setup: [corepack enable]\ntimeouts: {setup: 5m}\n")
+	project := write(t, "dev:\n  env: {NODE_ENV: development}\n  setup: [npm ci, npm ci]\n  start: [\"npm run dev &\"]\ntimeouts: {setup: 20m}\n")
+	cfg, err := loadConfig(user, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(cfg.Dev.Env, map[string]string{"EDITOR": "vi", "NODE_ENV": "development"}) {
+		t.Errorf("dev.env = %v, want both files', the project's winning", cfg.Dev.Env)
+	}
+	if !slices.Equal(cfg.Dev.Setup, []string{"corepack enable", "npm ci", "npm ci"}) || !slices.Equal(cfg.Dev.Start, []string{"npm run dev &"}) {
+		t.Errorf("dev.setup %q, dev.start %q; want steps appended in order, repeats kept", cfg.Dev.Setup, cfg.Dev.Start)
+	}
+	if cfg.Timeouts.Setup != 20*time.Minute {
+		t.Errorf("timeouts.setup = %v, want the project's 20m", cfg.Timeouts.Setup)
+	}
+	if none, _ := loadConfig(filepath.Join(t.TempDir(), "none"), ""); none.setupTimeout() != 10*time.Minute {
+		t.Errorf("default setup timeout = %v, want 10m", none.setupTimeout())
+	}
+
+	for _, tt := range []struct{ name, body, wantErr string }{
+		{"a variable name with a dash", "dev: {env: {MY-VAR: x}}\n", "MY-VAR"},
+		{"a value over two lines", "dev: {env: {A: \"x\\ny\"}}\n", "one line"},
+		{"an empty step", "dev: {setup: [\"\"]}\n", "empty"},
+		{"a negative timeout", "timeouts: {setup: -1m}\n", "timeouts.setup"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
 			}
 		})

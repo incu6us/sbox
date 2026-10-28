@@ -131,11 +131,17 @@ if [ -d /drive/sbox/ssh ]; then
 	# With egress, logins get the proxy settings the command gets.
 	proxy_login="SetEnv=SBOX=1"
 	[ -s /drive/sbox/egress ] && proxy_login="SetEnv=HTTPS_PROXY=http://172.16.0.1:3128 https_proxy=http://172.16.0.1:3128 NO_PROXY=localhost,127.0.0.1,host.sbox no_proxy=localhost,127.0.0.1,host.sbox"
+	# dev.env, one NAME=value per line, for every login: sshd reads it from
+	# the runner's ~/.ssh/environment. Written each boot, so the config wins.
+	rm -f /home/runner/.ssh/environment
+	if [ -s /drive/sbox/env ]; then
+		install -o runner -g runner -m 0600 /drive/sbox/env /home/runner/.ssh/environment
+	fi
 	/usr/sbin/sshd -f /dev/null -h /drive/sbox/ssh/host_ed25519 -o "$proxy_login" \
 		-o ListenAddress=172.16.0.2 -o "AllowUsers=runner root" -o PermitRootLogin=forced-commands-only \
 		-o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
 		-o AuthorizedKeysFile=/drive/sbox/ssh/authorized_keys.%u \
-		-o PrintLastLog=no -o PidFile=/run/sshd.pid
+		-o PermitUserEnvironment=yes -o PrintLastLog=no -o PidFile=/run/sshd.pid
 fi
 
 echo "SBOX-$nonce START"

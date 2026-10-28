@@ -227,9 +227,8 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
 	} else {
-		job := guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress}
 		var newDrive bool
-		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
+		if id, newDrive, code = startSession(ctx, args[0], project, devJob(cfg), stderr, vm); code != exitOK {
 			return code
 		}
 		if newDrive {
@@ -237,6 +236,9 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 			}
 			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
+		}
+		if code := runHooks(ctx, id, cfg, false, stdout, stderr, vm); code != exitOK {
+			_, _ = fmt.Fprintf(stderr, "sbox: the terminal opens anyway; fix it there, then sbox setup-env %s\n", args[0])
 		}
 	}
 
@@ -247,6 +249,56 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	_ = sessionMain(ctx, "stop", []string{id}, io.Discard, stderr, vm)
 	return code
+}
+
+// setupEnvMain implements `sbox setup-env <dir>`: the project's dev.setup
+// steps again, in its live session or in one started for them.
+func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string) int {
+	if len(args) != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env <dir>")
+		return exitUsage
+	}
+	project, err := projectID(args[0])
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
+	cfg, err := loadConfig(userConfig, filepath.Join(args[0], "sbox.yaml"))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
+	if len(cfg.Dev.Setup) == 0 {
+		_, _ = fmt.Fprintln(stdout, "no dev.setup steps in the config")
+		return exitOK
+	}
+	id, done, code := projectSession(ctx, args[0], project, devJob(cfg), stderr, vm, stateDir)
+	if code != exitOK {
+		return code
+	}
+	defer done()
+	return runHooks(ctx, id, cfg, true, stdout, stderr, vm)
+}
+
+// devJob is what a dev session runs: nothing but the guest's sshd, with
+// the config's network and environment.
+func devJob(cfg config) guestJob {
+	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env}
+}
+
+// runHooks runs the config's setup and start steps in session id (setup
+// only, and regardless of its stamp, when force is set), with their output
+// on stdout and stderr, and returns their exit status.
+func runHooks(ctx context.Context, id string, cfg config, force bool, stdout, stderr io.Writer, vm sboxRunFunc) int {
+	start := cfg.Dev.Start
+	if force {
+		start = nil
+	}
+	if len(cfg.Dev.Setup)+len(start) == 0 {
+		return exitOK
+	}
+	script := hookScript(cfg.Dev.Setup, start, cfg.setupTimeout(), force)
+	return attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), stdout, stderr, vm)
 }
 
 // liveSession finds the project's running or paused session.

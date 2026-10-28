@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +28,24 @@ type config struct {
 	Image    struct {
 		Packages []string `yaml:"packages"` // Ubuntu packages added to the guest image by sbox setup
 	} `yaml:"image"`
+	Dev struct {
+		Env   map[string]string `yaml:"env"`   // variables in every login: hooks, terminals, the agent
+		Setup []string          `yaml:"setup"` // steps run once per home, and again when the list changes
+		Start []string          `yaml:"start"` // steps run at every fresh boot; a trailing & runs one in the background
+	} `yaml:"dev"`
+	Timeouts struct {
+		Setup time.Duration `yaml:"setup"` // each dev.setup and dev.start step; 10m when unset
+	} `yaml:"timeouts"`
+}
+
+var _envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// setupTimeout is how long each setup or start step may take.
+func (c config) setupTimeout() time.Duration {
+	if c.Timeouts.Setup == 0 {
+		return 10 * time.Minute
+	}
+	return c.Timeouts.Setup
 }
 
 // _packageName is a Debian package name: nothing mmdebstrap could read as
@@ -59,6 +79,15 @@ func loadConfig(userFile, projectFile string) (config, error) {
 			return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
 		}
 		cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
+		cfg.Dev.Setup = append(cfg.Dev.Setup, c.Dev.Setup...)
+		cfg.Dev.Start = append(cfg.Dev.Start, c.Dev.Start...)
+		if len(c.Dev.Env) > 0 && cfg.Dev.Env == nil {
+			cfg.Dev.Env = make(map[string]string)
+		}
+		maps.Copy(cfg.Dev.Env, c.Dev.Env)
+		if c.Timeouts.Setup != 0 {
+			cfg.Timeouts.Setup = c.Timeouts.Setup
+		}
 		cfg.Ports = append(cfg.Ports, c.Ports...)
 		cfg.Services = append(cfg.Services, c.Services...)
 		cfg.Egress = append(cfg.Egress, c.Egress...)
@@ -117,6 +146,22 @@ func (c *config) check() error {
 		if !_packageName.MatchString(p) {
 			return fmt.Errorf("image.packages: %q: want an Ubuntu package name", p)
 		}
+	}
+	for k, v := range c.Dev.Env {
+		if !_envName.MatchString(k) {
+			return fmt.Errorf("dev.env: %q: want a variable name (letters, digits, _)", k)
+		}
+		if strings.ContainsAny(v, "\n\r\x00") {
+			return fmt.Errorf("dev.env: %s: values are one line", k)
+		}
+	}
+	for _, steps := range [][]string{c.Dev.Setup, c.Dev.Start} {
+		if slices.Contains(steps, "") {
+			return errors.New("dev: a setup or start step is empty")
+		}
+	}
+	if c.Timeouts.Setup < 0 {
+		return fmt.Errorf("timeouts.setup: %v: want a positive duration", c.Timeouts.Setup)
 	}
 	for _, p := range c.Ports {
 		if p < 1024 || p > 65535 {
