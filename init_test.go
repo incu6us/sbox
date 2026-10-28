@@ -76,3 +76,27 @@ func TestConfigMain(t *testing.T) {
 		t.Errorf("bad file: exit %d, stderr %q", code, stderr.String())
 	}
 }
+
+// TestConfigMainSources: each key in sbox config's output names the file
+// it came from; a list both files add to names both.
+func TestConfigMainSources(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, "egress: [a.example]\ntimeouts: {run: 2m}\nsecrets: {CLAUDE_CODE_OAUTH_TOKEN: env:TOKEN}\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [b.example]\nports: [3000]\ntimeouts: {setup: 5m}\nsecrets: {GITHUB_TOKEN: env:GH}\n")
+	var stdout, stderr bytes.Buffer
+	lookup := func(k string) (string, bool) { return "", k == "TOKEN" }
+	if code := configMain([]string{dir}, &stdout, &stderr, devHost{userConfig: user, lookupEnv: lookup}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"ports: # project", "egress: # user, project", "  run: 2m0s # user", "  setup: 5m0s # project",
+		"CLAUDE_CODE_OAUTH_TOKEN: env:TOKEN # set (user)", "GITHUB_TOKEN: env:GH # unset on this Mac (project)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sbox config lacks %q:\n%s", want, out)
+		}
+	}
+}

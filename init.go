@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -98,12 +99,29 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
+	project := cmp.Or(host.projectConfig, filepath.Join(dir, "sbox.yaml"))
+	sources := keySources(host.userConfig, project)
 	secrets := cfg.Secrets
 	cfg.Secrets = nil
+	var doc yaml.Node
+	if err := doc.Encode(cfg); err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitFail
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		key, val := doc.Content[i], doc.Content[i+1]
+		if val.Kind != yaml.MappingNode {
+			key.LineComment = sources[key.Value]
+			continue
+		}
+		for j := 0; j+1 < len(val.Content); j += 2 {
+			val.Content[j].LineComment = sources[key.Value+"."+val.Content[j].Value]
+		}
+	}
 	var b strings.Builder
 	enc := yaml.NewEncoder(&b)
 	enc.SetIndent(2)
-	if err := errors.Join(enc.Encode(cfg), enc.Close()); err != nil {
+	if err := errors.Join(enc.Encode(&doc), enc.Close()); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitFail
 	}
@@ -118,7 +136,7 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 			if _, ok := lookup(strings.TrimPrefix(secrets[k], "env:")); !ok {
 				state = "unset on this Mac"
 			}
-			fmt.Fprintf(&b, "  %s: %s # %s\n", k, secrets[k], state)
+			fmt.Fprintf(&b, "  %s: %s # %s (%s)\n", k, secrets[k], state, sources["secrets."+k])
 		}
 	}
 	b.WriteString("\n# what a session gets:\n")
@@ -130,6 +148,33 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	}
 	_, _ = io.WriteString(stdout, b.String())
 	return exitOK
+}
+
+// keySources names, per key two levels deep ("egress", "timeouts.run",
+// "secrets.GITHUB_TOKEN"), the files that set it: "user", "project" or
+// both, for sbox config's comments.
+func keySources(userFile, projectFile string) map[string]string {
+	sources := map[string]string{}
+	for _, f := range []struct{ label, path string }{{"user", userFile}, {"project", projectFile}} {
+		data, err := os.ReadFile(f.path)
+		if err != nil {
+			continue
+		}
+		var top map[string]any
+		if yaml.Unmarshal(data, &top) != nil {
+			continue
+		}
+		add := func(key string) { sources[key] = strings.TrimPrefix(sources[key]+", "+f.label, ", ") }
+		for k, v := range top {
+			add(k)
+			if sub, ok := v.(map[string]any); ok {
+				for s := range sub {
+					add(k + "." + s)
+				}
+			}
+		}
+	}
+	return sources
 }
 
 // oneDir reads an optional folder argument, "." when absent.

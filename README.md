@@ -194,7 +194,8 @@ attach; `image.packages` needs `sbox setup`.
 
 Running Claude Code in the guest takes a token from your Mac and its API
 host in egress. `sbox init` writes a starter `sbox.yaml` that does the
-second; `sbox config` prints the effective config and which secrets are
+second; `sbox config` prints the effective config, each key commented with
+the file it came from (`# user`, `# project`), and which secrets are
 set on this Mac:
 
 ```yaml
