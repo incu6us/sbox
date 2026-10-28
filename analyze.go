@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -37,6 +38,11 @@ const (
 	_home = "/home/runner/"
 	_work = "/home/runner/work/" // the skill, and the project dir hooks are given
 )
+
+// _ruleNames are every rule a finding can carry, for rules.severity.
+var _ruleNames = []string{"agent-config-write", "agent-dir-write", "canary-argv", "canary-exfiltration", "connect",
+	"credential-read", "dns-lookup", "environ-read", "escalation", "network-tool", "persistence",
+	"possible-exfiltration", "prefetch-failed", "prefetch-refused", "prefetch-timeout", "temp-exec", "timeout"}
 
 // finding is one thing an entry point did that deserves a look.
 type finding struct {
@@ -74,8 +80,9 @@ var (
 )
 
 // analyze turns what one entry point did into findings, worst first.
-// canary is the marker in the run's fake credentials.
-func analyze(r entryRun, canary string) []finding {
+// canary is the marker in the run's fake credentials; creds are paths read
+// as credentials besides the built-in ones.
+func analyze(r entryRun, canary string, creds []string) []finding {
 	var out []finding
 	seen := make(map[string]bool)
 	add := func(sev severity, rule, detail string) {
@@ -92,7 +99,7 @@ func analyze(r entryRun, canary string) []finding {
 			target = f.target
 		}
 		switch {
-		case f.op == "read" && matches(f.path, _credentialPaths):
+		case f.op == "read" && (matches(f.path, _credentialPaths) || matches(f.path, creds)):
 			readsCredentials = true
 			add(sevHigh, "credential-read", "reads "+f.path+missing(f))
 		case f.op == "read" && _environ.MatchString(f.path):
@@ -161,18 +168,97 @@ func analyze(r entryRun, canary string) []finding {
 
 // verdictFor blocks on any critical finding, asks for review on medium or
 // high ones, and passes the rest, as skills-audit does.
-func verdictFor(findings []finding) string {
+func verdictFor(findings []finding) string { return config{}.scanRules().verdict(findings) }
+
+// scanRules is the config's calibration of sbox scan, applied on top of
+// analyze.
+type scanRules struct {
+	credentialPaths []string
+	expected        []string
+	severity        map[string]severity
+	review, block   severity
+	set             config // what the config said, for overrides
+}
+
+// scanRules reads the rules keys; review is capped at block.
+func (c config) scanRules() scanRules {
+	level := func(name string, def severity) severity {
+		if i := slices.Index(_severityNames[:], name); i >= 0 {
+			return severity(i)
+		}
+		return def
+	}
+	s := scanRules{credentialPaths: c.Rules.CredentialPaths, expected: c.Rules.ExpectedHosts, severity: map[string]severity{}, set: c}
+	for rule, name := range c.Rules.Severity {
+		s.severity[rule] = level(name, sevInfo)
+	}
+	s.block = level(c.Rules.BlockOn, sevCritical)
+	s.review = min(level(c.Rules.ReviewOn, sevMedium), s.block)
+	return s
+}
+
+// apply drops lookups of expected hosts to INFO, marked so, and sets the
+// overridden rules' severities; worst first again.
+func (s scanRules) apply(findings []finding) []finding {
+	out := slices.Clone(findings)
+	for i, f := range out {
+		if name, ok := strings.CutPrefix(f.Detail, "looks up "); ok && f.Rule == "dns-lookup" &&
+			slices.ContainsFunc(s.expected, func(h string) bool { return hostMatches(h, name) }) {
+			out[i].Severity, out[i].Detail = sevInfo, f.Detail+" (expected)"
+		}
+		if sev, ok := s.severity[f.Rule]; ok {
+			out[i].Severity = sev
+		}
+	}
+	slices.SortStableFunc(out, func(a, b finding) int { return cmp.Compare(b.Severity, a.Severity) })
+	return out
+}
+
+// verdict is BLOCK from the block threshold, REVIEW from the review one.
+func (s scanRules) verdict(findings []finding) string {
 	top := sevInfo
 	for _, f := range findings {
 		top = max(top, f.Severity)
 	}
 	switch {
-	case top == sevCritical:
+	case top >= s.block:
 		return verdictBlock
-	case top >= sevMedium:
+	case top >= s.review && top > sevInfo:
 		return verdictReview
 	}
 	return verdictPass
+}
+
+// overrides names what the config changed in how findings are judged,
+// for the report header and JSON; nil when nothing.
+func (s scanRules) overrides() []string {
+	var out []string
+	r := s.set.Rules
+	if len(r.ExpectedHosts) > 0 {
+		out = append(out, "expected hosts: "+strings.Join(r.ExpectedHosts, ", "))
+	}
+	for _, rule := range slices.Sorted(maps.Keys(r.Severity)) {
+		out = append(out, "severity: "+rule+" "+r.Severity[rule])
+	}
+	if r.ReviewOn != "" {
+		out = append(out, "review_on: "+r.ReviewOn)
+	}
+	if r.BlockOn != "" {
+		out = append(out, "block_on: "+r.BlockOn)
+	}
+	return out
+}
+
+// scanExit is sbox scan's exit status: non-zero at REVIEW or BLOCK, or with
+// report.fail_on: block, at BLOCK only.
+func scanExit(verdict, failOn string) int {
+	switch {
+	case verdict == verdictBlock:
+		return scanBlock
+	case verdict == verdictReview && failOn != "block":
+		return scanReview
+	}
+	return exitOK
 }
 
 func countSeverities(findings []finding) map[severity]int {
@@ -184,7 +270,9 @@ func countSeverities(findings []finding) map[severity]int {
 }
 
 // writeScanJSON prints the scan as one JSON object.
-func writeScanJSON(w io.Writer, dir string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding) error {
+// writeScanJSON writes the report as one object, with the config's
+// overrides under config.overrides when there are any.
+func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, overrides []string) error {
 	type dnsJSON struct {
 		Name  string   `json:"name"`
 		Types []string `json:"types"`
@@ -203,13 +291,20 @@ func writeScanJSON(w io.Writer, dir string, pre *prefetchResult, runs []entryRun
 		DNS       []dnsJSON `json:"dns"`
 		Findings  []finding `json:"findings"`
 	}
+	type configJSON struct {
+		Overrides []string `json:"overrides"`
+	}
 	report := struct {
 		Target   string          `json:"target"`
 		Verdict  string          `json:"verdict"`
 		Counts   map[string]int  `json:"counts"`
+		Config   *configJSON     `json:"config,omitempty"`
 		Prefetch *prefetchResult `json:"prefetch"`
 		Entries  []entryJSON     `json:"entries"`
-	}{Target: dir, Verdict: verdict, Counts: make(map[string]int), Prefetch: pre, Entries: []entryJSON{}}
+	}{Target: target, Verdict: verdict, Counts: make(map[string]int), Prefetch: pre, Entries: []entryJSON{}}
+	if len(overrides) > 0 {
+		report.Config = &configJSON{Overrides: overrides}
+	}
 	for sev, n := range countSeverities(all) {
 		report.Counts[sev.String()] = n
 	}

@@ -627,7 +627,7 @@ func traceLines(out, canary string) []string {
 	r := entryRun{ep: entryPoint{Kind: "dev", Name: "terminal"}, ran: true}
 	attribute(&r, traces)
 	var lines []string
-	for _, f := range analyze(r, canary) {
+	for _, f := range analyze(r, canary, nil) {
 		lines = append(lines, fmt.Sprintf("INFO    %s  %s", f.Rule, printable(f.Detail)))
 	}
 	for _, p := range slices.Sorted(maps.Keys(writes)) {

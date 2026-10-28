@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -112,7 +113,8 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
 	}
-	perEntry := cfg.entryTimeout()
+	perEntry, rules := cfg.entryTimeout(), cfg.scanRules()
+	jsonOut := *asJSON || cfg.Report.Format == "json"
 	dir, name, err := resolveTarget(flags.Arg(0), githubFetch(ctx))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -148,8 +150,11 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 			})
 		}
 	}
-	if !*asJSON {
+	if !jsonOut {
 		_, _ = fmt.Fprintf(stdout, "%d entry points in %s\n", len(eps), name)
+		for _, o := range rules.overrides() {
+			_, _ = fmt.Fprintf(stdout, "config: %s\n", o)
+		}
 	}
 	script, files := scanScript(eps, perEntry)
 	job.scan, job.files = script, files
@@ -176,29 +181,24 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 	var pre *prefetchResult
 	if len(steps) > 0 {
 		pre = collectPrefetch(steps, res.markers)
+		pre.Findings = rules.apply(pre.Findings)
 		all = append(all, pre.Findings...)
 	}
 	for i, r := range runs {
-		findings[i] = analyze(r, res.canary)
+		findings[i] = rules.apply(analyze(r, res.canary, rules.credentialPaths))
 		all = append(all, findings[i]...)
 	}
-	verdict := verdictFor(all)
-	if *asJSON {
-		err = writeScanJSON(stdout, dir, pre, runs, findings, verdict, all)
+	verdict := rules.verdict(all)
+	if jsonOut {
+		err = writeScanJSON(stdout, name, pre, runs, findings, verdict, all, rules.overrides())
 	} else {
-		writeScanReport(stdout, pre, runs, findings, verdict, all)
+		writeScanReport(stdout, pre, runs, findings, verdict, all, cmp.Or(cfg.Report.MaxListed, _maxListed))
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
 	}
-	switch verdict {
-	case verdictBlock:
-		return scanBlock
-	case verdictReview:
-		return scanReview
-	}
-	return exitOK
+	return scanExit(verdict, cfg.Report.FailOn)
 }
 
 // scanScript is the guest's scan: each entry point runs as the runner under
@@ -496,10 +496,10 @@ func outcome(r string) string {
 	return "ok"
 }
 
-func writeScanReport(w io.Writer, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding) {
+func writeScanReport(w io.Writer, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, maxListed int) {
 	var b strings.Builder
 	if pre != nil {
-		writePrefetchReport(&b, pre)
+		writePrefetchReport(&b, pre, maxListed)
 	}
 	for i, r := range runs {
 		fmt.Fprintf(&b, "\n%d/%d  %s\n     $ %s\n", i+1, len(runs), r.ep, printable(r.ep.Command))
@@ -513,9 +513,9 @@ func writeScanReport(w io.Writer, pre *prefetchResult, runs []entryRun, findings
 		default:
 			fmt.Fprintf(&b, "     exit %d\n", r.exitCode)
 		}
-		writeList(&b, "processes", eventStrings(r.procs))
-		writeList(&b, "network", networkItems(r))
-		writeList(&b, "files", eventStrings(r.files))
+		writeList(&b, "processes", eventStrings(r.procs), maxListed)
+		writeList(&b, "network", networkItems(r), maxListed)
+		writeList(&b, "files", eventStrings(r.files), maxListed)
 		if r.hidden > 0 {
 			fmt.Fprintf(&b, "     %-10s %d events from %s itself, not judged\n", "", r.hidden, strings.Join(r.ep.Harness, ", "))
 		}
@@ -558,13 +558,13 @@ func networkItems(r entryRun) []string {
 	return items
 }
 
-func writeList(b *strings.Builder, label string, items []string) {
+func writeList(b *strings.Builder, label string, items []string, maxListed int) {
 	if len(items) == 0 {
 		fmt.Fprintf(b, "     %-10s none\n", label)
 		return
 	}
 	for i, item := range items {
-		if i == _maxListed {
+		if i == maxListed {
 			fmt.Fprintf(b, "     %-10s … %d more\n", "", len(items)-i)
 			break
 		}
