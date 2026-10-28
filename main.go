@@ -97,7 +97,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return logMain(ctx, args[1:], stdout, stderr, sboxRun, time.Second)
 	case "watch":
 		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second)
-	case "ps", "stop", "pause", "resume", "clean":
+	case "clean":
+		return cleanMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
+	case "ps", "stop", "pause", "resume":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":
 		if err := setup(ctx, stdout, userConfigFile()); err != nil {

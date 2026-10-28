@@ -617,6 +617,33 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     INFO, refused writes outside the home as BLOCKED lines.
   - Verified on the real VM, one `vm`-tagged test each.
 
+- ✅ End-to-end runs without the agent (2026-10-28), from dev mode's
+  verification list: a Next.js 16 app and a Go project, Postgres 18 on the
+  Mac, each driven through a real terminal (`expect`).
+  - Next.js: `npm ci` (3 min through the proxy) and a migration through
+    `host.sbox` in `setup`; `npm run dev &` in `start`, the page on the
+    Mac's `localhost:3000`; the second boot skips setup, keeps
+    `node_modules`, and has the Mac's edit in, served; a page written in
+    the guest comes back alone with `sync -apply`. A 5-minute pause: the
+    page doesn't answer, then does after resume, with the guest's clock
+    right at once and the attached terminal still printing.
+  - Go: `image.packages: [golang-go, postgresql-client]` (image 1492 MB);
+    `go build`, `go install` into `~/.local`, rustup into the home (8 min,
+    mostly downloads) all still there at the next boot; `psql` reaches the
+    Mac's Postgres; another Mac port, the Mac's LAN address and Lima's host
+    address all fail from the guest; `example.com` is a BLOCKED line.
+  - The Mac's `.git` is byte-identical after guest commits; the patch
+    applies. Killing the terminal keeps the session and `sbox dev` attaches
+    to it again.
+  - Found and fixed: the guest's `.git` stayed as first copied, so its
+    history missed the Mac's later commits (each boot now copies the
+    Mac's in); a start step without its `&` held the terminal for the
+    whole step timeout silently (a line after 30 s now); `sbox clean` left
+    the Mac's sync bases and boot records.
+  - Found, not fixed: Next's `.next` counted as 106 changes to sync until
+    `dev.ignore` listed it, since `.gitignore` isn't read; a connection to
+    an unlisted Mac port is refused without a BLOCKED line.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

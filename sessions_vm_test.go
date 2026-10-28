@@ -716,6 +716,10 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	writeTestFile(t, filepath.Join(dir, "README"), "v1\n")
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "refs", "heads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, ".git", "refs", "heads", "main"), "first\n")
 	dev := func(script string) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer
@@ -726,9 +730,10 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 	}
 	dev("true")
 	writeTestFile(t, filepath.Join(dir, "README"), "mac v2\n")
-	out, notes := dev("cat README; echo from the guest > NOTES")
-	if out != "mac v2\n" || !strings.Contains(notes, "1 change from the Mac copied in") {
-		t.Errorf("second session: %q, notes %q; want the Mac's edit in the guest", out, notes)
+	writeTestFile(t, filepath.Join(dir, ".git", "refs", "heads", "main"), "mac commit\n")
+	out, notes := dev("cat README .git/refs/heads/main; echo from the guest > NOTES")
+	if out != "mac v2\nmac commit\n" || !strings.Contains(notes, "1 change from the Mac copied in") {
+		t.Errorf("second session: %q, notes %q; want the Mac's edit and its .git in the guest", out, notes)
 	}
 
 	var patch, errOut bytes.Buffer

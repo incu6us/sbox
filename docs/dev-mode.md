@@ -105,7 +105,10 @@ host for the candidates), shows the diff, and writes it into the host
 directory. `.git` is never copied back: the guest gets a copy of the host's
 `.git` so the agent can commit and see history, but the host's `.git`
 stays the host's, and the result arrives as working-tree changes you commit
-yourself, or as a patch `sbox sync -patch` writes. That is the one rule
+yourself, or as a patch `sbox sync -patch` writes. Each boot of a kept
+home copies the host's `.git` over the guest's, so commits made on the
+Mac between sessions are in the guest's history; the guest's own commits
+last one session, their files stay in the work tree. That is the one rule
 from the config plan's push section, kept.
 
 Live two-way sync is not in this version. Firecracker has no virtiofs and
@@ -210,7 +213,9 @@ dev:
   action, not the global `sbox setup`) reruns it on demand.
 - `start` runs at every attach to a fresh boot, not on reattach to a
   running session. A trailing `&` keeps a step running in the background
-  (a dev server); its output goes to `sbox log <id>`.
+  (a dev server); its output goes to `~/.sbox/start.log`. A step without
+  it that is still running after 30 s gets a line saying the `&` may be
+  missing, since the terminal waits for it (up to the step's timeout).
 - Both run under `sh -e` with output streamed to the terminal, prefixed,
   and in the session log. A step's timeout is `timeouts.setup`, default
   ten minutes, since `npm ci` on a cold cache is the slow one.
@@ -605,36 +610,50 @@ writes a commented starter file and `sbox config` prints the effective one.
 
 ## Verification
 
-The `vm`-tagged tests cover parts of these (a kept, paused and reattached
-session; refused hosts in the summary; forwarded ports and Mac services;
-secrets kept off the home); the end-to-end runs below with a real app,
-Postgres and a real token are still to do.
+Run on 2026-10-28 with a Next.js 16 app, a Go project and Postgres 18 on
+the Mac (results in `MILESTONE.md`); the steps that need Claude Code with
+a real token, and a push with a scoped GitHub token, are still to do.
 
 - [ ] A Next.js app: `sbox dev`, ask the agent to add a page, `npm run dev`
     in the guest, the page opens on `localhost:3000` on the host, `sbox
     sync` brings the files back, `git diff` on the host shows exactly them.
-- [ ] `setup` runs `npm ci` and a migration against the Mac's Postgres
+    (Done with the page written by the terminal's command instead of the
+    agent: the page served on the Mac, `sync -apply` brought back exactly
+    that file. The agent part waits for a token.)
+- [x] `setup` runs `npm ci` and a migration against the Mac's Postgres
   through `host.sbox`; `start` launches the dev server in the background
   and the page is on `localhost:3000` before the agent prompt appears.
-- [ ] A Go project with `image.packages: [golang-go]`: `go build` works in
+  Found: a start step without its `&` held the terminal for the whole
+  step timeout with no word why; it now says so after 30 s.
+- [x] A Go project with `image.packages: [golang-go]`: `go build` works in
   the guest; `rustup` installed into the home directory is still there in
   the next session.
-- [ ] `psql` in the guest reaches Postgres running on the Mac through
-  `host.sbox:5432`; nothing else on the Mac is reachable.
+- [x] `psql` in the guest reaches Postgres running on the Mac through
+  `host.sbox:5432`; nothing else on the Mac is reachable (another Mac
+  port through `host.sbox`, the Mac's LAN address and Lima's host address
+  all fail).
 - [ ] Killing the terminal mid-session, then `sbox dev` again: attached to
-  the same session, the agent's conversation still there.
-- [ ] Second `sbox dev` on the same project starts without reinstalling
+  the same session, the agent's conversation still there. (Attach to the
+  same session with the guest's files: done; the conversation waits for
+  a token.)
+- [x] Second `sbox dev` on the same project starts without reinstalling
     `node_modules`; an edit made on the host in between is visible in the
-    guest.
+    guest. Found: the guest's `.git` stayed as first copied, so its
+    history missed the Mac's later commits; each boot now copies it in.
 - [ ] `curl https://example.com` in the guest is refused and appears under
     `refused`; `git push` to the allowed repo with the scoped token works.
-- [ ] The host's `.git` is byte-identical before and after a session with
+    (The refusal: done, a BLOCKED line in the summary. The push waits for
+    a token.)
+- [x] The host's `.git` is byte-identical before and after a session with
     guest commits; `sbox sync -patch` produces an applicable patch.
-- [ ] `sbox pause` during `npm run dev`, wait five minutes, `sbox resume`:
+- [x] `sbox pause` during `npm run dev`, wait five minutes, `sbox resume`:
   the dev server answers again, `date` in the guest is right, the attached
   terminal still works.
-- [ ] `sbox ps` is empty after exit, also after killing the terminal; the
+- [x] `sbox ps` is empty after exit, also after killing the terminal; the
     project's state folder is the only thing left, and `sbox clean` removes it.
+    (Killing the terminal keeps the session by design; `ps` is empty once
+    it is stopped.) Found: `sbox clean` removed the VM's drives but left
+    the Mac's sync bases and boot records; it removes both now.
 - [ ] A session where the agent hits `yarn`'s registry, a denied MCP tool and
   a dev server on an unlisted port: `sbox watch` shows all three as they
   happen, the summary groups them with the key to add, and adding the

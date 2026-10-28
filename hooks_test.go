@@ -111,6 +111,35 @@ func TestHookScript(t *testing.T) {
 		}
 	})
 
+	t.Run("a start step still running after 30s gets a hint", func(t *testing.T) {
+		t.Parallel()
+		// The fake sleep shortens the script's 30 s wait to wait, so a
+		// one-second step outlasts it and a quick one doesn't.
+		hint := func(wait string, step string) (string, time.Duration) {
+			home := newHome(t)
+			if err := os.MkdirAll(filepath.Join(home, ".fakebin"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			fake := "#!/bin/sh\n[ \"$1\" = 30 ] && set -- " + wait + "\nexec /bin/sleep \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(home, ".fakebin", "sleep"), []byte(fake), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			began := time.Now()
+			out, err := shHooks(t, home, hookScript(nil, []string{step}, time.Minute, false))
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			return out, time.Since(began)
+		}
+		const want = "sbox: start: still running after 30s: /bin/sleep 1 (end a server's line with & to run it in the background)"
+		if out, _ := hint("0.2", "/bin/sleep 1"); !strings.Contains(out, want) {
+			t.Errorf("slow step: output %q, want %q", out, want)
+		}
+		if out, took := hint("10", "true"); strings.Contains(out, "still running") || took > 5*time.Second {
+			t.Errorf("quick step: output %q after %v; want no hint, and nothing left holding the output", out, took)
+		}
+	})
+
 	t.Run("a start step ending in & runs detached", func(t *testing.T) {
 		t.Parallel()
 		home := newHome(t)

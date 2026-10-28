@@ -587,7 +587,8 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 // it, so the agent starts from your latest edits: only the Mac-to-guest
 // half of the sync plan is carried out, and the base moves for those paths
 // alone. The guest's own changes and conflicts wait for sbox sync, with a
-// line saying so. A project with no base (never copied in) is left alone.
+// line saying so. The Mac's .git replaces the guest's. A project with no
+// base (never copied in) is left alone.
 func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir string, rules ignoreRules, stderr io.Writer) error {
 	base, err := loadBase(stateDir, project)
 	if err != nil {
@@ -622,6 +623,15 @@ func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir 
 	}
 	if err := applyPushes(ctx, vm, id, dir, pushes, host, stderr); err != nil {
 		return err
+	}
+	// Sync leaves .git out, so the guest's history would stop at the
+	// drive's first boot: the Mac's replaces it, guest commits included.
+	// ponytail: copied whole every boot; compare a fingerprint if a big
+	// .git makes boots slow.
+	if info, err := os.Lstat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+		if err := copyMounts(ctx, vm, id, []mountCopy{{filepath.Join(dir, ".git"), "/home/runner/work/.git"}}, stderr); err != nil {
+			return err
+		}
 	}
 	if err := saveBase(stateDir, project, nextBase(base, pushes, host, guest)); err != nil {
 		return err
