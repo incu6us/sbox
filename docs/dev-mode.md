@@ -516,7 +516,7 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [ ] hook output prefixed and in `sbox log`: the runner can't write
       the console, so steps are announced instead and background output
       goes to `~/.sbox/start.log`
-- [ ] **6. Secrets and config.** The config plan's commits 1, 2 and 4, done
+- [x] **6. Secrets and config.** The config plan's commits 1, 2 and 4, done
     here if not before, plus `ports`, `dev`, `mcp` and `permissions` keys,
     the generated guest `settings.json` and `.claude.json` MCP entries, the
     project-root file in dev mode, and the "could not start" check for
@@ -528,6 +528,20 @@ writes a commented starter file and `sbox config` prints the effective one.
       wins) to a tmpfs file that `~/.ssh/environment` links to, so values
       are never on the kept home. `sbox dev` prints the names. Canary tails
       are scan-mode (`analyze`) and wait for it
+    - [x] `dev.command`, `dev.permissions` (skip writes `bypassPermissions`
+      and `skipDangerousModePermissionPrompt` to the user settings; ask
+      writes `default`), `permissions` and `mcp` (`servers`, `allow`,
+      `deny`): `scripts/sbox-claude.py` (with `--selftest`) merges them as
+      the runner at boot; sbox owns `permissions` in settings.json and the
+      servers it names in `~/.claude.json`
+    - [x] `dev.vcpus`, `dev.memory_mib`: `sbox/vm` sizes the main microVM
+    - [x] `sbox init` (a starter file, never over one) and `sbox config`
+      (the effective file, each secret set or unset, never a value)
+    - [x] tested with fakes and the helper's self-test, then on the real VM
+      (`TestDevSecretsOnVM`, `TestDevAgentSettingsOnVM`: `claude mcp list`
+      shows the servers)
+    - [ ] the "could not start" check for `.mcp.json` servers: step 7
+    - [ ] `dev.pause_after`, `dev.ignore`, `-config`, `-command`
 - [ ] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
     the BLOCKED/MISSING line format with hints, the guest watcher's port
     and tool-denial records (transcript format confirmed here), `sbox

@@ -248,7 +248,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 
-	code = attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
+	attach := append([]string{id}, args[1:]...)
+	if len(args) == 1 && cfg.devCommand() != "" {
+		attach = append(attach, "--", "bash", "-lc", cfg.devCommand())
+	}
+	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
 	if host.keep != nil && host.keep(id) {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
 		return code
@@ -313,7 +317,8 @@ func (h devHost) devConfig(dir string) (config, map[string]string, error) {
 // devJob is what a dev session runs: nothing but the guest's sshd, with
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
-	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets}
+	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets,
+		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings()}
 }
 
 // runHooks runs the config's setup and start steps in session id (setup

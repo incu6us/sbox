@@ -31,7 +31,10 @@ sbox doctor
 sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir> -- <command> [args...]
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir>
 
+sbox init [dir]
+sbox config [dir]
 sbox dev [-fresh] <dir> [-- <command> [args...]]
+sbox setup-env <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
 sbox sync [-apply] <dir>
@@ -158,6 +161,39 @@ The guest's root is read-only; anything installed into the home
 (`~/.local`, rustup, `uv python install`) lands on the project's kept
 drive and is there next session. The runner can have 2048 processes and
 threads, so a fork bomb or a runaway build fails inside the guest.
+
+Running Claude Code in the guest takes a token from your Mac and its API
+host in egress. `sbox init` writes a starter `sbox.yaml` that does the
+second; `sbox config` prints the effective config and which secrets are
+set on this Mac:
+
+```yaml
+dev:
+  command: claude         # what sbox dev runs when given no command
+  permissions: skip       # the default: no prompts, the VM is the boundary; or ask
+  vcpus: 4                # the session's size (2 and 1024 MiB by default)
+  memory_mib: 4096
+egress: [api.anthropic.com]
+secrets:                  # NAME: env:<variable on your Mac>, read at start
+  CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN   # claude setup-token prints one
+permissions:              # Claude Code's own rules in the guest
+  deny: ["Bash(rm -rf *)"]
+mcp:
+  servers:
+    pg: {command: npx, args: ["-y", "@modelcontextprotocol/server-postgres", "postgres://app@host.sbox/app"]}
+    docs: {url: "https://mcp.example.com/mcp"}   # its host must be in egress
+  deny: ["mcp__pg__execute"]
+```
+
+A secret's value is never written in a file: a missing variable stops
+`sbox dev` before anything starts, the value travels root-only to the
+guest, and it is never on the kept home. An MCP server inherits the
+secrets, so a token it needs goes under `secrets`. sbox owns the
+`permissions` key of the guest's `~/.claude/settings.json` and the servers
+it names in `~/.claude.json`; everything else Claude Code keeps there
+survives. A project's `sbox.yaml` is yours, like the code: it can grant
+egress and ask for secrets, so read one you didn't write before running
+`sbox dev` on it.
 
 Nothing else crosses: the guest's network still has no route out, and
 each forwarded port is a pair of relays joined by a unix socket in the

@@ -24,8 +24,12 @@ import (
 	"unicode"
 )
 
-//go:embed scripts/guest-init.sh
-var _guestInit string
+var (
+	//go:embed scripts/guest-init.sh
+	_guestInit string
+	//go:embed scripts/sbox-claude.py
+	_claudeScript string
+)
 
 const (
 	_defaultTimeout = 60 * time.Second
@@ -117,16 +121,19 @@ func dnsLookups(markers []string) []dnsName {
 // script as root (it drops to the runner for what it runs), with input
 // files for it under sbox/in/.
 type guestJob struct {
-	command  []string
-	scan     string
-	files    map[string]string
-	prefetch string            // optional: runs first, in a microVM with registry-only egress
-	preLimit time.Duration     // the prefetch microVM's timeout
-	egress   []string          // optional: host:port the main microVM may reach through the proxy
-	ports    []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
-	services []int             // Mac ports the guest reaches at host.sbox
-	env      map[string]string // set in every ssh login to the guest
-	secrets  map[string]string // the same, but root-only on the drive and never on the kept home
+	command   []string
+	scan      string
+	files     map[string]string
+	prefetch  string            // optional: runs first, in a microVM with registry-only egress
+	preLimit  time.Duration     // the prefetch microVM's timeout
+	egress    []string          // optional: host:port the main microVM may reach through the proxy
+	ports     []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
+	services  []int             // Mac ports the guest reaches at host.sbox
+	env       map[string]string // set in every ssh login to the guest
+	secrets   map[string]string // the same, but root-only on the drive and never on the kept home
+	vcpus     int               // the main microVM's size; 0 keeps sbox-run's default
+	memoryMiB int
+	claude    []byte // Claude Code settings for scripts/sbox-claude.py to merge in the guest
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -380,6 +387,12 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 			}
 			files = append(files, file{name, b.String(), mode})
 		}
+	}
+	if job.claude != nil {
+		files = append(files, file{"sbox/claude.json", string(job.claude), 0o644}, file{"sbox/claude.py", _claudeScript, 0o644})
+	}
+	if job.vcpus > 0 || job.memoryMiB > 0 {
+		files = append(files, file{"sbox/vm", fmt.Sprintf("%d %d\n", job.vcpus, job.memoryMiB), 0o644})
 	}
 	if len(job.egress) > 0 {
 		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})

@@ -53,7 +53,7 @@ Conventions shared by every plan:
   - [x] 5c reattach and detach
   - [x] 5d toolchains via `image.packages`, a process cap in the guest
   - [x] 5e setup and start hooks, `dev.env`
-  - [ ] 6 secrets and config keys
+  - [x] 6 secrets and config keys
   - [ ] 7 session summary, `sbox log`, `-trace`
   - [ ] 8 docs and timings
 - [x] 1b. Prerequisites ([prerequisites.md](prerequisites.md))

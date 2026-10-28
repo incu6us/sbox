@@ -122,6 +122,14 @@ if [ -b /dev/vdc ]; then
 	fi
 fi
 
+# Dev sessions: Claude Code's permissions and MCP servers from the config,
+# merged into the runner's files by the runner, keeping Claude Code's own.
+if [ -f /drive/sbox/claude.json ]; then
+	setpriv --reuid=runner --regid=runner --init-groups --reset-env \
+		python3 -I /drive/sbox/claude.py /drive/sbox/claude.json /home/runner 2>&1 ||
+		echo "sbox: could not write Claude Code's settings"
+fi
+
 # Sessions: sshd on the tap address with the keys and host key that
 # sbox-run put on the drive: the runner's, and root's, which can only run
 # sync (stop flushes the work drive with it). The config is empty, so
