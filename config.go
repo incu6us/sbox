@@ -78,8 +78,9 @@ type config struct {
 		BlockOn         string            `yaml:"block_on,omitempty"`         // BLOCK from this severity; CRITICAL when unset
 		ReviewOn        string            `yaml:"review_on,omitempty"`        // REVIEW from this severity; MEDIUM when unset
 	} `yaml:"rules,omitempty"`
-	Push   []string `yaml:"push,omitempty"` // host/owner/repo sbox run -push may push the folder's branch to
-	Report struct {
+	Push       []string             `yaml:"push,omitempty"`       // host/owner/repo sbox run -push may push the folder's branch to
+	Workspaces map[string]workspace `yaml:"workspaces,omitempty"` // the user's own file only: see workspace
+	Report     struct {
 		Format    string `yaml:"format,omitempty"`     // text or json; -json wins
 		MaxListed int    `yaml:"max_listed,omitempty"` // per category; 15 when unset
 		FailOn    string `yaml:"fail_on,omitempty"`    // review (the default: non-zero at REVIEW or BLOCK) or block
@@ -289,12 +290,18 @@ func readConfigFile(p string, user bool) (config, error) {
 	if !user && len(c.Image.Packages) > 0 {
 		return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
 	}
+	if !user && len(c.Workspaces) > 0 {
+		return config{}, fmt.Errorf("%s: workspaces: they grant permissions, so they live in your own file, ~/.config/sbox/config.yaml", p)
+	}
 	return c, nil
 }
 
 // merge adds one file's config on top: lists append, maps merge with c
 // winning, scalars replace.
 func (cfg *config) merge(c config) {
+	if c.Workspaces != nil {
+		cfg.Workspaces = c.Workspaces // the user's file alone has them
+	}
 	cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
 	cfg.Mounts = append(cfg.Mounts, c.Mounts...)
 	cfg.Dev.Ignore = append(cfg.Dev.Ignore, c.Dev.Ignore...)
@@ -574,6 +581,12 @@ func (c *config) check() error {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("services: %d: ports are 1 to 65535", p)
 		}
+	}
+	for name, w := range c.Workspaces {
+		if err := w.check(name); err != nil {
+			return err
+		}
+		c.Workspaces[name] = w
 	}
 	return nil
 }
