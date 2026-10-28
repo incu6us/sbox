@@ -249,6 +249,7 @@ type fakeGuest struct {
 	silent          bool // the guest prints no counter
 	late            bool // the first log read comes before the first tick
 	logs            int
+	runTar          []byte // what start was sent
 }
 
 func (g *fakeGuest) wait(d time.Duration) {
@@ -258,7 +259,9 @@ func (g *fakeGuest) wait(d time.Duration) {
 }
 
 func (g *fakeGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, args ...string) error {
-	if in != nil {
+	if in != nil && args[0] == "start" {
+		g.runTar, _ = io.ReadAll(in)
+	} else if in != nil {
 		_, _ = io.Copy(io.Discard, in)
 	}
 	switch args[0] {
@@ -296,21 +299,30 @@ func TestSessionProbe(t *testing.T) {
 		}
 		return names
 	}
+	reaches := func(int) bool { return true }
 	good := &fakeGuest{}
-	if bad := failing(sessionProbe(context.Background(), good.run, good.wait)); len(bad) != 0 || !good.stopped {
+	var fetched int
+	if bad := failing(sessionProbe(context.Background(), good.run, good.wait, func(p int) bool { fetched = p; return true })); len(bad) != 0 || !good.stopped {
 		t.Errorf("a well-behaved session: failing %q, stopped %v; want none failing and the session stopped", bad, good.stopped)
 	}
+	if fwd := tarFiles(t, good.runTar)["sbox/ports"]; fetched < 1024 || fwd != strconv.Itoa(fetched)+"\n" {
+		t.Errorf("forwarded %q, fetched port %d; want the forwarded port fetched", fwd, fetched)
+	}
 	late := &fakeGuest{late: true}
-	if bad := failing(sessionProbe(context.Background(), late.run, late.wait)); len(bad) != 0 {
+	if bad := failing(sessionProbe(context.Background(), late.run, late.wait, reaches)); len(bad) != 0 {
 		t.Errorf("a guest whose first tick comes after the first read: failing %q, want none", bad)
 	}
 	silent := &fakeGuest{silent: true}
-	if bad := failing(sessionProbe(context.Background(), silent.run, silent.wait)); len(bad) != 3 {
+	if bad := failing(sessionProbe(context.Background(), silent.run, silent.wait, reaches)); len(bad) != 3 {
 		t.Errorf("a session with no counter output: failing %q, want the three counter checks", bad)
 	}
 	broken := &fakeGuest{ignorePause: true}
-	if bad := failing(sessionProbe(context.Background(), broken.run, broken.wait)); !slices.Equal(bad, []string{"session: pause freezes the guest"}) || !broken.stopped {
+	if bad := failing(sessionProbe(context.Background(), broken.run, broken.wait, reaches)); !slices.Equal(bad, []string{"session: pause freezes the guest"}) || !broken.stopped {
 		t.Errorf("a session that ignores pause: failing %q, stopped %v; want only the pause check failing", bad, broken.stopped)
+	}
+	unreached := &fakeGuest{}
+	if bad := failing(sessionProbe(context.Background(), unreached.run, unreached.wait, func(int) bool { return false })); !slices.Equal(bad, []string{"session: a guest port reaches the Mac"}) {
+		t.Errorf("a port that doesn't come through: failing %q", bad)
 	}
 }
 

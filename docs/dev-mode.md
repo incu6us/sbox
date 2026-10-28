@@ -462,7 +462,9 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] tested with fakes and the real proxy script, then on the real VM
       (a guest page on the Mac's localhost; a Mac echo service from the
       guest)
-    - [ ] doctor's forwarding check
+    - [x] doctor's forwarding check: the session probe's guest also serves
+      a page on a forwarded port, fetched from the Mac's `localhost`
+      (doctor takes 18 s in all)
 - [x] **5b. Egress, with raw TCP.** `egress` in the config (a name or
     `*.domain`, `:port` or `:*`, 443 when left out) goes through the HTTPS
     proxy, which now matches those patterns. An exact host on a port other
