@@ -87,9 +87,12 @@ checks pass, `1` a check failed, `2` bad usage.
 
 ### Sessions
 
-`sbox dev <dir>` opens a shell in a new microVM with the directory copied
-in, at `/home/runner/work`, and stops the microVM when you exit. Pass a
-command to run that instead: `sbox dev ./myapp -- claude`. The terminal is
+`sbox dev <dir>` opens a shell in a microVM with the directory copied
+in, at `/home/runner/work`. Pass a command to run that instead:
+`sbox dev ./myapp -- claude`. When you exit, sbox asks whether to keep the
+session running (the default); a kept or paused session is what the next
+`sbox dev` on that folder attaches to, resuming it if paused. Without a
+terminal to ask on, the session stops at exit. The terminal is
 real (colours, Ctrl-C, full-screen programs); it runs over SSH inside the
 VM, with a key made per session and the guest's host key pinned.
 
@@ -97,7 +100,7 @@ The runner's home is kept per project between `sbox dev` sessions: the
 copy of the project and what was done to it, the agent's own state,
 caches, anything installed in the home. The project is copied in only the
 first time, so work done inside is never overwritten. `sbox dev -fresh
-<dir>` starts that project over from the Mac's copy; `sbox clean` drops
+<dir>` stops the project's session and starts over from the Mac's copy; `sbox clean` drops
 every project's state. Only one session runs per project at a time.
 
 Ports and services come from the config file: `sbox.yaml` in the

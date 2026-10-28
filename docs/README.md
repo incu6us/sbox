@@ -50,7 +50,7 @@ Conventions shared by every plan:
   - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions (`-patch`, auto-push and the notice left)
   - [x] 5 ports and services (doctor's forwarding check left)
   - [x] 5b egress from the config, wildcards, raw TCP (ssh, databases)
-  - [ ] 5c reattach and detach
+  - [x] 5c reattach and detach
   - [ ] 5d toolchains via `image.packages`, `pids.max`
   - [ ] 5e setup and start hooks, `dev.env`
   - [ ] 6 secrets and config keys

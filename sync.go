@@ -363,17 +363,21 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 	return exitOK
 }
 
-// projectSession finds the running session on a project, or starts one
-// that stop ends (which also flushes the guest's writes).
-func projectSession(ctx context.Context, dir, project string, stderr io.Writer, vm sboxRunFunc, stateDir string) (string, func(), int) {
-	var ps bytes.Buffer
-	if err := vm(ctx, nil, &ps, stderr, "ps"); err != nil {
-		return "", nil, vmFailed(stderr, err)
-	}
-	for _, s := range parseSessions(ps.String()) {
-		if s.Project == project && s.State == "running" {
-			return s.ID, func() {}, exitOK
+// projectSession finds the live session on a project, resuming a paused
+// one until done, or starts one that done stops (which also flushes the
+// guest's writes).
+func projectSession(ctx context.Context, dir, project string, stderr io.Writer, vm sboxRunFunc, stateDir string) (id string, done func(), code int) {
+	live, found, code := liveSession(ctx, project, stderr, vm)
+	switch {
+	case code != exitOK:
+		return "", nil, code
+	case found && live.State == "paused":
+		if err := vm(ctx, nil, io.Discard, stderr, "resume", live.ID); err != nil {
+			return "", nil, vmFailed(stderr, err)
 		}
+		return live.ID, func() { _ = vm(ctx, nil, io.Discard, stderr, "pause", live.ID) }, exitOK
+	case found:
+		return live.ID, func() {}, exitOK
 	}
 	id, fresh, code := startSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, stderr, vm)
 	if code != exitOK {

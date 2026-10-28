@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -372,30 +373,30 @@ func TestDevMain(t *testing.T) {
 		return nil
 	}}
 	var stdout, stderr bytes.Buffer
-	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "")
-	if code != 3 || len(vm.calls) != 3 {
-		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and start, attach, stop", code, vm.calls, stderr.String())
+	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil)
+	if code != 3 || len(vm.calls) != 4 {
+		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and ps, start, attach, stop", code, vm.calls, stderr.String())
 	}
-	id, project := vm.calls[0][1], mustProjectID(t, dir)
-	want := [][]string{{"start", id, project}, {"attach", id, "--", "claude"}, {"stop", id}}
+	id, project := vm.calls[1][1], mustProjectID(t, dir)
+	want := [][]string{{"ps"}, {"start", id, project}, {"attach", id, "--", "claude"}, {"stop", id}}
 	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
 		t.Errorf("calls %q, want %q", vm.calls, want)
 	}
 
 	shell := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, t.TempDir(), ""); code != exitOK ||
-		len(shell.calls) != 3 || !slices.Equal(shell.calls[1], []string{"attach", shell.calls[0][1]}) {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, t.TempDir(), "", nil); code != exitOK ||
+		len(shell.calls) != 4 || !slices.Equal(shell.calls[2], []string{"attach", shell.calls[1][1]}) {
 		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
 	}
 
 	fresh := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, t.TempDir(), ""); code != exitOK ||
-		len(fresh.calls) != 4 || !slices.Equal(fresh.calls[0], []string{"forget", project}) || fresh.calls[1][0] != "start" {
-		t.Errorf("sbox dev -fresh: exit %d, calls %q; want forget %s, then start, attach, stop", code, fresh.calls, project)
+	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, t.TempDir(), "", nil); code != exitOK ||
+		len(fresh.calls) != 5 || !slices.Equal(fresh.calls[1], []string{"forget", project}) || fresh.calls[2][0] != "start" {
+		t.Errorf("sbox dev -fresh: exit %d, calls %q; want ps, forget %s, then start, attach, stop", code, fresh.calls, project)
 	}
 
 	failed := fakeVM{stdout: "no ready line\n"}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, t.TempDir(), ""); code != exitFail || len(failed.calls) != 1 {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, t.TempDir(), "", nil); code != exitFail || len(failed.calls) != 2 {
 		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
 	}
 }
@@ -469,13 +470,18 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 	run := func(state string, a func([]string) string) {
 		vm := fakeVM{answer: a}
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, state, ""); code != exitOK {
+		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, state, "", nil); code != exitOK {
 			t.Fatalf("devMain: exit %d, %s", code, stderr.String())
 		}
 	}
 
 	state := t.TempDir()
-	run(state, func(args []string) string { return answer("NEW " + args[1] + "\n")(args) })
+	run(state, func(args []string) string {
+		if args[0] != "start" {
+			return ""
+		}
+		return answer("NEW " + args[1] + "\n")(args)
+	})
 	base, err := loadBase(state, project)
 	want, _ := readManifest(dir)
 	if err != nil || !maps.Equal(base, want) {
@@ -505,10 +511,10 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), user); code != exitOK {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), user, nil); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	files := tarFiles(t, vm.stdins[0]) // start's run tar
+	files := tarFiles(t, vm.stdins[1]) // start's run tar, after ps
 	if files["sbox/ports"] != "3000\n" || files["sbox/services"] != "5432\n" || files["sbox/egress"] != "api.anthropic.com:443\n" {
 		t.Errorf("run tar: sbox/ports %q, sbox/services %q, sbox/egress %q", files["sbox/ports"], files["sbox/services"], files["sbox/egress"])
 	}
@@ -517,8 +523,93 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := fakeVM{}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, bad.run, t.TempDir(), user); code != exitUsage ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, bad.run, t.TempDir(), user, nil); code != exitUsage ||
 		len(bad.calls) != 0 || !strings.Contains(stderr.String(), "sbox.yaml") {
 		t.Errorf("a bad sbox.yaml: exit %d, calls %q, stderr %q; want usage, no VM call, the file named", code, bad.calls, stderr.String())
+	}
+}
+
+func TestDevMainReattaches(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	project := mustProjectID(t, dir)
+	started := strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 10)
+	const live = "0123abcd"
+	ps := func(lines string) func([]string) string {
+		return func(args []string) string {
+			switch args[0] {
+			case "ps":
+				return lines
+			case "start":
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}
+	}
+	keep := func(string) bool { return true }
+	stop := func(string) bool { return false }
+
+	tests := []struct {
+		name  string
+		args  []string
+		ps    string
+		keep  func(string) bool
+		want  [][]string // "NEW" stands for the new session's id
+		notes string     // on stderr
+	}{
+		{name: "running", args: []string{dir}, ps: live + " running " + started + " " + project + "\n",
+			want: [][]string{{"ps"}, {"attach", live}, {"stop", live}}, notes: "attached to session " + live + ", running 2h0m"},
+		{name: "paused is resumed", args: []string{dir}, ps: live + " paused " + started + " " + project + "\n",
+			want: [][]string{{"ps"}, {"resume", live}, {"attach", live}, {"stop", live}}, notes: "attached to session " + live},
+		{name: "kept at detach", args: []string{dir}, ps: live + " running " + started + " " + project + "\n", keep: keep,
+			want: [][]string{{"ps"}, {"attach", live}}, notes: "sbox stop " + live},
+		{name: "stopped at detach", args: []string{dir}, ps: live + " running " + started + " " + project + "\n", keep: stop,
+			want: [][]string{{"ps"}, {"attach", live}, {"stop", live}}},
+		{name: "exited and other projects are not reused", args: []string{dir},
+			ps:   live + " exited " + started + " " + project + "\nffff0000 running " + started + " 0000000000000000\n",
+			want: [][]string{{"ps"}, {"start", "NEW", project}, {"attach", "NEW"}, {"stop", "NEW"}}},
+		{name: "-fresh stops the live session first", args: []string{"-fresh", dir}, ps: live + " running " + started + " " + project + "\n",
+			want: [][]string{{"ps"}, {"stop", live}, {"forget", project}, {"start", "NEW", project}, {"attach", "NEW"}, {"stop", "NEW"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vm := fakeVM{answer: ps(tt.ps)}
+			var stdout, stderr bytes.Buffer
+			if code := devMain(context.Background(), tt.args, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", tt.keep); code != exitOK {
+				t.Fatalf("exit %d: %s", code, stderr.String())
+			}
+			var newID string
+			for _, c := range vm.calls {
+				if c[0] == "start" {
+					newID = c[1]
+				}
+			}
+			want := make([][]string, len(tt.want))
+			for i, c := range tt.want {
+				want[i] = slices.Clone(c)
+				for j := range want[i] {
+					if want[i][j] == "NEW" {
+						want[i][j] = newID
+					}
+				}
+			}
+			if !slices.EqualFunc(vm.calls, want, slices.Equal) {
+				t.Errorf("calls %q, want %q", vm.calls, want)
+			}
+			if !strings.Contains(stderr.String(), tt.notes) {
+				t.Errorf("stderr %q, want %q", stderr.String(), tt.notes)
+			}
+		})
+	}
+}
+
+func TestAskKeep(t *testing.T) {
+	t.Parallel()
+	for answer, want := range map[string]bool{"\n": true, "y\n": true, "n\n": false, "No\n": false, "": true} {
+		var out bytes.Buffer
+		if got := askKeep(strings.NewReader(answer), &out)("0123abcd"); got != want || !strings.Contains(out.String(), "keep session 0123abcd running? [Y/n]") {
+			t.Errorf("answer %q: keep %v, asked %q; want %v", answer, got, out.String(), want)
+		}
 	}
 }

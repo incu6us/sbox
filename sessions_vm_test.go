@@ -207,7 +207,7 @@ func TestSyncOnVM(t *testing.T) {
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, ""); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "", nil); code != exitOK {
 			t.Fatalf("dev %q: exit %d: %s", script, code, errOut.String())
 		}
 		return out.String()
@@ -317,5 +317,44 @@ func TestEgressOnVM(t *testing.T) {
 	banner := `import socket; s = socket.create_connection(("github.com", 22), timeout=15); print(s.recv(20).decode())`
 	if out, code := run("python3 -c '" + banner + "'"); code != exitOK || !strings.Contains(out, "SSH-2.0") {
 		t.Errorf("github.com:22 over raw TCP: exit %d, output %q; want GitHub's SSH banner", code, out)
+	}
+}
+
+// TestDevReattachOnVM keeps a sbox dev session at detach, pauses it, and
+// checks that the next sbox dev resumes and attaches to the same guest.
+func TestDevReattachOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+
+	var kept string
+	dev := func(script string, keep bool) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "",
+			func(id string) bool { kept = id; return keep })
+		if code != exitOK {
+			t.Fatalf("sbox dev %q: exit %d: %s", script, code, errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+
+	dev("sleep 300 </dev/null >/dev/null 2>&1 & echo $! > /tmp/sleeper", true)
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	sessionCmd(t, "pause", kept)
+
+	out, notes := dev("kill -0 $(cat /tmp/sleeper) && echo same-guest", false)
+	if !strings.Contains(out, "same-guest") || !strings.Contains(notes, "attached to session "+kept) {
+		t.Errorf("second sbox dev: out %q, notes %q; want the first guest's process and the attach note", out, notes)
+	}
+	if ps := sessionCmd(t, "ps"); strings.Contains(ps, kept) && !strings.Contains(ps, kept+"  exited") {
+		t.Errorf("sbox ps after stopping at detach:\n%s", ps)
 	}
 }
