@@ -260,9 +260,19 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if len(args) == 1 && cfg.devCommand() != "" {
 		attach = append(attach, "--", "bash", "-lc", cfg.devCommand())
 	}
+	stopWatch, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		if host.title != nil {
+			host.watchChanges(ctx, vm, id, project, syncRules(cfg.Dev.Ignore), stopWatch)
+		}
+	}()
 	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
-	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, cfg, vm))
-	if host.keep != nil && host.keep(id) {
+	close(stopWatch)
+	<-watched
+	unsynced := guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
+	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm))
+	if host.keep != nil && host.keep(id, unsynced) {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
 		return code
 	}
@@ -305,11 +315,47 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 // detach (nil: no terminal to ask on).
 type devHost struct {
 	stateDir, userConfig string
-	keep                 func(id string) bool
+	keep                 func(id string, unsynced int) bool
 	lookupEnv            func(string) (string, bool) // the Mac's environment, for secrets; os.LookupEnv when nil
 	home                 string                      // for ~ in mounts; the user's home when empty
 	cwd                  string                      // where sbox dev <GitHub URL> makes its folder; "." when empty
 	fetch                fetchFunc                   // GitHub downloads; githubFetch when nil
+	title                func(string)                // sets the terminal's title; no change notice when nil
+	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
+}
+
+// watchChanges puts the count of the guest's unsynced changes in the
+// terminal's title while the terminal is attached, until stop is closed,
+// then clears it. The title, not the screen: printing would garble a
+// full-screen program like Claude Code.
+func (h devHost) watchChanges(ctx context.Context, vm sboxRunFunc, id, project string, rules ignoreRules, stop <-chan struct{}) {
+	every := cmp.Or(h.pollEvery, 10*time.Second)
+	shown := ""
+	defer func() {
+		if shown != "" {
+			h.title("")
+		}
+	}()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+		}
+		text := ""
+		switch n := guestChanges(ctx, vm, id, h.stateDir, project, rules); {
+		case n > 0:
+			text = fmt.Sprintf("sbox: %d %s to sync", n, plural(n, "change", "changes"))
+		case n == 0:
+			text = "sbox: nothing to sync"
+		}
+		if text != "" && text != shown {
+			h.title(text)
+			shown = text
+		}
+	}
 }
 
 // checkout copies a GitHub target into a new folder named after it in
@@ -440,11 +486,11 @@ func runHooks(ctx context.Context, id string, cfg config, force bool, stdout, st
 // collectSummary asks the session what it saw (the helpers' events and the
 // guest's listening ports) and returns sessionSummary's lines; a session
 // that can't answer gets just the first line.
-func collectSummary(ctx context.Context, id, dir string, started time.Time, cfg config, vm sboxRunFunc) string {
+func collectSummary(ctx context.Context, id, dir string, started time.Time, unsynced int, cfg config, vm sboxRunFunc) string {
 	var events, ss bytes.Buffer
 	_ = vm(ctx, nil, &events, io.Discard, "events", id)
 	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
-	return sessionSummary(time.Since(started), dir, parseEvents(events.String()), portLines(ss.String(), cfg.Ports))
+	return sessionSummary(time.Since(started), dir, unsynced, parseEvents(events.String()), portLines(ss.String(), cfg.Ports))
 }
 
 // liveSession finds the project's running or paused session.
@@ -543,13 +589,28 @@ func age(d time.Duration) string {
 }
 
 // askKeep asks on out whether to keep a session running at detach, and
-// reads the answer from in. Keeping is the default: stopping loses the
-// guest's unsynced work.
-func askKeep(in io.Reader, out io.Writer) func(id string) bool {
-	return func(id string) bool {
-		_, _ = fmt.Fprintf(out, "sbox: keep session %s running? [Y/n] ", id)
+// reads the answer from in. Keeping is the default when the guest has
+// changes not yet synced, or when that's unknown (unsynced < 0); with
+// nothing to sync, stopping is.
+func askKeep(in io.Reader, out io.Writer) func(id string, unsynced int) bool {
+	return func(id string, unsynced int) bool {
+		choices := "[Y/n]"
+		switch {
+		case unsynced > 0:
+			_, _ = fmt.Fprintf(out, "sbox: the guest has %d %s not synced; ", unsynced, plural(unsynced, "change", "changes"))
+		case unsynced == 0:
+			choices = "[y/N]"
+			_, _ = fmt.Fprint(out, "sbox: ")
+		default:
+			_, _ = fmt.Fprint(out, "sbox: ")
+		}
+		_, _ = fmt.Fprintf(out, "keep session %s running? %s ", id, choices)
 		answer, _ := bufio.NewReader(in).ReadString('\n')
-		return !strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "n")
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer == "" {
+			return unsynced != 0
+		}
+		return strings.HasPrefix(answer, "y")
 	}
 }
 

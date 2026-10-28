@@ -88,7 +88,8 @@ type fakeVM struct {
 // (TestDevMainPreflightAndSummary covers them).
 func withoutSummary(calls [][]string) [][]string {
 	return slices.DeleteFunc(slices.Clone(calls), func(c []string) bool {
-		return c[0] == "events" || (c[0] == "attach" && slices.Equal(c[2:], []string{"--", "ss", "-Hltn"}))
+		return c[0] == "events" || (c[0] == "attach" && slices.Equal(c[2:], []string{"--", "ss", "-Hltn"})) ||
+			(c[0] == "attach" && len(c) == 6 && strings.Contains(c[5], "sha256sum"))
 	})
 }
 
@@ -550,14 +551,14 @@ func TestDevMainReattaches(t *testing.T) {
 			return ""
 		}
 	}
-	keep := func(string) bool { return true }
-	stop := func(string) bool { return false }
+	keep := func(string, int) bool { return true }
+	stop := func(string, int) bool { return false }
 
 	tests := []struct {
 		name  string
 		args  []string
 		ps    string
-		keep  func(string) bool
+		keep  func(string, int) bool
 		want  [][]string // "NEW" stands for the new session's id
 		notes string     // on stderr
 	}{
@@ -610,10 +611,23 @@ func TestDevMainReattaches(t *testing.T) {
 
 func TestAskKeep(t *testing.T) {
 	t.Parallel()
-	for answer, want := range map[string]bool{"\n": true, "y\n": true, "n\n": false, "No\n": false, "": true} {
+	for _, tt := range []struct {
+		answer   string
+		unsynced int
+		want     bool
+		asked    string
+	}{
+		{"\n", 3, true, "the guest has 3 changes not synced; keep session 0123abcd running? [Y/n]"},
+		{"n\n", 3, false, "[Y/n]"},
+		{"\n", 0, false, "keep session 0123abcd running? [y/N]"},
+		{"y\n", 0, true, "[y/N]"},
+		{"Yes\n", 0, true, "[y/N]"},
+		{"\n", -1, true, "keep session 0123abcd running? [Y/n]"},
+		{"", 1, true, "1 change not synced"},
+	} {
 		var out bytes.Buffer
-		if got := askKeep(strings.NewReader(answer), &out)("0123abcd"); got != want || !strings.Contains(out.String(), "keep session 0123abcd running? [Y/n]") {
-			t.Errorf("answer %q: keep %v, asked %q; want %v", answer, got, out.String(), want)
+		if got := askKeep(strings.NewReader(tt.answer), &out)("0123abcd", tt.unsynced); got != tt.want || !strings.Contains(out.String(), tt.asked) {
+			t.Errorf("answer %q, %d unsynced: keep %v, asked %q; want %v and %q", tt.answer, tt.unsynced, got, out.String(), tt.want, tt.asked)
 		}
 	}
 }
@@ -941,7 +955,7 @@ func TestDevMainConfigChangedAndRestart(t *testing.T) {
 		}
 		return ""
 	}}
-	keep := func(string) bool { return true }
+	keep := func(string, int) bool { return true }
 	dev := func(args ...string) string {
 		t.Helper()
 		var stdout, stderr bytes.Buffer

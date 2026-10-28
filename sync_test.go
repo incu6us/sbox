@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestPlanSync(t *testing.T) {
@@ -220,6 +222,13 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 				body, _ := io.ReadAll(tr)
 				g.files[strings.TrimPrefix(hdr.Name, "./")] = string(body)
 			}
+		case slices.Equal(cmd, []string{"sh", "-c", sumScript(g.pullRules())}):
+			for _, p := range slices.Sorted(maps.Keys(g.files)) {
+				if !g.pullRules().skip(p) && !g.pullRules().skip(path.Dir(p)) {
+					sum := sha256.Sum256([]byte(g.files[p]))
+					_, _ = fmt.Fprintf(out, "%x  ./%s\n", sum, p)
+				}
+			}
 		case slices.Equal(cmd, []string{"ss", "-Hltn"}), slices.Equal(cmd, []string{"true"}): // sbox dev's exit summary, its terminal
 		case slices.Equal(cmd, []string{"sh", "-c", _deleteScript}):
 			list, _ := io.ReadAll(in)
@@ -355,7 +364,7 @@ func TestDevMainPushesMacEditsOnBoot(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(dir, "guest-edits")); string(data) != "v1\n" {
 		t.Errorf("the Mac's guest-edits = %q: nothing comes back at boot", data)
 	}
-	for _, want := range []string{"3 changes from the Mac copied in", "the guest has 1 change of its own: sbox sync " + dir} {
+	for _, want := range []string{"3 changes from the Mac copied in", "the guest has 1 change of its own: sbox sync " + dir, "· the guest has 1 change: sbox sync " + dir} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
 		}
@@ -483,5 +492,63 @@ func TestDevIgnoreInCopyAndSync(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(filepath.Join(dir, "dist", "bundle.js")); string(data) != "built on the Mac\n" || strings.Contains(stdout.String(), "dist") {
 		t.Errorf("after sync the Mac's dist is %q, output:\n%s", data, stdout.String())
+	}
+}
+
+func TestGuestChangeCount(t *testing.T) {
+	t.Parallel()
+	h := func(s string) string { sum := sha256.Sum256([]byte(s)); return hex.EncodeToString(sum[:]) }
+	base := manifest{"same": {Hash: h("1")}, "edited": {Hash: h("1")}, "deleted": {Hash: h("1")}, "run.sh": {Hash: h("1"), Exec: true}}
+	sums := h("1") + "  ./same\n" + h("2") + "  ./edited\n" + h("1") + "  ./run.sh\n" + h("3") + "  ./added\n" +
+		"\\" + h("4") + "  ./odd\\nname\n" + "garbage\n"
+	if got := countChanges(base, sums); got != 4 {
+		t.Errorf("countChanges = %d, want 4 (edited, deleted, added, the escaped name)", got)
+	}
+	if got := countChanges(base, h("1")+"  ./same\n"+h("1")+"  ./edited\n"+h("1")+"  ./deleted\n"+h("1")+"  ./run.sh\n"); got != 0 {
+		t.Errorf("no changes: %d", got)
+	}
+	if s := sumScript(syncRules([]string{"dist"})); !strings.Contains(s, "-name 'dist'") || !strings.Contains(s, "sha256sum") {
+		t.Errorf("sumScript = %s", s)
+	}
+}
+
+// slowGuest is a fakeSyncGuest whose terminal stays open for a while,
+// safe to call from the title poller at the same time.
+type slowGuest struct {
+	mu sync.Mutex
+	g  *fakeSyncGuest
+}
+
+func (s *slowGuest) run(ctx context.Context, in io.Reader, out, errOut io.Writer, args ...string) error {
+	if args[0] == "attach" && slices.Equal(args[2:], []string{"--", "claude"}) {
+		time.Sleep(80 * time.Millisecond)
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.g.run(ctx, in, out, errOut, args...)
+}
+
+func TestDevMainTerminalTitle(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "app.js"), "v1\n")
+	project := mustProjectID(t, dir)
+	if err := recordBase(state, project, dir, syncRules(nil)); err != nil {
+		t.Fatal(err)
+	}
+	guest := &slowGuest{g: &fakeSyncGuest{t: t, project: project, files: map[string]string{"app.js": "v1\n", "new.js": "x\n"}}}
+	var mu sync.Mutex
+	var titles []string
+	title := func(s string) { mu.Lock(); titles = append(titles, s); mu.Unlock() }
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, guest.run,
+		devHost{stateDir: state, title: title, pollEvery: 5 * time.Millisecond}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(titles) != 2 || titles[0] != "sbox: 1 change to sync" || titles[1] != "" {
+		t.Errorf("titles %q, want the count once, then cleared", titles)
 	}
 }

@@ -12,8 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -340,7 +342,7 @@ func TestDevReattachOnVM(t *testing.T) {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun,
-			devHost{stateDir: state, keep: func(id string) bool { kept = id; return keep }})
+			devHost{stateDir: state, keep: func(id string, _ int) bool { kept = id; return keep }})
 		if code != exitOK {
 			t.Fatalf("sbox dev %q: exit %d: %s", script, code, errOut.String())
 		}
@@ -632,7 +634,7 @@ nohup python3 -m http.server 5173 >/dev/null 2>&1 &
 sleep 2`
 	var kept string
 	var out, notes bytes.Buffer
-	keep := func(id string) bool { kept = id; return true }
+	keep := func(id string, _ int) bool { kept = id; return true }
 	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir(), keep: keep}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
 	}
@@ -761,7 +763,7 @@ func TestDevRestartOnVM(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	var kept string
-	keep := func(id string) bool { kept = id; return true }
+	keep := func(id string, _ int) bool { kept = id; return true }
 	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
 	dev := func(script string, flags ...string) (string, string) {
 		t.Helper()
@@ -782,5 +784,40 @@ func TestDevRestartOnVM(t *testing.T) {
 	out, notes := dev(`cat ~/mark; echo "proxy=$HTTPS_PROXY"`, "-restart")
 	if kept == first || out != "kept\nproxy=http://172.16.0.1:3128\n" || strings.Contains(notes, "config changed") {
 		t.Errorf("-restart: session %s (was %s), %q, notes %q; want a new session, the home kept, the new egress", kept, first, out, notes)
+	}
+}
+
+// TestDevChangeCountOnVM checks the guest's unsynced-change count: in the
+// terminal's title while attached, in the summary, and for the keep
+// question at exit.
+func TestDevChangeCountOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "README"), "v1\n")
+	var titles []string
+	var mu sync.Mutex
+	asked := -2
+	host := devHost{stateDir: state, pollEvery: time.Second,
+		title: func(s string) { mu.Lock(); titles = append(titles, s); mu.Unlock() },
+		keep:  func(_ string, unsynced int) bool { asked = unsynced; return false }}
+	var out, errOut bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", "echo note > NOTES; sleep 4"}, strings.NewReader(""), &out, &errOut, sboxRun, host); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s", code, errOut.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(titles, "sbox: 1 change to sync") || titles[len(titles)-1] != "" {
+		t.Errorf("titles %q, want the count while attached, cleared after", titles)
+	}
+	if asked != 1 || !strings.Contains(errOut.String(), "the guest has 1 change: sbox sync") {
+		t.Errorf("keep asked with %d unsynced, summary:\n%s", asked, errOut.String())
 	}
 }

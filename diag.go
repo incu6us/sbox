@@ -176,10 +176,18 @@ func portLines(ss string, forwarded []int) []string {
 	return lines
 }
 
-// sessionSummary is what sbox dev prints when the terminal closes.
-func sessionSummary(ran time.Duration, dir string, ev sessionEvents, ports []string) string {
+// sessionSummary is what sbox dev prints when the terminal closes;
+// unsynced is the guest's changes not yet synced, -1 when unknown.
+func sessionSummary(ran time.Duration, dir string, unsynced int, ev sessionEvents, ports []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "session %s · sbox sync %s shows what changed\n", age(ran), dir)
+	switch {
+	case unsynced > 0:
+		fmt.Fprintf(&b, "session %s · the guest has %d %s: sbox sync %s\n", age(ran), unsynced, plural(unsynced, "change", "changes"), dir)
+	case unsynced == 0:
+		fmt.Fprintf(&b, "session %s · nothing to sync\n", age(ran))
+	default:
+		fmt.Fprintf(&b, "session %s · sbox sync %s shows what changed\n", age(ran), dir)
+	}
 	if s := ev.allowedSummary(); s != "" {
 		fmt.Fprintf(&b, "egress   %s\n", s)
 	}

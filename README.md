@@ -106,8 +106,10 @@ checks pass, `1` a check failed, `2` bad usage.
 
 `sbox dev <dir>` opens a shell in a microVM with the directory copied
 in, at `/home/runner/work`. Pass a command to run that instead:
-`sbox dev ./myapp -- claude`. When you exit, sbox asks whether to keep the
-session running (the default); a kept or paused session is what the next
+`sbox dev ./myapp -- claude`. While you work, the terminal's title counts
+the guest's changes not yet synced (`sbox: 3 changes to sync`). When you
+exit, sbox asks whether to keep the session running: keep is the default
+when there are changes to sync, stop when there are none; a kept or paused session is what the next
 `sbox dev` on that folder attaches to, resuming it if paused. Without a
 terminal to ask on, the session stops at exit. The terminal is
 real (colours, Ctrl-C, full-screen programs); it runs over SSH inside the
