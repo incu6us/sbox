@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -376,5 +377,28 @@ func TestLoadConfigMounts(t *testing.T) {
 				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestBootKeys(t *testing.T) {
+	t.Parallel()
+	var a config
+	a.Egress, a.Ports = []string{"api.anthropic.com:443"}, []int{3000}
+	a.Dev.Env = map[string]string{"A": "1"}
+	a.Dev.Command = "claude"
+	a.Secrets = map[string]string{"T": "env:T"}
+	b := a
+	b.Egress = []string{"api.anthropic.com:443", "registry.npmjs.org:443"}
+	b.Dev.Command = "bash" // applied at every attach: not a boot key
+	b.Dev.Env = map[string]string{"A": "2"}
+	b.Ports = slices.Clone(a.Ports)
+	if got := changedKeys(a.bootKeys(), b.bootKeys()); !slices.Equal(got, []string{"dev.env", "egress"}) {
+		t.Errorf("changedKeys = %q, want dev.env and egress", got)
+	}
+	if got := changedKeys(a.bootKeys(), a.bootKeys()); len(got) != 0 {
+		t.Errorf("same config: %q", got)
+	}
+	if !strings.Contains(fmt.Sprint(a.bootKeys()), "env:T") {
+		t.Error("secrets should be compared by name and source")
 	}
 }

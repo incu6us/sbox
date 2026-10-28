@@ -745,3 +745,42 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 		t.Errorf("sync after the patch: exit %d:\n%s", code, plan.String())
 	}
 }
+
+// TestDevRestartOnVM changes the config under a kept session: attaching
+// again says so, and -restart boots a session with the new config on the
+// same home.
+func TestDevRestartOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	var kept string
+	keep := func(id string) bool { kept = id; return true }
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	dev := func(script string, flags ...string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		args := append(flags, dir, "--", "sh", "-c", script)
+		if code := devMain(ctx, args, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, keep: keep}); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+
+	dev("echo kept > ~/mark")
+	first := kept
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.github.com]\n")
+	if out, notes := dev(`echo "proxy=$HTTPS_PROXY"`); out != "proxy=\n" || !strings.Contains(notes, "the config changed since session "+first+" started (egress)") {
+		t.Errorf("reattach: %q, notes %q; want the old network and the warning", out, notes)
+	}
+	out, notes := dev(`cat ~/mark; echo "proxy=$HTTPS_PROXY"`, "-restart")
+	if kept == first || out != "kept\nproxy=http://172.16.0.1:3128\n" || strings.Contains(notes, "config changed") {
+		t.Errorf("-restart: session %s (was %s), %q, notes %q; want a new session, the home kept, the new egress", kept, first, out, notes)
+	}
+}

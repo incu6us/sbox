@@ -45,7 +45,7 @@ sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <
 
 sbox init [dir]
 sbox config [dir]
-sbox dev [-fresh] <dir | GitHub URL> [-- <command> [args...]]
+sbox dev [-fresh | -restart] <dir | GitHub URL> [-- <command> [args...]]
 sbox setup-env <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
@@ -175,6 +175,14 @@ The guest's root is read-only; anything installed into the home
 (`~/.local`, rustup, `uv python install`) lands on the project's kept
 drive and is there next session. The runner can have 2048 processes and
 threads, so a fork bomb or a runaway build fails inside the guest.
+
+A session takes the config when it boots. Change `sbox.yaml` under a
+running session and the next `sbox dev` says which keys differ
+(`the config changed since session <id> started (egress, ports)`);
+`sbox dev -restart <dir>` stops it and boots a new one with the config as
+it is now, on the same home: files, installed tools and Claude Code's
+history stay, running processes don't. `dev.command` applies at every
+attach; `image.packages` needs `sbox setup`.
 
 Running Claude Code in the guest takes a token from your Mac and its API
 host in egress. `sbox init` writes a starter `sbox.yaml` that does the
