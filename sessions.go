@@ -15,7 +15,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 // sboxRunFunc runs sbox-run in the VM as root with args and input on stdin.
@@ -439,8 +441,10 @@ func askKeep(in io.Reader, out io.Writer) func(id string) bool {
 	}
 }
 
-// isTerminal reports whether f is a terminal.
+// isTerminal reports whether f is a terminal: it answers the get-terminal-
+// attributes ioctl. (A character device isn't enough: /dev/null is one.)
 func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	var attrs syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), _ioctlGetTermios, uintptr(unsafe.Pointer(&attrs)))
+	return errno == 0
 }
