@@ -303,6 +303,11 @@ mcp:
 	if s := string(ask.claudeSettings()); !strings.Contains(s, `"defaultMode":"default"`) || strings.Contains(s, "skipDangerous") {
 		t.Errorf("permissions ask: %s, want the default mode and no prompt skipping", s)
 	}
+	// Claude Code drops a settings file whose rule lists are null, and with
+	// it bypassPermissions: a config without rules writes empty lists.
+	if s := string(ask.claudeSettings()); strings.Contains(s, "null") || !strings.Contains(s, `"allow":[]`) || !strings.Contains(s, `"deny":[]`) {
+		t.Errorf("no rules: %s, want empty allow and deny lists", s)
+	}
 	if ask.devCommand() != "" {
 		t.Errorf("devCommand unset = %q, want empty (a login shell)", ask.devCommand())
 	}

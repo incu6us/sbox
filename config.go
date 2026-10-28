@@ -173,8 +173,8 @@ func (c config) devCommand() string { return c.Dev.Command }
 // Claude Code files: the permission rules and mode, and the MCP servers.
 func (c config) claudeSettings() []byte {
 	perms := map[string]any{
-		"allow":       append(slices.Clone(c.Permissions.Allow), c.MCP.Allow...),
-		"deny":        append(slices.Clone(c.Permissions.Deny), c.MCP.Deny...),
+		"allow":       append(append([]string{}, c.Permissions.Allow...), c.MCP.Allow...), // [] not null: Claude Code drops a file with null lists
+		"deny":        append(append([]string{}, c.Permissions.Deny...), c.MCP.Deny...),
 		"defaultMode": "default",
 	}
 	settings := map[string]any{"permissions": perms}
