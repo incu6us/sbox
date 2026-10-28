@@ -920,3 +920,88 @@ func TestDevMainMounts(t *testing.T) {
 		t.Errorf("missing mount: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
 	}
 }
+
+func TestDevMainConfigChangedAndRestart(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	project := mustProjectID(t, dir)
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com]\n")
+	var live string // the session the fake reports running
+	vm := &fakeVM{answer: func(args []string) string {
+		switch args[0] {
+		case "ps":
+			if live != "" {
+				return live + " running 1700000000 " + project + "\n"
+			}
+		case "start":
+			live = args[1]
+			return "READY " + args[1] + "\n"
+		case "stop":
+			live = ""
+		}
+		return ""
+	}}
+	keep := func(string) bool { return true }
+	dev := func(args ...string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), append(args, dir), strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, keep: keep}); code != exitOK {
+			t.Fatalf("sbox dev %q: exit %d: %s", args, code, stderr.String())
+		}
+		return stderr.String()
+	}
+
+	dev()
+	first := live
+	if notes := dev(); strings.Contains(notes, "config changed") {
+		t.Errorf("reattach with the same config: %q, want no warning", notes)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, registry.npmjs.org]\nports: [3000]\n")
+	notes := dev()
+	if !strings.Contains(notes, "the config changed since session "+first+" started (egress, ports)") || !strings.Contains(notes, "sbox dev -restart "+dir) {
+		t.Errorf("reattach after a change: %q, want the keys and how to apply them", notes)
+	}
+
+	vm.calls = nil
+	notes = dev("-restart")
+	if live == first || !slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Equal(c, []string{"stop", first}) }) ||
+		slices.ContainsFunc(vm.calls, func(c []string) bool { return c[0] == "forget" }) {
+		t.Errorf("-restart: calls %q; want the old session stopped, a new one started, the home kept", vm.calls)
+	}
+	if strings.Contains(notes, "config changed") {
+		t.Errorf("-restart: %q, want no warning for the session it just started", notes)
+	}
+	if notes := dev(); strings.Contains(notes, "config changed") {
+		t.Errorf("reattach after -restart: %q, want no warning", notes)
+	}
+
+	var stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{"-restart", "-fresh", dir}, strings.NewReader(""), io.Discard, &stderr, vm.run, devHost{stateDir: state}); code != exitUsage {
+		t.Errorf("-restart -fresh: exit %d, want usage", code)
+	}
+}
+
+func TestSetupEnvMainWarnsAboutAnOlderConfig(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	project := mustProjectID(t, dir)
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {setup: [npm ci]}\n")
+	old, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
+	if err := recordBoot(state, project, "0123abcd", old); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {setup: [npm ci]}\negress: [registry.npmjs.org]\n")
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "ps" {
+			return "0123abcd running 1700000000 " + project + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, vm.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "the config changed since session 0123abcd started (egress)") {
+		t.Errorf("stderr %q, want the warning before the steps run with the old network", stderr.String())
+	}
+}

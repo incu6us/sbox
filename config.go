@@ -100,6 +100,39 @@ var (
 	_serverName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
 
+// bootKeys is what a session takes from the config when it boots, one
+// canonical value per key, so a running session can be compared with the
+// files now. Secrets are compared by name and source, never by value.
+// dev.command, timeouts and image are left out: the first applies at every
+// attach, the others when they are used.
+func (c config) bootKeys() map[string]string {
+	keys := map[string]any{
+		"egress": c.Egress, "ports": c.Ports, "services": c.Services, "secrets": c.Secrets, "mounts": c.Mounts,
+		"dev.env": c.Dev.Env, "dev.setup": c.Dev.Setup, "dev.start": c.Dev.Start,
+		"dev.vcpus": c.Dev.VCPUs, "dev.memory_mib": c.Dev.MemoryMiB, "dev.permissions": c.Dev.Permissions,
+		"permissions": c.Permissions, "mcp": c.MCP,
+	}
+	out := make(map[string]string, len(keys))
+	for k, v := range keys {
+		data, _ := json.Marshal(v) // maps, slices and strings: never fails; map keys come out sorted
+		out[k] = string(data)
+	}
+	return out
+}
+
+// changedKeys lists, sorted, the keys whose value differs between two
+// bootKeys results.
+func changedKeys(was, now map[string]string) []string {
+	var changed []string
+	for k, v := range now {
+		if was[k] != v {
+			changed = append(changed, k)
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
 // devCommand is what sbox dev runs when given no command: "" for a login
 // shell.
 func (c config) devCommand() string { return c.Dev.Command }

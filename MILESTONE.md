@@ -582,6 +582,17 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     guest at the second boot; the guest's new file comes back by patch,
     and the following sync has nothing to do.
 
+- ✅ Config changes under a running session. `sbox dev` records, next to
+  the sync base, what each session it starts booted with (one canonical
+  value per boot key; secrets by name and source, never value). Attaching
+  again, and `sbox setup-env`, compare it with the files now and name the
+  keys that differ. `sbox dev -restart <dir>` stops the session and boots
+  one with the current config on the same home (`-fresh` drops the home;
+  the two don't combine).
+  - Verified on the real VM: after adding `egress`, the reattach warns and
+    still has no proxy; `-restart` gives a new session with the proxy set
+    and the home file still there.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

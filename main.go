@@ -43,7 +43,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  run      run a command on a directory in a fresh microVM: sbox run <dir> -- <command>\n"+
 			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan <dir>\n"+
 			"\nsessions (a microVM that keeps running):\n"+
-			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept): sbox dev [-fresh] <dir> [-- <command>]\n"+
+			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept); -restart applies config changes: sbox dev [-fresh | -restart] <dir> [-- <command>]\n"+
 			"  setup-env run the project's dev.setup steps again: sbox setup-env <dir>\n"+
 			"  init     write a starter sbox.yaml: sbox init [dir]\n"+
 			"  config   print a project's effective config, and which secrets are set: sbox config [dir]\n"+

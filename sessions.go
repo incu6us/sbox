@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -176,12 +177,13 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // says whether the session stays up; with none (no terminal to ask on) it
 // is stopped.
 func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
-	fresh := len(args) > 0 && args[0] == "-fresh"
-	if fresh {
+	var fresh, restart bool
+	for len(args) > 0 && (args[0] == "-fresh" || args[0] == "-restart") {
+		fresh, restart = fresh || args[0] == "-fresh", restart || args[0] == "-restart"
 		args = args[1:]
 	}
-	if len(args) == 0 || !attachArgs(args) {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh] <dir | GitHub URL> [-- <command> [args...]]")
+	if len(args) == 0 || !attachArgs(args) || (fresh && restart) {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh | -restart] <dir | GitHub URL> [-- <command> [args...]]")
 		return exitUsage
 	}
 	if t, ok := parseTarget(args[0]); ok {
@@ -205,9 +207,12 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if code != exitOK {
 		return code
 	}
-	if found && fresh {
+	if found && (fresh || restart) {
 		if err := vm(ctx, nil, io.Discard, stderr, "stop", live.ID); err != nil {
 			return vmFailed(stderr, err)
+		}
+		if restart {
+			_, _ = fmt.Fprintf(stderr, "sbox: stopped session %s to boot one with the config as it is now; the home is kept\n", live.ID)
 		}
 		found = false
 	}
@@ -225,6 +230,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
+		warnConfigChanged(stderr, host.stateDir, project, id, args[0], cfg)
 	} else {
 		for _, line := range devPreflight(cfg, job.secrets, readMCPJSON(args[0])) {
 			_, _ = fmt.Fprintln(stderr, line)
@@ -233,6 +239,9 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		var newDrive bool
 		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
 			return code
+		}
+		if err := recordBoot(host.stateDir, project, id, cfg); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox: recording the session's config:", err)
 		}
 		if newDrive {
 			if err := recordBase(host.stateDir, project, args[0]); err != nil {
@@ -287,6 +296,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return code
 	}
 	defer done()
+	warnConfigChanged(stderr, host.stateDir, project, id, args[0], cfg)
 	return runHooks(ctx, id, cfg, true, stdout, stderr, vm)
 }
 
@@ -360,6 +370,49 @@ func (h devHost) devConfig(dir string) (config, guestJob, error) {
 		job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
 	}
 	return cfg, job, nil
+}
+
+// bootRecord is the config a dev session booted with, kept on the Mac
+// next to the sync base.
+type bootRecord struct {
+	ID   string            `json:"id"`
+	Keys map[string]string `json:"keys"`
+}
+
+func bootFile(stateDir, project string) string {
+	return filepath.Join(stateDir, "projects", project, "session.json")
+}
+
+// recordBoot remembers what session id booted with.
+func recordBoot(stateDir, project, id string, cfg config) error {
+	data, err := json.Marshal(bootRecord{ID: id, Keys: cfg.bootKeys()})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(bootFile(stateDir, project)), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(bootFile(stateDir, project), data, 0o644)
+}
+
+// configChanged lists the boot keys that differ between what session id
+// booted with and cfg; none when sbox dev didn't record that session.
+func configChanged(stateDir, project, id string, cfg config) []string {
+	var rec bootRecord
+	data, err := os.ReadFile(bootFile(stateDir, project))
+	if err != nil || json.Unmarshal(data, &rec) != nil || rec.ID != id {
+		return nil
+	}
+	return changedKeys(rec.Keys, cfg.bootKeys())
+}
+
+// warnConfigChanged says so when session id booted with another config
+// than dir's now, and how to apply it.
+func warnConfigChanged(stderr io.Writer, stateDir, project, id, dir string, cfg config) {
+	if changed := configChanged(stateDir, project, id, cfg); len(changed) > 0 {
+		_, _ = fmt.Fprintf(stderr, "sbox: the config changed since session %s started (%s): sbox dev -restart %s applies it; the home is kept, running processes aren't\n",
+			id, strings.Join(changed, ", "), dir)
+	}
 }
 
 // devJob is what a dev session runs: nothing but the guest's sshd, with
