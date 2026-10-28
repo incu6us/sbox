@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -374,22 +375,27 @@ func pullScript(rules ignoreRules) string {
 // side. Paths changed differently on both sides are left alone.
 func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, mac devHost) int {
 	stateDir := mac.stateDir
-	var mode string
-	if len(args) > 0 && (args[0] == "-apply" || args[0] == "-patch") {
-		mode, args = args[0], args[1:]
-	}
-	apply := mode == "-apply"
-	if len(args) != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply | -patch] <dir>")
+	flags := flag.NewFlagSet("sbox sync", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	applyFlag := flags.Bool("apply", false, "")
+	patchFlag := flags.Bool("patch", false, "")
+	flags.StringVar(&mac.projectConfig, "config", "", "")
+	if flags.Parse(args) != nil || flags.NArg() != 1 || (*applyFlag && *patchFlag) {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply | -patch] [-config <file>] <dir>")
 		return exitUsage
 	}
-	dir := args[0]
+	apply := *applyFlag
+	mode := ""
+	if *patchFlag {
+		mode = "-patch"
+	}
+	dir := flags.Arg(0)
 	project, err := projectID(dir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
-	cfg, err := loadConfig(mac.userConfig, filepath.Join(dir, "sbox.yaml"))
+	cfg, err := mac.loadConfig(dir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage

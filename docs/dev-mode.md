@@ -552,7 +552,10 @@ writes a commented starter file and `sbox config` prints the effective one.
       root, left out of the copy-in, the base and both sides of sync;
       `node_modules`, `.venv`, `__pycache__` and `.DS_Store` are left out of
       the copy-in by default now (a Mac's `node_modules` has Mac binaries)
-    - [ ] `dev.pause_after`, `-config`, `-command`
+    - [x] `-config <file>` (instead of the project's `sbox.yaml`, on
+      `dev`, `sync`, `setup-env` and `config`, so the ignore rules agree)
+      and `-command <cmd>` (instead of `dev.command`, this once)
+    - [ ] `dev.pause_after`
 - [x] **6b. Config changes under a running session.** The config a
     session booted with is recorded on the Mac; attaching again and
     `sbox setup-env` name the keys that changed; `sbox dev -restart`

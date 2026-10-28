@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -177,13 +178,20 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // says whether the session stays up; with none (no terminal to ask on) it
 // is stopped.
 func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
-	var fresh, restart bool
-	for len(args) > 0 && (args[0] == "-fresh" || args[0] == "-restart") {
-		fresh, restart = fresh || args[0] == "-fresh", restart || args[0] == "-restart"
-		args = args[1:]
+	const usage = "usage: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir | GitHub URL> [-- <command> [args...]]"
+	flags := flag.NewFlagSet("sbox dev", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	fresh := flags.Bool("fresh", false, "")
+	restart := flags.Bool("restart", false, "")
+	flags.StringVar(&host.projectConfig, "config", "", "")
+	command := flags.String("command", "", "")
+	if flags.Parse(args) != nil {
+		_, _ = fmt.Fprintln(stderr, usage)
+		return exitUsage
 	}
-	if len(args) == 0 || !attachArgs(args) || (fresh && restart) {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox dev [-fresh | -restart] <dir | GitHub URL> [-- <command> [args...]]")
+	args = flags.Args()
+	if len(args) == 0 || !attachArgs(args) || (*fresh && *restart) || (*command != "" && len(args) > 1) {
+		_, _ = fmt.Fprintln(stderr, usage)
 		return exitUsage
 	}
 	if t, ok := parseTarget(args[0]); ok {
@@ -207,16 +215,16 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if code != exitOK {
 		return code
 	}
-	if found && (fresh || restart) {
+	if found && (*fresh || *restart) {
 		if err := vm(ctx, nil, io.Discard, stderr, "stop", live.ID); err != nil {
 			return vmFailed(stderr, err)
 		}
-		if restart {
+		if *restart {
 			_, _ = fmt.Fprintf(stderr, "sbox: stopped session %s to boot one with the config as it is now; the home is kept\n", live.ID)
 		}
 		found = false
 	}
-	if fresh {
+	if *fresh {
 		if err := vm(ctx, nil, io.Discard, stderr, "forget", project); err != nil {
 			return vmFailed(stderr, err)
 		}
@@ -257,8 +265,8 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	attach := append([]string{id}, args[1:]...)
-	if len(args) == 1 && cfg.devCommand() != "" {
-		attach = append(attach, "--", "bash", "-lc", cfg.devCommand())
+	if len(args) == 1 && cmp.Or(*command, cfg.devCommand()) != "" {
+		attach = append(attach, "--", "bash", "-lc", cmp.Or(*command, cfg.devCommand()))
 	}
 	stopWatch, watched := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -283,10 +291,14 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 // setupEnvMain implements `sbox setup-env <dir>`: the project's dev.setup
 // steps again, in its live session or in one started for them.
 func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
-	if len(args) != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env <dir>")
+	flags := flag.NewFlagSet("sbox setup-env", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&host.projectConfig, "config", "", "")
+	if flags.Parse(args) != nil || flags.NArg() != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env [-config <file>] <dir>")
 		return exitUsage
 	}
+	args = flags.Args()
 	project, err := projectID(args[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
@@ -320,6 +332,7 @@ type devHost struct {
 	home                 string                      // for ~ in mounts; the user's home when empty
 	cwd                  string                      // where sbox dev <GitHub URL> makes its folder; "." when empty
 	fetch                fetchFunc                   // GitHub downloads; githubFetch when nil
+	projectConfig        string                      // -config: the file used instead of the project's sbox.yaml
 	title                func(string)                // sets the terminal's title; no change notice when nil
 	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
 }
@@ -387,11 +400,24 @@ func (h devHost) checkout(ctx context.Context, t target, stderr io.Writer) (stri
 	return local, exitOK
 }
 
+// loadConfig reads the user's config and the project's: dir's sbox.yaml,
+// or the -config file, which must exist.
+func (h devHost) loadConfig(dir string) (config, error) {
+	project := filepath.Join(dir, "sbox.yaml")
+	if h.projectConfig != "" {
+		if _, err := os.Stat(h.projectConfig); err != nil {
+			return config{}, fmt.Errorf("-config: %w", err)
+		}
+		project = h.projectConfig
+	}
+	return loadConfig(h.userConfig, project)
+}
+
 // devConfig loads the project's config and builds the session's job: the
 // secrets read from the Mac's environment, the mounts' host paths found.
 // Either missing is an error here, before anything starts.
 func (h devHost) devConfig(dir string) (config, guestJob, error) {
-	cfg, err := loadConfig(h.userConfig, filepath.Join(dir, "sbox.yaml"))
+	cfg, err := h.loadConfig(dir)
 	if err != nil {
 		return config{}, guestJob{}, err
 	}
