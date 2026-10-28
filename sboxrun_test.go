@@ -728,7 +728,7 @@ func TestSboxRunEgressPatternsAndRawTCP(t *testing.T) {
 	inNS := "netns exec sbox-" + id + " " + py
 	for _, want := range []struct{ prog, call string }{
 		{"setpriv", strings.TrimPrefix(py, "setpriv ") + "/sbox-proxy.py serve " + run + "/proxy/sock " + run +
-			"/egress.log *.github.com:443 api.anthropic.com:443 github.com:* github.com:22"},
+			"/egress.log --rules " + run + "/egress.rules"},
 		{"ip", inNS + "/sbox-dns.py 172.16.0.1 53 " + run + "/dns.log github.com"},
 		// Only sbox's helpers listen in the namespace; a raw port like 22 must be bindable by them.
 		{"ip", "netns exec sbox-" + id + " sysctl -qw net.ipv4.ip_unprivileged_port_start=0"},
@@ -760,7 +760,7 @@ func TestSboxRunRecordsRefusedConnections(t *testing.T) {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
 	}
 	ruleset, _ := os.ReadFile(nft)
-	for _, want := range []string{`iifname "tap0"`, "add @refused { ip daddr . tcp dport }",
+	for _, want := range []string{`iifname "tap0"`, "add @refused { ip daddr . tcp dport }", "ip daddr . tcp dport != @listening",
 		"172.16.0.1 . 53", "172.16.0.1 . 3128", "172.16.0.1 . 22", "172.16.0.1 . 5432"} {
 		if !strings.Contains(string(ruleset), want) {
 			t.Errorf("ruleset lacks %q:\n%s", want, ruleset)
@@ -774,6 +774,75 @@ func TestSboxRunRecordsRefusedConnections(t *testing.T) {
 	stdout, stderr, code := e.run(nil, "events", sid)
 	if code != 0 || !strings.HasSuffix(stdout, "REFUSED 172.16.0.1:8765\nREFUSED 192.168.31.56:80\n") {
 		t.Errorf("events: exit %d, stdout %q, stderr %q; want the refused connections last", code, stdout, stderr)
+	}
+}
+
+// TestSboxRunReconfigure: a running session takes new egress rules (the
+// proxy rereads its file), ports and services (relay pairs stopped and
+// started, the refused-connection exemptions moved), without a reboot.
+func TestSboxRunReconfigure(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000005"
+	e.extra = append(e.extra, "FAKE_JAILER=sleep")
+	e.killSessionOnCleanup(id)
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, egress: []string{"api.anthropic.com:443"}, ports: []int{3000}, services: []int{5432}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := e.run(tarBuf.Bytes(), "start", id); code != 0 {
+		t.Fatalf("start: exit %d: %s", code, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	for _, f := range []string{"fwd/port-3000.pids", "fwd/svc-5432.pids"} {
+		if _, err := os.Stat(filepath.Join(run, f)); err != nil {
+			t.Errorf("boot left no %s: %v", f, err)
+		}
+	}
+	read := func(p string) string { data, _ := os.ReadFile(filepath.Join(run, p)); return string(data) }
+	if got := read("egress.rules"); got != "api.anthropic.com:443\n" {
+		t.Errorf("the proxy's rules file at boot: %q", got)
+	}
+
+	want := "egress api.anthropic.com:443\negress *.github.com:443\nport 5173\nservice 6379\n"
+	if _, stderr, code := e.run([]byte(want), "reconfigure", id); code != 0 {
+		t.Fatalf("reconfigure: exit %d: %s", code, stderr)
+	}
+	if got := read("egress.rules"); got != "api.anthropic.com:443\n*.github.com:443\n" || read("drive/sbox/egress") != got {
+		t.Errorf("rules %q, drive's egress %q", got, read("drive/sbox/egress"))
+	}
+	if read("drive/sbox/ports") != "5173\n" || read("drive/sbox/services") != "6379\n" {
+		t.Errorf("ports %q, services %q", read("drive/sbox/ports"), read("drive/sbox/services"))
+	}
+	for f, there := range map[string]bool{"fwd/port-3000.pids": false, "fwd/svc-5432.pids": false, "fwd/port-5173.pids": true, "fwd/svc-6379.pids": true} {
+		if _, err := os.Stat(filepath.Join(run, f)); (err == nil) != there {
+			t.Errorf("%s there: %v, want %v", f, err == nil, there)
+		}
+	}
+	proxy := "setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py")
+	for _, w := range []struct{ prog, call string }{
+		{"ip", "netns exec sbox-" + id + " " + proxy + " expose " + run + "/fwd/port-5173.sock 172.16.0.2 5173"},
+		{"setpriv", strings.TrimPrefix(proxy, "setpriv ") + " relay 127.0.0.1 5173 " + run + "/fwd/port-5173.sock"},
+		{"ip", "netns exec sbox-" + id + " " + proxy + " relay 172.16.0.1 6379 " + run + "/fwd/svc-6379.sock"},
+		{"setpriv", strings.TrimPrefix(proxy, "setpriv ") + " expose " + run + "/fwd/svc-6379.sock host.lima.internal 6379"},
+		{"ip", "netns exec sbox-" + id + " nft add element ip sbox listening { 172.16.0.1 . 6379 }"},
+		{"ip", "netns exec sbox-" + id + " nft delete element ip sbox listening { 172.16.0.1 . 5432 }"},
+	} {
+		if !slices.Contains(e.calls(w.prog), w.call) {
+			t.Errorf("%s calls lack %q", w.prog, w.call)
+		}
+	}
+
+	for input, refusal := range map[string]string{
+		"egress github.com:22\n": "raw TCP",
+		"port 99999\n":           "bad port",
+		"port 8080\n":            "port 8080 is already in use",
+	} {
+		e.extra = append(e.extra, "FAKE_BUSY_PORT=8080")
+		if _, stderr, code := e.run([]byte(input), "reconfigure", id); code != 1 || !strings.Contains(stderr, refusal) || read("drive/sbox/ports") != "5173\n" {
+			t.Errorf("reconfigure %q: exit %d, stderr %q, ports %q; want %q and nothing changed", input, code, stderr, read("drive/sbox/ports"), refusal)
+		}
 	}
 }
 

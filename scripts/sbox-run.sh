@@ -28,6 +28,7 @@
 #                  sbox-run stop <session-id>
 #                  sbox-run pause|resume|log <session-id>
 #                  sbox-run attach <session-id> [-- <command...>]
+#                  sbox-run reconfigure <session-id>  (egress, ports, services on stdin)
 #                  sbox-run forget <project-id>    (drop one project's work drive)
 #                  sbox-run clean                  (drop every project's)
 set -euo pipefail
@@ -38,6 +39,56 @@ base=${SBOX_BASE:-/opt/sbox}
 jail_base=${SBOX_JAIL:-/srv/sbox-jail}
 state=${SBOX_STATE:-/var/lib/sbox}
 sessions=$state/sessions
+egress_entry='^(\*\.)?[a-z0-9.-]+:([0-9]{1,5}|\*)$'
+as_vm_user=(setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups)
+
+# raw_entries prints the egress entries that are raw TCP (an exact host on
+# a port other than 443), sorted.
+raw_entries() {
+	local entry host port
+	for entry; do
+		host=${entry%:*} port=${entry##*:}
+		if [[ $host != \*.* && $port =~ ^[0-9]+$ && $port != 443 ]]; then echo "$entry"; fi
+	done | sort
+}
+
+# fwd_pair <run> <kind> <port> [host]: a relay and an expose joined by the
+# unix socket <run>/fwd/<kind>-<port>.sock, one inside the run's namespace
+# and one outside, so the namespace still has no route out. A port goes
+# from the guest to the VM's 127.0.0.1, which Lima forwards to the Mac; a
+# service goes from 172.16.0.1 (host.sbox in the guest) to the Mac, as
+# Lima's host.lima.internal; raw TCP egress goes from 172.16.0.1 to its one
+# host. Their pids go to <kind>-<port>.pids, for fwd_stop and teardown.
+fwd_pair() {
+	local run=$1 kind=$2 port=$3 host=${4:-} netns sock proxy=$base/bin/sbox-proxy.py a b
+	netns=sbox-${run##*/} sock=$run/fwd/$kind-$port.sock
+	case $kind in
+	port)
+		ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" expose "$sock" 172.16.0.2 "$port" </dev/null >/dev/null 2>&1 &
+		a=$!
+		"${as_vm_user[@]}" python3 "$proxy" relay 127.0.0.1 "$port" "$sock" </dev/null >/dev/null 2>&1 &
+		b=$!
+		;;
+	svc | raw)
+		[[ $kind == svc ]] && host=host.lima.internal
+		ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$sock" </dev/null >/dev/null 2>&1 &
+		a=$!
+		"${as_vm_user[@]}" python3 "$proxy" expose "$sock" "$host" "$port" </dev/null >/dev/null 2>&1 &
+		b=$!
+		;;
+	esac
+	echo "$a $b" >"$run/fwd/$kind-$port.pids"
+}
+
+# fwd_stop <pids file>: ends a pair fwd_pair started, checking each pid is
+# still one of the run's helpers before killing it (pids get reused).
+fwd_stop() {
+	local pid
+	for pid in $(cat "$1" 2>/dev/null); do
+		if grep -qF -- "${1%/*}/" "/proc/$pid/cmdline" 2>/dev/null; then kill "$pid" 2>/dev/null || true; fi
+	done
+	rm -f "$1"
+}
 
 # session_ps prints "<id> <state> <started> [project]" per session:
 # running or paused while its process lives, exited once it is gone.
@@ -57,7 +108,10 @@ session_ps() {
 # namespace, the namespace, its run folder, jails and cgroups. Safe to
 # repeat.
 teardown() {
-	local id=$1
+	local id=$1 f
+	for f in "$state/runs/$id"/fwd/*.pids; do
+		[[ -f $f ]] && fwd_stop "$f"
+	done
 	ip netns pids "sbox-$id" 2>/dev/null | xargs -r kill -KILL 2>/dev/null || true
 	ip netns del "sbox-$id" 2>/dev/null || true
 	rm -rf "$state/runs/$id" "$jail_base/firecracker/$id" "$jail_base/firecracker/$id-pre"
@@ -262,6 +316,82 @@ session_attach() {
 		-o ConnectionAttempts=10 -o LogLevel=ERROR runner@172.16.0.2 "cd /home/runner/work && exec $cmd"
 }
 
+# session_reconfigure takes a running session's egress, ports and services
+# on stdin ("egress <host:port>", "port <n>", "service <n>", every line of
+# each), checks them all, then applies what changed: the proxy rereads its
+# rules file, port and service pairs stop and start, and the namespace's
+# exemptions from the refused-connection set follow the services. Raw TCP
+# egress, and egress for a session that started without any, take a new
+# session.
+session_reconfigure() {
+	local id=${1:-} dir run kind value p old=() egress=() ports=() services=()
+	dir=$(session_dir "$id")
+	run=$state/runs/$id
+	if ! kill -0 "$(cat "$dir/pid")" 2>/dev/null; then
+		echo "sbox-run: session $id is not running" >&2
+		exit 1
+	fi
+	while read -r kind value; do
+		case $kind in
+		egress)
+			[[ $value =~ $egress_entry ]] || { echo "sbox-run: bad egress entry" >&2; exit 1; }
+			egress+=("$value")
+			;;
+		port | service)
+			if ! [[ $value =~ ^[0-9]{1,5}$ ]] || ((value < 1 || value > 65535)); then
+				echo "sbox-run: bad port" >&2
+				exit 1
+			fi
+			if [[ $kind == port ]]; then ports+=("$value"); else services+=("$value"); fi
+			;;
+		*) echo "sbox-run: bad line" >&2; exit 1 ;;
+		esac
+	done
+	while read -r value; do [[ -n $value ]] && old+=("$value"); done <"$run/drive/sbox/egress" 2>/dev/null || true
+	if [[ $(raw_entries ${egress[@]+"${egress[@]}"}) != "$(raw_entries ${old[@]+"${old[@]}"})" ]]; then
+		echo "sbox-run: raw TCP egress (a port other than 443) changed: a new session applies it" >&2
+		exit 1
+	fi
+	if ((${#egress[@]})) && [[ ! -f $run/egress.rules ]]; then
+		echo "sbox-run: session $id started without egress: a new session applies it" >&2
+		exit 1
+	fi
+	for p in ${ports[@]+"${ports[@]}"}; do
+		grep -qx "$p" "$run/drive/sbox/ports" 2>/dev/null && continue
+		if [[ -n $(ss -Htln "sport = :$p") ]]; then
+			echo "sbox-run: port $p is already in use in the VM (sbox ps: another session?)" >&2
+			exit 1
+		fi
+	done
+
+	if [[ -f $run/egress.rules ]]; then
+		printf '%s\n' ${egress[@]+"${egress[@]}"} | grep . >"$run/egress.rules.new" || true
+		mv "$run/egress.rules.new" "$run/egress.rules"
+		cp "$run/egress.rules" "$run/drive/sbox/egress"
+	fi
+	install -d -o sbox-vm -m 0700 "$run/fwd"
+	for p in $(cat "$run/drive/sbox/ports" 2>/dev/null); do
+		[[ " ${ports[*]-} " == *" $p "* ]] || fwd_stop "$run/fwd/port-$p.pids"
+	done
+	for p in ${ports[@]+"${ports[@]}"}; do
+		grep -qx "$p" "$run/drive/sbox/ports" 2>/dev/null || fwd_pair "$run" port "$p"
+	done
+	for p in $(cat "$run/drive/sbox/services" 2>/dev/null); do
+		if [[ " ${services[*]-} " != *" $p "* ]]; then
+			fwd_stop "$run/fwd/svc-$p.pids"
+			ip netns exec "sbox-$id" nft delete element ip sbox listening "{ 172.16.0.1 . $p }" 2>/dev/null || true
+		fi
+	done
+	for p in ${services[@]+"${services[@]}"}; do
+		if ! grep -qx "$p" "$run/drive/sbox/services" 2>/dev/null; then
+			fwd_pair "$run" svc "$p"
+			ip netns exec "sbox-$id" nft add element ip sbox listening "{ 172.16.0.1 . $p }" 2>/dev/null || true
+		fi
+	done
+	printf '%s\n' ${ports[@]+"${ports[@]}"} | grep . >"$run/drive/sbox/ports" || true
+	printf '%s\n' ${services[@]+"${services[@]}"} | grep . >"$run/drive/sbox/services" || true
+}
+
 case ${1:-} in
 ps) session_ps; exit 0 ;;
 forget) valid_project "${2:-}"; projects_forget "$2"; exit 0 ;;
@@ -272,6 +402,7 @@ clean)
 	exit 0
 	;;
 attach) shift; session_attach "$@" ;;
+reconfigure) session_reconfigure "${2:-}"; exit 0 ;;
 log) dir=$(session_dir "${2:-}"); redacted "$2" cat "$dir/console.log"; exit 0 ;;
 events) # the allowlist and forwarded ports, then what the proxy and DNS logger saw
 	session_dir "${2:-}" >/dev/null
@@ -335,17 +466,16 @@ in_ns ip tuntap add dev tap0 mode tap user "$(id -u sbox-vm)"
 in_ns ip addr add 172.16.0.1/30 dev tap0
 in_ns ip link set tap0 up
 
-# Helpers run unprivileged. They are started directly, not via in_ns: ip
-# netns exec and setpriv exec the next program, so $! is the helper itself.
-# Their stdio is detached, or they would hold this script's stdout open.
-as_vm_user=(setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups)
+# Helpers run unprivileged (as_vm_user). They are started directly, not via
+# in_ns: ip netns exec and setpriv exec the next program, so $! is the
+# helper itself. Their stdio is detached, or they would hold this script's
+# stdout open.
 
 # Egress: host:port entries, the host a name or *.domain, the port a number
 # or *. An exact host on a port other than 443 is raw TCP: the DNS logger
 # answers its name with 172.16.0.1, where a relay carries the connection to
 # that host alone. The rest go through the HTTPS proxy.
 egress=() raw=()
-egress_entry='^(\*\.)?[a-z0-9.-]+:([0-9]{1,5}|\*)$'
 if [[ -s $run/drive/sbox/egress ]]; then
 	while read -r entry; do
 		[[ $entry =~ $egress_entry ]] || continue
@@ -376,9 +506,10 @@ for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do listening+=", 172.
 in_ns nft -f - <<EOF || echo "sbox-run: refused connections won't be listed (nft failed)" >&2
 table ip sbox {
 	set refused { type ipv4_addr . inet_service; flags dynamic; size 4096; }
+	set listening { type ipv4_addr . inet_service; elements = { $listening }; }
 	chain prerouting {
 		type filter hook prerouting priority 0;
-		iifname "tap0" tcp flags & (syn | ack) == syn ip daddr . tcp dport != { $listening } add @refused { ip daddr . tcp dport }
+		iifname "tap0" tcp flags & (syn | ack) == syn ip daddr . tcp dport != @listening add @refused { ip daddr . tcp dport }
 	}
 }
 EOF
@@ -488,38 +619,25 @@ if [[ -f $run/drive/sbox/prefetch.sh && $prefetch_timeout -gt 0 ]]; then
 	deps=ro
 fi
 
-((${#egress[@]})) && start_egress "$run/egress.log" "${egress[@]}"
+# The main microVM's proxy reads its allowlist from a file, so reconfigure
+# can change it while tunnels stay open.
+if ((${#egress[@]})); then
+	printf '%s\n' "${egress[@]}" >"$run/egress.rules"
+	start_egress "$run/egress.log" --rules "$run/egress.rules"
+fi
 
-# Forwarded ports and services: each is a relay and an expose joined by a
-# unix socket, one inside the run's namespace and one outside, so the
-# namespace still has no route out. A port goes from the guest to the VM's
-# 127.0.0.1, which Lima forwards to the Mac; a service goes from
-# 172.16.0.1 (host.sbox in the guest) to the Mac, as Lima's
-# host.lima.internal.
-proxy=$base/bin/sbox-proxy.py
+# Forwarded ports, services and raw TCP egress: a pair each (fwd_pair).
 if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services || ${#raw[@]} -gt 0 ]]; then
 	install -d -o sbox-vm -m 0700 "$run/fwd"
 fi
 for entry in ${raw[@]+"${raw[@]}"}; do
-	host=${entry%:*} port=${entry##*:}
-	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$run/fwd/raw-$port.sock" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
-	"${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/raw-$port.sock" "$host" "$port" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
+	fwd_pair "$run" raw "${entry##*:}" "${entry%:*}"
 done
 for port in $(cat "$run/drive/sbox/ports" 2>/dev/null); do
-	[[ $port =~ ^[0-9]{1,5}$ ]] || continue
-	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/port-$port.sock" 172.16.0.2 "$port" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
-	"${as_vm_user[@]}" python3 "$proxy" relay 127.0.0.1 "$port" "$run/fwd/port-$port.sock" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
+	[[ $port =~ ^[0-9]{1,5}$ ]] && fwd_pair "$run" port "$port"
 done
 for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do
-	[[ $port =~ ^[0-9]{1,5}$ ]] || continue
-	ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$run/fwd/svc-$port.sock" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
-	"${as_vm_user[@]}" python3 "$proxy" expose "$run/fwd/svc-$port.sock" host.lima.internal "$port" </dev/null >/dev/null 2>&1 &
-	pids+=($!)
+	[[ $port =~ ^[0-9]{1,5}$ ]] && fwd_pair "$run" svc "$port"
 done
 
 # dev.pause_after: pause the session's microVM once nothing has been

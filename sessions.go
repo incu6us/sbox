@@ -561,6 +561,11 @@ func warnChanged(stderr io.Writer, id, dir string, changed []string) {
 // it reads when it starts: rewriting them applies to the next claude run.
 var _claudeKeys = []string{"dev.permissions", "mcp", "permissions"}
 
+// _networkKeys are the boot keys sbox-run reconfigure applies to a running
+// session: the proxy's rules, and port and service relays. It refuses raw
+// TCP egress changes, and egress for a session that booted without any.
+var _networkKeys = []string{"egress", "ports", "services"}
+
 // applyLive applies the changed keys a running session can take without a
 // reboot (Claude Code's settings, the mounts) and returns them, sorted,
 // and the rest.
@@ -574,8 +579,22 @@ func applyLive(ctx context.Context, vm sboxRunFunc, id string, cfg config, job g
 	if mounts {
 		mounts = copyMounts(ctx, vm, id, job.mounts, stderr) == nil
 	}
+	network := slices.ContainsFunc(changed, func(k string) bool { return slices.Contains(_networkKeys, k) })
+	if network {
+		var lines strings.Builder
+		for _, e := range job.egress {
+			fmt.Fprintf(&lines, "egress %s\n", e)
+		}
+		for _, p := range job.ports {
+			fmt.Fprintf(&lines, "port %d\n", p)
+		}
+		for _, p := range job.services {
+			fmt.Fprintf(&lines, "service %d\n", p)
+		}
+		network = vm(ctx, strings.NewReader(lines.String()), io.Discard, stderr, "reconfigure", id) == nil
+	}
 	for _, k := range changed {
-		if (claude && slices.Contains(_claudeKeys, k)) || (mounts && k == "mounts") {
+		if (claude && slices.Contains(_claudeKeys, k)) || (mounts && k == "mounts") || (network && slices.Contains(_networkKeys, k)) {
 			applied = append(applied, k)
 		} else {
 			rest = append(rest, k)

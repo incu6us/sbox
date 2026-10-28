@@ -594,7 +594,17 @@ writes a commented starter file and `sbox config` prints the effective one.
       `dev.permissions` and `mcp` (the guest's settings helper rerun as
       the runner, read by the next `claude`) and `mounts` (copied in
       again); the rest still asks for `-restart`
-    - [ ] egress and ports live, with a proxy and relay reload
+    - [x] `egress`, `ports` and `services` live: `sbox-run reconfigure`
+      takes the full lists, checks them (raw TCP changes, egress for a
+      session booted without any, a port busy in the VM are refused, and
+      nothing changes), then the proxy rereads its rules file (by mtime,
+      so open tunnels stay), port and service relay pairs stop and start
+      (pids in files, which teardown also ends after checking each is
+      still the run's helper), and the services' exemptions from the
+      refused-connection set follow (a named nft set).
+      `TestDevLiveNetworkOnVM`: example.com, a new port and a Mac service
+      reach the same session; the port taken back stops answering; no
+      helper outlives the session
 - [x] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
     the BLOCKED/MISSING line format with hints, the guest watcher's port
     and tool-denial records (transcript format confirmed here), `sbox

@@ -1002,9 +1002,9 @@ func TestDevMainConfigChangedAndRestart(t *testing.T) {
 	if notes := dev(); strings.Contains(notes, "config changed") {
 		t.Errorf("reattach with the same config: %q, want no warning", notes)
 	}
-	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, registry.npmjs.org]\nports: [3000]\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {vcpus: 4, memory_mib: 4096}\n")
 	notes := dev()
-	if !strings.Contains(notes, "the config changed since session "+first+" started (egress, ports)") || !strings.Contains(notes, "sbox dev -restart "+dir) {
+	if !strings.Contains(notes, "the config changed since session "+first+" started (dev.memory_mib, dev.vcpus)") || !strings.Contains(notes, "sbox dev -restart "+dir) {
 		t.Errorf("reattach after a change: %q, want the keys and how to apply them", notes)
 	}
 
@@ -1118,12 +1118,18 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 	if err := recordBoot(state, project, "0123abcd", "", old); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, x.example]\npermissions: {deny: [WebFetch]}\nmounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig}]\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, x.example]\nports: [3000]\npermissions: {deny: [WebFetch]}\nmounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig}]\n")
+	var refuse bool
 	vm := &fakeVM{answer: func(args []string) string {
 		if args[0] == "ps" {
 			return "0123abcd running 1700000000 " + project + "\n"
 		}
 		return ""
+	}, errFor: func(args []string) error {
+		if args[0] == "reconfigure" && refuse {
+			return errors.New("sbox-run: raw TCP egress changed")
+		}
+		return nil
 	}}
 	dev := func() string {
 		var stdout, stderr bytes.Buffer
@@ -1134,24 +1140,34 @@ func TestDevMainAppliesLiveChanges(t *testing.T) {
 	}
 	notes := dev()
 	cfg, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
-	var claude, mounts []byte
+	var claude, mounts, network []byte
 	for i, c := range vm.calls {
 		switch {
+		case slices.Equal(c, []string{"reconfigure", "0123abcd"}):
+			network = vm.stdins[i]
 		case slices.Equal(c, []string{"attach", "0123abcd", "--", "python3", "-I", "/drive/sbox/claude.py", "-", "/home/runner"}):
 			claude = vm.stdins[i]
 		case c[0] == "attach" && len(c) == 6 && strings.Contains(c[5], "rm -rf -- '.gitconfig'"):
 			mounts = vm.stdins[i]
 		}
 	}
-	if string(claude) != string(cfg.claudeSettings()) || tarFiles(t, mounts)[".gitconfig"] != "[user]\n\tname = new\n" {
-		t.Errorf("live apply: claude settings %q, mounts tar %v; calls %q", claude, tarFiles(t, mounts), vm.calls)
+	if string(claude) != string(cfg.claudeSettings()) || tarFiles(t, mounts)[".gitconfig"] != "[user]\n\tname = new\n" ||
+		string(network) != "egress api.anthropic.com:443\negress x.example:443\nport 3000\n" {
+		t.Errorf("live apply: claude settings %q, mounts tar %v, network %q; calls %q", claude, tarFiles(t, mounts), network, vm.calls)
 	}
-	if !strings.Contains(notes, "applied mounts, permissions to session 0123abcd") || !strings.Contains(notes, "the config changed since session 0123abcd started (egress)") {
-		t.Errorf("notes %q: want what was applied, and a restart only for egress", notes)
+	if !strings.Contains(notes, "applied egress, mounts, permissions, ports to session 0123abcd") || strings.Contains(notes, "config changed") {
+		t.Errorf("notes %q: want all of it applied, no restart", notes)
 	}
 	vm.calls, vm.stdins = nil, nil
-	if notes := dev(); strings.Contains(notes, "applied") || !strings.Contains(notes, "(egress)") {
-		t.Errorf("second attach: %q, want nothing applied again, egress still pending", notes)
+	if notes := dev(); strings.Contains(notes, "applied") || strings.Contains(notes, "config changed") {
+		t.Errorf("second attach: %q, want nothing applied again, nothing pending", notes)
+	}
+
+	// The VM side refusing (raw TCP, say) leaves those keys to -restart.
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com, x.example, github.com:22]\nports: [3000]\npermissions: {deny: [WebFetch]}\nmounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig}]\n")
+	refuse = true
+	if notes := dev(); strings.Contains(notes, "applied") || !strings.Contains(notes, "the config changed since session 0123abcd started (egress)") {
+		t.Errorf("refused: %q, want egress left to a restart", notes)
 	}
 }
 

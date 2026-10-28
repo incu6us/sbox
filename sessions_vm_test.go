@@ -1106,3 +1106,76 @@ func TestDevMCPHealthOnVM(t *testing.T) {
 	}
 	t.Logf("session with the check: %v", time.Since(began).Round(time.Second))
 }
+
+// TestDevLiveNetworkOnVM: egress, ports and services changed under a
+// running session apply on reattach, the session and its processes kept;
+// the relays reconfigure started outlive it and go when the session does.
+func TestDevLiveNetworkOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	service, port := echoServer(t), freePort(t)
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	var kept string
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	host := devHost{stateDir: state, keep: func(id string, _ int) bool { kept = id; return true }}
+	dev := func(script string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+	page := func() string {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/index.html", port))
+		if err != nil {
+			return ""
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+	writeTestFile(t, filepath.Join(dir, "index.html"), "served live\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com]\n")
+	dev(fmt.Sprintf("nohup python3 -m http.server %d >/dev/null 2>&1 & sleep 1", port))
+	first := kept
+
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), fmt.Sprintf("egress: [api.anthropic.com, example.com]\nports: [%d]\nservices: [%d]\n", port, service))
+	script := fmt.Sprintf(`curl -s -o /dev/null -w '%%{http_code}\n' https://example.com; python3 -c 'import socket; s = socket.create_connection(("host.sbox", %d), timeout=5); s.sendall(b"ping\n"); print(s.recv(100).decode().strip())'`, service)
+	out, notes := dev(script)
+	if kept != first || out != "200\nping\n" || !strings.Contains(notes, "applied egress, ports, services to session "+first) {
+		t.Errorf("reattach: session %s (was %s), %q, notes %q; want example.com and the service reached from the same session", kept, first, out, notes)
+	}
+	var got string
+	for i := 0; i < 40 && got == ""; i++ { // Lima notices the port within seconds
+		got = page()
+		time.Sleep(500 * time.Millisecond)
+	}
+	if got != "served live\n" {
+		t.Errorf("the guest's server on the Mac's localhost:%d after the change: %q", port, got)
+	}
+
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [api.anthropic.com]\n")
+	if _, notes := dev("true"); !strings.Contains(notes, "applied egress, ports, services") {
+		t.Errorf("taking them back: %q", notes)
+	}
+	if got := page(); got != "" {
+		t.Errorf("the port still answers after it left the config: %q", got)
+	}
+
+	if code := sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun); code != exitOK {
+		t.Fatalf("stop: exit %d", code)
+	}
+	var left bytes.Buffer
+	_ = limactl(ctx, &left, "shell", "--workdir", "/", "sbox", "sh", "-c", "pgrep -af '[r]uns/"+kept+"/' || true")
+	if strings.TrimSpace(left.String()) != "" {
+		t.Errorf("helpers left after stop:\n%s", left.String())
+	}
+}

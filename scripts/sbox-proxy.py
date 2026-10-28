@@ -4,7 +4,8 @@
 serve: an HTTPS CONNECT proxy on a unix socket, in the VM's main network
        namespace. It tunnels only to the hosts given, or by default the
        package registries, on the ports given (no TLS interception), and logs
-       every request as "ALLOW host:port" or "DENY host:port".
+       every request as "ALLOW host:port" or "DENY host:port". With --rules,
+       the hosts come from a file, one per line, read again when it changes.
 relay: inside a run's network namespace, forwards TCP connections on
        <address>:<port> to that unix socket. Unix sockets live on the
        filesystem, so the run's namespace still has no route out.
@@ -13,7 +14,7 @@ expose: the other half: listens on a unix socket and connects each client
        relay and an expose joined by a socket, one in the run's namespace
        and one outside it.
 
-Usage: sbox-proxy.py serve <socket> <log file> [host:port ...]
+Usage: sbox-proxy.py serve <socket> <log file> [host:port ... | --rules <file>]
        sbox-proxy.py relay <address> <port> <socket>
        sbox-proxy.py expose <socket> <host> <port>
 """
@@ -29,6 +30,7 @@ ALLOWED = [
     ("pypi.org", 443),
     ("files.pythonhosted.org", 443),
 ]
+SOURCE = None  # a RulesFile, with --rules
 MAX_HEADER = 8192
 MAX_LOGGED = 10000
 _log_lock = threading.Lock()
@@ -97,7 +99,7 @@ def handle(client, log_file):
         client.close()
         return
     name = "%s:%d" % target
-    if not allowed(ALLOWED, *target):
+    if not allowed(SOURCE.rules() if SOURCE else ALLOWED, *target):
         log(log_file, "DENY", name)
         client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
         client.close()
@@ -132,6 +134,28 @@ def parse_allowlist(entries):
         elif port.isdigit():
             rules.append((host, int(port)))
     return rules
+
+
+class RulesFile:
+    """An allowlist file, parsed again whenever it is replaced or changed;
+    while it can't be read, the last rules hold."""
+
+    def __init__(self, path):
+        self.path, self.key, self.cached = path, None, []
+        self.lock = threading.Lock()
+
+    def rules(self):
+        with self.lock:
+            try:
+                st = os.stat(self.path)
+                key = (st.st_ino, st.st_mtime_ns, st.st_size)
+                if key != self.key:
+                    with open(self.path) as f:
+                        self.cached = parse_allowlist(f.read().split())
+                    self.key = key
+            except OSError:
+                pass
+            return self.cached
 
 
 def allowed(rules, host, port):
@@ -205,6 +229,22 @@ def selftest():
     assert not allowed(rules, "evilgithub.com", 443) and not allowed(rules, "api.github.com", 80)
     assert allowed(rules, "github.com", 22) and allowed(rules, "github.com", 443)
     assert not allowed(rules, "api.anthropic.com", 80)
+    # --rules: the file is read again when it changes, so a session's
+    # egress can change without dropping the tunnels already open.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "rules")
+        with open(path, "w") as f:
+            f.write("api.anthropic.com:443\n")
+        source = RulesFile(path)
+        assert source.rules() == [("api.anthropic.com", 443)]
+        with open(path + ".new", "w") as f:
+            f.write("api.anthropic.com:443\n*.github.com:443\n")
+        os.utime(path + ".new", ns=(1, 1))
+        os.replace(path + ".new", path)
+        assert source.rules() == [("api.anthropic.com", 443), ("*.github.com", 443)], source.rules()
+        os.unlink(path)
+        assert source.rules() == [("api.anthropic.com", 443), ("*.github.com", 443)], "a missing file keeps the last rules"
     print("ok")
 
 
@@ -212,6 +252,9 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if args == ["--selftest"]:
         selftest()
+    elif len(args) == 5 and args[0] == "serve" and args[3] == "--rules":
+        SOURCE = RulesFile(args[4])
+        serve(args[1], args[2])
     elif len(args) >= 3 and args[0] == "serve":
         if len(args) > 3:
             ALLOWED = parse_allowlist(args[3:])
