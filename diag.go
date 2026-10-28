@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -269,6 +270,9 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 			s, shown := set.servers[name], printable(name)
 			if s.URL == "" {
 				servers = append(servers, fmt.Sprintf("%s (in the guest%s)", shown, set.from))
+				if line := fetcherBlocked(cfg.Egress, shown, s.Command); line != "" {
+					blocked = append(blocked, line)
+				}
 				continue
 			}
 			servers = append(servers, fmt.Sprintf("%s (remote%s)", shown, set.from))
@@ -281,6 +285,20 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 		lines = append(lines, "mcp      "+strings.Join(servers, ", "))
 	}
 	return append(lines, blocked...)
+}
+
+// _fetchers are the commands that download an MCP server when it starts,
+// with the registry hosts they need.
+var _fetchers = map[string][]string{"npx": {"registry.npmjs.org"}, "uvx": {"pypi.org", "files.pythonhosted.org"}}
+
+// fetcherBlocked is the BLOCKED line for a guest MCP server run through
+// npx or uvx when egress lacks the registry, or "".
+func fetcherBlocked(rules []string, name, command string) string {
+	hosts := _fetchers[path.Base(command)]
+	if len(hosts) == 0 || egressAllows(rules, hosts[0], 443) {
+		return ""
+	}
+	return fmt.Sprintf("BLOCKED mcp     %s  %s fetches the server: %s isn't in egress → egress: [%s]", name, path.Base(command), hosts[0], strings.Join(hosts, ", "))
 }
 
 // remoteBlocked is the BLOCKED line for a remote MCP server the guest
@@ -529,34 +547,35 @@ func toolDenials(ctx context.Context, vm sboxRunFunc, id string, since time.Time
 	return denialLines(out.String())
 }
 
-// _mcpCheck starts Claude Code's health check of its MCP servers at boot,
-// detached: it gives each server 30 s, too long to hold the terminal. Its
-// output lands in ~/.sbox/mcp-health, which _mcpHealth reads back.
-const (
-	_mcpCheck  = `mkdir -p ~/.sbox && rm -f ~/.sbox/mcp-health && cd ~/work && CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 nohup sh -c 'timeout 180 claude mcp list >~/.sbox/mcp-health.part 2>&1; mv ~/.sbox/mcp-health.part ~/.sbox/mcp-health' </dev/null >/dev/null 2>&1 &`
-	_mcpHealth = `head -n 200 ~/.sbox/mcp-health 2>/dev/null`
-)
+// _mcpWhich prints each of its arguments the guest has no command for, in
+// a login shell so ~/.local/bin counts.
+const _mcpWhich = `for c; do command -v "$c" >/dev/null 2>&1 || echo "$c"; done`
 
-var _mcpFailed = regexp.MustCompile(`^([A-Za-z0-9_-]+): .* - ✘ (?:Failed to connect — )?(.*)$`)
-
-// mcpLines turns claude mcp list's output (the runner's, so data) into a
-// BLOCKED line per server that failed; connected ones and those waiting
-// for approval say nothing.
-func mcpLines(out string) []string {
+// mcpMissing asks session id for the commands of the guest's MCP servers
+// and returns a BLOCKED line per server whose command isn't there. Running
+// the servers instead (claude mcp list) takes 30 s a server and slows the
+// first claude to start beside it.
+func mcpMissing(ctx context.Context, vm sboxRunFunc, id string, servers map[string]mcpServer) []string {
+	var cmds []string
+	for _, s := range servers {
+		if s.URL == "" && s.Command != "" && !slices.Contains(cmds, s.Command) {
+			cmds = append(cmds, s.Command)
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	slices.Sort(cmds)
+	var out bytes.Buffer
+	_ = vm(ctx, strings.NewReader(""), &out, io.Discard, append([]string{"attach", id, "--", "bash", "-lc", _mcpWhich, "sh"}, cmds...)...)
+	missing := strings.Split(out.String(), "\n")
 	var lines []string
-	for _, line := range strings.Split(out, "\n") {
-		if m := _mcpFailed.FindStringSubmatch(line); m != nil {
-			lines = append(lines, fmt.Sprintf("BLOCKED mcp     %s  could not start: %s", m[1], printable(m[2])))
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		if c := servers[name].Command; servers[name].URL == "" && slices.Contains(missing, c) {
+			lines = append(lines, fmt.Sprintf("BLOCKED mcp     %s  could not start: %s isn't in the guest → image.packages, or install it into ~/.local", printable(name), printable(c)))
 		}
 	}
 	return lines
-}
-
-// mcpFailures reads session id's MCP health check: nothing until it ends.
-func mcpFailures(ctx context.Context, vm sboxRunFunc, id string) []string {
-	var out bytes.Buffer
-	_ = vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", _mcpHealth)
-	return mcpLines(out.String())
 }
 
 // traceCommand wraps a terminal's command (a login shell when empty) in

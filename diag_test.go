@@ -103,17 +103,19 @@ func TestDevPreflight(t *testing.T) {
 		"docs":   {URL: "https://mcp.example.com/mcp"},
 		"legacy": {URL: "http://old.github.com/mcp"},
 	}
-	project := map[string]mcpServer{"local": {Command: "node"}, "far": {URL: "https://far.example:8443/sse"}}
+	project := map[string]mcpServer{"local": {Command: "node"}, "far": {URL: "https://far.example:8443/sse"}, "py": {Command: "uvx"}}
 	got := devPreflight(cfg, map[string]string{"GITHUB_TOKEN": "x", "CLAUDE_CODE_OAUTH_TOKEN": "y"}, project)
 	want := []string{
 		"egress   *.github.com:443, api.anthropic.com:443",
 		"ports    3000 → the Mac's localhost:3000",
 		"services host.sbox:5432 → the Mac's localhost:5432",
 		"secrets  CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN",
-		"mcp      docs (remote), gh (remote), legacy (remote), pg (in the guest), far (remote, .mcp.json), local (in the guest, .mcp.json)",
+		"mcp      docs (remote), gh (remote), legacy (remote), pg (in the guest), far (remote, .mcp.json), local (in the guest, .mcp.json), py (in the guest, .mcp.json)",
 		"BLOCKED mcp     docs  host mcp.example.com:443 not in egress → egress: [mcp.example.com]",
 		"BLOCKED mcp     legacy  plain http: the proxy only tunnels HTTPS",
+		"BLOCKED mcp     pg  npx fetches the server: registry.npmjs.org isn't in egress → egress: [registry.npmjs.org]",
 		"BLOCKED mcp     far  host far.example:8443 not in egress → egress: [far.example:8443]",
+		"BLOCKED mcp     py  uvx fetches the server: pypi.org isn't in egress → egress: [pypi.org, files.pythonhosted.org]",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("devPreflight =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -358,24 +360,5 @@ func TestDevTrace(t *testing.T) {
 	}
 	if slices.ContainsFunc(got, func(l string) bool { return strings.Contains(l, "/home/runner/x") }) {
 		t.Errorf("a refused write in the home is the runner's own business, not the sandbox's:\n%s", strings.Join(got, "\n"))
-	}
-}
-
-func TestMCPLines(t *testing.T) {
-	t.Parallel()
-	out := "Checking MCP server health…\n\n" +
-		"broken: does-not-exist-sbox  - ✘ Failed to connect — ENOENT: Executable not found in $PATH: \"does-not-exist-sbox\"\n" +
-		"hang: node -e process.stdin.on('data',()=>{}) - ✘ Failed to connect — MCP server \"hang\" connection timed out after 30000ms\n" +
-		"pg: npx -y pg - ✓ Connected\n" +
-		"docs: https://mcp.example.com/mcp (HTTP) - ⏸ Pending approval (run `claude` to approve)\n" +
-		"bad name!: x - ✘ Failed to connect — y\n" +
-		"esc: x - ✘ Failed to connect — \x1b[2J\n"
-	want := []string{
-		`BLOCKED mcp     broken  could not start: ENOENT: Executable not found in $PATH: "does-not-exist-sbox"`,
-		`BLOCKED mcp     hang  could not start: MCP server "hang" connection timed out after 30000ms`,
-		`BLOCKED mcp     esc  could not start: \x1b[2J`,
-	}
-	if got := mcpLines(out); !slices.Equal(got, want) {
-		t.Errorf("mcpLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

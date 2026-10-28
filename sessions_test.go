@@ -1204,10 +1204,9 @@ func TestDevMainTrace(t *testing.T) {
 	}
 }
 
-// TestDevMainMCPHealth: with MCP servers, a fresh boot starts Claude
-// Code's health check in the background, and the summary names the
-// servers that failed; without any, neither happens.
-func TestDevMainMCPHealth(t *testing.T) {
+// TestDevMainMCPCommands: at a fresh boot, a guest MCP server whose
+// command the guest lacks is named before the terminal opens.
+func TestDevMainMCPCommands(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, yaml string) (*fakeVM, string) {
 		dir := t.TempDir()
@@ -1216,8 +1215,8 @@ func TestDevMainMCPHealth(t *testing.T) {
 			switch {
 			case args[0] == "start":
 				return "READY " + args[1] + "\n"
-			case args[0] == "attach" && slices.Contains(args, _mcpHealth):
-				return "broken: nope  - ✘ Failed to connect — ENOENT: Executable not found in $PATH: \"nope\"\n"
+			case args[0] == "attach" && slices.Contains(args, _mcpWhich):
+				return "pg-mcp\n"
 			}
 			return ""
 		}}
@@ -1227,14 +1226,13 @@ func TestDevMainMCPHealth(t *testing.T) {
 		}
 		return vm, stderr.String()
 	}
-	called := func(vm *fakeVM, script string) bool {
-		return slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, script) })
+	vm, notes := run(t, "mcp: {servers: {pg: {command: pg-mcp}, fs: {command: node}, docs: {url: \"https://mcp.example.com\"}}}\n")
+	i := slices.IndexFunc(vm.calls, func(c []string) bool { return slices.Contains(c, _mcpWhich) })
+	if i < 0 || !slices.Equal(vm.calls[i][len(vm.calls[i])-2:], []string{"node", "pg-mcp"}) ||
+		!strings.Contains(notes, "BLOCKED mcp     pg  could not start: pg-mcp isn't in the guest → image.packages, or install it into ~/.local") {
+		t.Errorf("calls %q, notes:\n%s\nwant the guest asked about node and pg-mcp, and pg named", vm.calls, notes)
 	}
-	vm, notes := run(t, "mcp: {servers: {broken: {command: nope}}}\n")
-	if !called(vm, _mcpCheck) || !strings.Contains(notes, `BLOCKED mcp     broken  could not start: ENOENT: Executable not found in $PATH: "nope"`) {
-		t.Errorf("calls %q, notes:\n%s\nwant the check started and the failure in the summary", vm.calls, notes)
-	}
-	if vm, _ := run(t, "ports: [3000]\n"); called(vm, _mcpCheck) || called(vm, _mcpHealth) {
-		t.Errorf("no servers, calls %q: want no health check", vm.calls)
+	if vm, _ := run(t, "mcp: {servers: {docs: {url: \"https://mcp.example.com\"}}}\n"); slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, _mcpWhich) }) {
+		t.Errorf("remote servers only, calls %q: want no guest check", vm.calls)
 	}
 }
