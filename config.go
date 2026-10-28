@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,24 +23,79 @@ import (
 // project's (sbox.yaml in its folder). Lists append; a key sbox doesn't
 // know is an error. Keys arrive with the steps that need them.
 type config struct {
-	Ports    []int    `yaml:"ports"`    // guest ports forwarded to the Mac's localhost
-	Services []int    `yaml:"services"` // Mac ports the guest reaches at host.sbox
-	Egress   []string `yaml:"egress"`   // hosts the guest may reach: name or *.domain, :port or :* (443 when left out)
+	Ports    []int    `yaml:"ports,omitempty"`    // guest ports forwarded to the Mac's localhost
+	Services []int    `yaml:"services,omitempty"` // Mac ports the guest reaches at host.sbox
+	Egress   []string `yaml:"egress,omitempty"`   // hosts the guest may reach: name or *.domain, :port or :* (443 when left out)
 	Image    struct {
-		Packages []string `yaml:"packages"` // Ubuntu packages added to the guest image by sbox setup
-	} `yaml:"image"`
+		Packages []string `yaml:"packages,omitempty"` // Ubuntu packages added to the guest image by sbox setup
+	} `yaml:"image,omitempty"`
 	Dev struct {
-		Env   map[string]string `yaml:"env"`   // variables in every login: hooks, terminals, the agent
-		Setup []string          `yaml:"setup"` // steps run once per home, and again when the list changes
-		Start []string          `yaml:"start"` // steps run at every fresh boot; a trailing & runs one in the background
-	} `yaml:"dev"`
-	Secrets  map[string]string `yaml:"secrets"` // guest variable → env:HOST_VARIABLE, read when a session starts
+		Env         map[string]string `yaml:"env,omitempty"`         // variables in every login: hooks, terminals, the agent
+		Setup       []string          `yaml:"setup,omitempty"`       // steps run once per home, and again when the list changes
+		Start       []string          `yaml:"start,omitempty"`       // steps run at every fresh boot; a trailing & runs one in the background
+		Command     string            `yaml:"command,omitempty"`     // run by sbox dev when no command is given; a login shell when unset
+		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
+		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
+		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
+	} `yaml:"dev,omitempty"`
+	Secrets map[string]string `yaml:"secrets,omitempty"` // guest variable → env:HOST_VARIABLE, read when a session starts
+	// Claude Code's own rules in the guest, written to ~/.claude/settings.json.
+	Permissions struct {
+		Allow []string `yaml:"allow,omitempty"`
+		Deny  []string `yaml:"deny,omitempty"`
+	} `yaml:"permissions,omitempty"`
+	MCP struct {
+		Servers map[string]mcpServer `yaml:"servers,omitempty"` // merged into the guest's ~/.claude.json
+		Allow   []string             `yaml:"allow,omitempty"`
+		Deny    []string             `yaml:"deny,omitempty"`
+	} `yaml:"mcp,omitempty"`
 	Timeouts struct {
-		Setup time.Duration `yaml:"setup"` // each dev.setup and dev.start step; 10m when unset
-	} `yaml:"timeouts"`
+		Setup time.Duration `yaml:"setup,omitempty"` // each dev.setup and dev.start step; 10m when unset
+	} `yaml:"timeouts,omitempty"`
 }
 
-var _envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// mcpServer is an MCP server for Claude Code in the guest: a command it
+// starts there, or a remote URL (whose host must be in egress).
+type mcpServer struct {
+	Command string            `yaml:"command,omitempty" json:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
+	Type    string            `yaml:"-" json:"type,omitempty"`
+}
+
+var (
+	_envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	_serverName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+// devCommand is what sbox dev runs when given no command: "" for a login
+// shell.
+func (c config) devCommand() string { return c.Dev.Command }
+
+// claudeSettings is what scripts/sbox-claude.py merges into the runner's
+// Claude Code files: the permission rules and mode, and the MCP servers.
+func (c config) claudeSettings() []byte {
+	perms := map[string]any{
+		"allow":       append(slices.Clone(c.Permissions.Allow), c.MCP.Allow...),
+		"deny":        append(slices.Clone(c.Permissions.Deny), c.MCP.Deny...),
+		"defaultMode": "default",
+	}
+	settings := map[string]any{"permissions": perms}
+	if c.Dev.Permissions != "ask" {
+		perms["defaultMode"] = "bypassPermissions"
+		settings["skipDangerousModePermissionPrompt"] = true
+	}
+	servers := make(map[string]mcpServer, len(c.MCP.Servers))
+	for name, s := range c.MCP.Servers {
+		if s.URL != "" {
+			s.Type = "http"
+		}
+		servers[name] = s
+	}
+	data, _ := json.Marshal(map[string]any{"settings": settings, "mcpServers": servers}) // maps of strings: never fails
+	return data
+}
 
 // secretValues reads each secret's host variable through lookup. A
 // missing one is an error, as is a value that can't be one line of the
@@ -109,6 +165,26 @@ func loadConfig(userFile, projectFile string) (config, error) {
 			cfg.Secrets = make(map[string]string)
 		}
 		maps.Copy(cfg.Secrets, c.Secrets)
+		if len(c.MCP.Servers) > 0 && cfg.MCP.Servers == nil {
+			cfg.MCP.Servers = make(map[string]mcpServer)
+		}
+		maps.Copy(cfg.MCP.Servers, c.MCP.Servers)
+		cfg.Permissions.Allow = append(cfg.Permissions.Allow, c.Permissions.Allow...)
+		cfg.Permissions.Deny = append(cfg.Permissions.Deny, c.Permissions.Deny...)
+		cfg.MCP.Allow = append(cfg.MCP.Allow, c.MCP.Allow...)
+		cfg.MCP.Deny = append(cfg.MCP.Deny, c.MCP.Deny...)
+		if c.Dev.Command != "" {
+			cfg.Dev.Command = c.Dev.Command
+		}
+		if c.Dev.Permissions != "" {
+			cfg.Dev.Permissions = c.Dev.Permissions
+		}
+		if c.Dev.VCPUs != 0 {
+			cfg.Dev.VCPUs = c.Dev.VCPUs
+		}
+		if c.Dev.MemoryMiB != 0 {
+			cfg.Dev.MemoryMiB = c.Dev.MemoryMiB
+		}
 		if c.Timeouts.Setup != 0 {
 			cfg.Timeouts.Setup = c.Timeouts.Setup
 		}
@@ -191,6 +267,36 @@ func (c *config) check() error {
 		if slices.Contains(steps, "") {
 			return errors.New("dev: a setup or start step is empty")
 		}
+	}
+	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {
+		return fmt.Errorf("dev.permissions: %q: want skip or ask", p)
+	}
+	for _, rules := range [][]string{c.Permissions.Allow, c.Permissions.Deny, c.MCP.Allow, c.MCP.Deny} {
+		if slices.Contains(rules, "") {
+			return errors.New("permissions: a rule is empty")
+		}
+	}
+	for name, s := range c.MCP.Servers {
+		if !_serverName.MatchString(name) {
+			return fmt.Errorf("mcp.servers: %q: want letters, digits, - and _", name)
+		}
+		if (s.Command == "") == (s.URL == "") {
+			return fmt.Errorf("mcp.servers.%s: want a command or a url, not both", name)
+		}
+		if s.URL != "" && !strings.HasPrefix(s.URL, "https://") && !strings.HasPrefix(s.URL, "http://") {
+			return fmt.Errorf("mcp.servers.%s: url: want http:// or https://", name)
+		}
+		for k, v := range s.Env {
+			if strings.HasPrefix(v, "env:") {
+				return fmt.Errorf("mcp.servers.%s: env: %s: put host variables under secrets; the server inherits them", name, k)
+			}
+		}
+	}
+	if c.Dev.VCPUs < 0 || c.Dev.VCPUs > 32 {
+		return fmt.Errorf("dev.vcpus: %d: want 1 to 32", c.Dev.VCPUs)
+	}
+	if c.Dev.MemoryMiB != 0 && (c.Dev.MemoryMiB < 256 || c.Dev.MemoryMiB > 65536) {
+		return fmt.Errorf("dev.memory_mib: %d: want 256 to 65536", c.Dev.MemoryMiB)
 	}
 	if c.Timeouts.Setup < 0 {
 		return fmt.Errorf("timeouts.setup: %v: want a positive duration", c.Timeouts.Setup)

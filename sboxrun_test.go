@@ -740,3 +740,32 @@ func TestSboxRunEgressPatternsAndRawTCP(t *testing.T) {
 		}
 	}
 }
+
+func TestSboxRunSizesTheMicroVM(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		job  guestJob
+		want string
+	}{
+		{"default", guestJob{command: []string{"true"}}, `"vcpu_count": 2, "mem_size_mib": 1024`},
+		{"from the job", guestJob{command: []string{"true"}, vcpus: 4, memoryMiB: 4096}, `"vcpu_count": 4, "mem_size_mib": 4096`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newSboxRunEnv(t)
+			vmJSON := filepath.Join(t.TempDir(), "vm.json")
+			e.extra = []string{"SBOX_SESSION=1", "FAKE_VMJSON=" + vmJSON}
+			var tarball bytes.Buffer
+			if err := writeRunTar(&tarball, t.TempDir(), tt.job, "n0nce", "c0ffee"); err != nil {
+				t.Fatal(err)
+			}
+			if stdout, stderr, code := e.run(tarball.Bytes(), "0123456789abcdef", "0"); code != 0 {
+				t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+			}
+			if cfg, _ := os.ReadFile(vmJSON); !strings.Contains(string(cfg), tt.want) {
+				t.Errorf("vm.json lacks %s:\n%s", tt.want, cfg)
+			}
+		})
+	}
+}

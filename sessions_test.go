@@ -785,3 +785,30 @@ func TestDevMainSecrets(t *testing.T) {
 		t.Errorf("unset host variable: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
 	}
 }
+
+func TestDevMainAgentSettings(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {command: claude --continue}\npermissions: {deny: [WebFetch]}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	id := vm.calls[1][1]
+	if !slices.Equal(vm.calls[2], []string{"attach", id, "--", "bash", "-lc", "claude --continue"}) {
+		t.Errorf("attach %q, want dev.command in a login shell", vm.calls[2])
+	}
+	cfg, _ := loadConfig("", filepath.Join(dir, "sbox.yaml"))
+	files := tarFiles(t, vm.stdins[1])
+	if files["sbox/claude.json"] != string(cfg.claudeSettings()) || files["sbox/claude.py"] != _claudeScript {
+		t.Errorf("run tar: claude.json %q, claude.py %d bytes; want the settings and the helper", files["sbox/claude.json"], len(files["sbox/claude.py"]))
+	}
+}

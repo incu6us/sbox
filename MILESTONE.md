@@ -463,6 +463,25 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     (`sbox: setup: npm ci`), and background output is in
     `~/.sbox/start.log`.
 
+- ✅ Step 6: secrets and the agent's config. `secrets` (`env:` references
+  only) read from the Mac before any VM call, root-only on the drive, and
+  in tmpfs in the guest. `dev.command` and `dev.permissions` (skip: Claude
+  Code's `bypassPermissions` mode and its first-run prompt skipped, from
+  user settings, where the docs say it counts), `permissions` and `mcp`
+  (stdio servers run in the guest; remote ones as `type: http`), merged by
+  `scripts/sbox-claude.py` as the runner, keeping Claude Code's own state.
+  `dev.vcpus` and `dev.memory_mib` size the session's microVM. `sbox init`
+  writes a starter file, `sbox config` prints the effective one with each
+  secret set or unset on this Mac.
+  - Verified on the real VM: a secret wins over `dev.env` and is nowhere
+    in the home; `claude mcp list` shows both configured servers; a key
+    Claude Code wrote survives the next session; 4 vCPUs and about 2 GiB.
+  - Not done: the "could not start" check for `.mcp.json` servers (step
+    7's diagnostics), `dev.pause_after`, `dev.ignore`, `-config` and
+    `-command`. MCP `env` takes literal values; host values go under
+    `secrets`, which the server inherits, so they never reach
+    `~/.claude.json` on the kept home.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

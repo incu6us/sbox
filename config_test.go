@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"maps"
 	"os"
 	"path/filepath"
@@ -224,6 +225,100 @@ func TestLoadConfigSecrets(t *testing.T) {
 			_, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body))
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || (tt.notInErr != "" && strings.Contains(err.Error(), tt.notInErr)) {
 				t.Errorf("err = %v, want one naming %q and not showing %q", err, tt.wantErr, tt.notInErr)
+			}
+		})
+	}
+}
+
+func TestLoadConfigDevSize(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(write(t, "dev: {vcpus: 2, memory_mib: 2048}\n"), write(t, "dev: {vcpus: 4}\n"))
+	if err != nil || cfg.Dev.VCPUs != 4 || cfg.Dev.MemoryMiB != 2048 {
+		t.Errorf("dev size = %d vCPUs, %d MiB, %v; want the project's vcpus and the user's memory", cfg.Dev.VCPUs, cfg.Dev.MemoryMiB, err)
+	}
+	if job := devJob(cfg, nil); job.vcpus != 4 || job.memoryMiB != 2048 {
+		t.Errorf("devJob size = %d, %d; want the config's", job.vcpus, job.memoryMiB)
+	}
+	for _, body := range []string{"dev: {vcpus: 64}\n", "dev: {vcpus: -1}\n", "dev: {memory_mib: 64}\n", "dev: {memory_mib: 1000000}\n"} {
+		if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, body)); err == nil || !strings.Contains(err.Error(), "dev.") {
+			t.Errorf("%q: err %v, want a refusal naming the key", body, err)
+		}
+	}
+}
+
+func TestLoadConfigAgent(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := write(t, `dev: {command: claude}
+permissions: {deny: ["Bash(rm -rf *)"]}
+mcp:
+  servers:
+    docs: {url: "https://mcp.example.com/mcp"}
+`)
+	project := write(t, `permissions: {allow: ["Bash(npm run *)"], deny: [WebFetch]}
+mcp:
+  servers:
+    pg: {command: npx, args: ["-y", "@modelcontextprotocol/server-postgres"], env: {PGHOST: host.sbox}}
+  allow: ["mcp__pg__query"]
+  deny: ["mcp__pg__execute"]
+`)
+	cfg, err := loadConfig(user, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(cfg.claudeSettings(), &want); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(want)
+	expect := `{"mcpServers":{"docs":{"type":"http","url":"https://mcp.example.com/mcp"},` +
+		`"pg":{"args":["-y","@modelcontextprotocol/server-postgres"],"command":"npx","env":{"PGHOST":"host.sbox"}}},` +
+		`"settings":{"permissions":{"allow":["Bash(npm run *)","mcp__pg__query"],"defaultMode":"bypassPermissions","deny":["Bash(rm -rf *)","WebFetch","mcp__pg__execute"]},` +
+		`"skipDangerousModePermissionPrompt":true}}`
+	if string(got) != expect {
+		t.Errorf("claudeSettings =\n%s\nwant\n%s", got, expect)
+	}
+	if cfg.devCommand() != "claude" {
+		t.Errorf("devCommand = %q, want claude", cfg.devCommand())
+	}
+
+	ask, err := loadConfig(write(t, "dev: {permissions: ask}\n"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(ask.claudeSettings()); !strings.Contains(s, `"defaultMode":"default"`) || strings.Contains(s, "skipDangerous") {
+		t.Errorf("permissions ask: %s, want the default mode and no prompt skipping", s)
+	}
+	if ask.devCommand() != "" {
+		t.Errorf("devCommand unset = %q, want empty (a login shell)", ask.devCommand())
+	}
+
+	for _, tt := range []struct{ name, body, wantErr string }{
+		{"permissions neither", "dev: {permissions: maybe}\n", "dev.permissions"},
+		{"server with both", "mcp: {servers: {x: {command: a, url: \"https://a\"}}}\n", "mcp.servers.x"},
+		{"server with neither", "mcp: {servers: {x: {args: [a]}}}\n", "mcp.servers.x"},
+		{"server url not http", "mcp: {servers: {x: {url: \"file:///etc/passwd\"}}}\n", "mcp.servers.x"},
+		{"server env from the host", "mcp: {servers: {x: {command: a, env: {T: \"env:TOKEN\"}}}}\n", "secrets"},
+		{"server name", "mcp: {servers: {\"a b\": {command: a}}}\n", "a b"},
+		{"empty rule", "permissions: {deny: [\"\"]}\n", "empty"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
 			}
 		})
 	}

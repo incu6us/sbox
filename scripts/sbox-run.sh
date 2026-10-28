@@ -363,6 +363,14 @@ boot() {
 		ln "$SBOX_WORK" "$root/work.ext4"
 		extra+=", {\"drive_id\": \"work\", \"path_on_host\": \"/work.ext4\", \"is_root_device\": false, \"is_read_only\": false}"
 	fi
+	# sbox/vm: "<vcpus> <MiB>" for the main microVM; 0 or anything else
+	# keeps the default.
+	local vcpus=2 mem=1024 v m
+	if [[ $phase == main && -s $run/drive/sbox/vm ]]; then
+		read -r v m <"$run/drive/sbox/vm"
+		[[ $v =~ ^[1-9][0-9]?$ ]] && vcpus=$v
+		[[ $m =~ ^[1-9][0-9]{2,5}$ ]] && mem=$m
+	fi
 	cat >"$root/vm.json" <<EOF
 {
   "boot-source": {
@@ -374,7 +382,7 @@ boot() {
     {"drive_id": "run", "path_on_host": "/drive.ext4", "is_root_device": false, "is_read_only": true}$extra
   ],
   "network-interfaces": [{"iface_id": "eth0", "host_dev_name": "tap0", "guest_mac": "06:00:ac:10:00:02"}],
-  "machine-config": {"vcpu_count": 2, "mem_size_mib": 1024}
+  "machine-config": {"vcpu_count": $vcpus, "mem_size_mib": $mem}
 }
 EOF
 	# Sessions are paused and resumed through Firecracker's API; one-shot

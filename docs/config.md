@@ -302,7 +302,7 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     stdlib line. Tests: a full file, an unknown key, flag override.
 - [ ] **3. Read-only mounts.** Tar packing, guest copy, cap, tests on
     `writeRunTar` output.
-- [ ] **4. Secrets.** Drive file, guest export, canary tails, header line. Tests
+- [ ] **4. Secrets.** (Partly, in dev mode: from the Mac's environment, root-only on the drive, tmpfs in the guest. Canary tails and the header line wait for scan mode.) Drive file, guest export, canary tails, header line. Tests
     on `analyze` with a secret tail.
 - [ ] **5. Read-write mounts.** `out.ext4`, the bind mounts, the fetch call, the
     diff, `-out`, `-apply` with confirmation.

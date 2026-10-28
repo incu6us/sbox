@@ -543,3 +543,58 @@ func TestDevSecretsOnVM(t *testing.T) {
 		t.Errorf("guest: %q, want the secret over dev.env, dev.env too, and the value nowhere in the home", out.String())
 	}
 }
+
+// TestDevAgentSettingsOnVM checks the Claude Code files sbox dev writes in
+// the guest (permissions, MCP servers, Claude Code's own keys kept across
+// sessions) and the session's size from the config.
+func TestDevAgentSettingsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	yaml := `dev: {vcpus: 4, memory_mib: 2048}
+permissions: {deny: [WebFetch]}
+mcp:
+  servers:
+    local: {command: "true"}
+    docs: {url: "https://mcp.example.com/mcp"}
+  deny: ["mcp__docs__*"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dev := func(script string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String()
+	}
+
+	out := dev(`nproc; awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo
+python3 -c 'import json; s = json.load(open("/home/runner/.claude/settings.json")); print(s["permissions"]["defaultMode"], s["permissions"]["deny"], s["skipDangerousModePermissionPrompt"])'
+python3 -c 'import json; p = "/home/runner/.claude.json"; d = json.load(open(p)); d["mine"] = 1; json.dump(d, open(p, "w"))'
+timeout 60 claude mcp list 2>&1`)
+	lines := strings.SplitN(out, "\n", 3)
+	if len(lines) < 3 || lines[0] != "4" {
+		t.Fatalf("guest: %q, want 4 vCPUs first", out)
+	}
+	if mib, _ := strconv.Atoi(lines[1]); mib < 1800 || mib > 2048 {
+		t.Errorf("guest memory %s MiB, want about 2048", lines[1])
+	}
+	for _, want := range []string{"bypassPermissions ['WebFetch', 'mcp__docs__*'] True", "local", "docs"} {
+		if !strings.Contains(lines[2], want) {
+			t.Errorf("guest: %q, want %q", lines[2], want)
+		}
+	}
+	if out := dev(`python3 -c 'import json; d = json.load(open("/home/runner/.claude.json")); print(d.get("mine"), sorted(d["mcpServers"]))'`); !strings.Contains(out, "1 ['docs', 'local']") {
+		t.Errorf("second session: %q, want Claude Code's own key kept and the servers there", out)
+	}
+}
