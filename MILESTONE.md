@@ -693,6 +693,13 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     and by hand: config sizes and egress, a probe scanned with and
     without rules, `-push` to a bare repository through `insteadOf`).
 
+- ✅ The items left out on purpose, built (2026-10-28): `-refetch` on `run`
+  and `scan`; the scan JSON's `target` as `{"url", "commit", "path"}`;
+  `sbox config` comments each key with the file it came from; `mode: rw`
+  mounts for `sbox run`, back with `-apply` beside the folder
+  (`TestRunRWMountOnVM`: the rw folder's change applied, a ro mount's and
+  a planted `.git` left in the guest).
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

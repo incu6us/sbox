@@ -184,6 +184,15 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
 	}
+	home, _ := os.UserHomeDir()
+	srcs, err := cfg.mountSources(home)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitInfra
+	}
+	for i, src := range srcs {
+		job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+	}
 
 	dir, name, _, err := resolveTarget(rest[0], githubFetch(ctx, *refetch))
 	if err != nil {
@@ -193,8 +202,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	if name != dir {
 		_, _ = fmt.Fprintln(stderr, "sbox: running on", name)
 	}
-	var rules ignoreRules
-	var base manifest
+	var roots []changeRoot
 	if *apply || *patchFile != "" {
 		if *apply && name != dir {
 			_, _ = fmt.Fprintln(stderr, "sbox: -apply writes into a folder of yours, not a GitHub download; -patch <file> works")
@@ -206,12 +214,28 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 				return exitInfra
 			}
 		}
-		rules = syncRules(gitignoreRules(dir))
-		if base, err = readManifest(dir, rules); err != nil {
+		// The folder, then each rw mount, as the guest will tar them.
+		abs, err := filepath.Abs(dir)
+		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
 			return exitInfra
 		}
-		job.out = pullScript(rules)
+		roots = []changeRoot{{host: abs, guest: "work"}}
+		for i, m := range cfg.Mounts {
+			if m.Mode == "rw" {
+				roots = append(roots, changeRoot{host: srcs[i], guest: strings.TrimPrefix(m.Guest, "/home/runner/")})
+			}
+		}
+		for i := range roots {
+			roots[i].rules = syncRules(gitignoreRules(roots[i].host))
+			if roots[i].base, err = readManifest(roots[i].host, roots[i].rules); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox:", err)
+				return exitInfra
+			}
+		}
+		job.out = outScript(roots)
+	} else if slices.ContainsFunc(cfg.Mounts, func(m mount) bool { return m.Mode == "rw" }) {
+		_, _ = fmt.Fprintln(stderr, "sbox: rw mounts come back with -apply; this run's changes to them stay in the guest")
 	}
 	start := time.Now()
 	res, err := runVM(ctx, dir, job, timeout, *verbose, stdout, stderr)
@@ -243,12 +267,12 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		var confirm func() bool
 		if isTerminal(os.Stdin) {
 			confirm = func() bool {
-				_, _ = fmt.Fprintf(stderr, "sbox: write these changes into %s? [y/N] ", dir)
+				_, _ = fmt.Fprint(stderr, "sbox: write these changes? [y/N] ")
 				answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 				return strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y")
 			}
 		}
-		applied, code := runChanges(ctx, sboxRun, res.id, dir, base, rules, *apply, *patchFile, confirm, stdout, stderr)
+		applied, code := runChanges(ctx, sboxRun, res.id, roots, *apply, *patchFile, confirm, stdout, stderr)
 		if code != exitOK {
 			return exitInfra
 		}

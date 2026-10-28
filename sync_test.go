@@ -742,7 +742,7 @@ func TestRunChanges(t *testing.T) {
 				return fmt.Errorf("unexpected %q", args)
 			}
 			tw := tar.NewWriter(out)
-			for p, body := range map[string]string{"./a.txt": "v2\n", "./c.txt": "new\n", "./keep.txt": "same\n"} {
+			for p, body := range map[string]string{"work/a.txt": "v2\n", "work/c.txt": "new\n", "work/keep.txt": "same\n"} {
 				_ = tw.WriteHeader(&tar.Header{Name: p, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
 				_, _ = io.WriteString(tw, body)
 			}
@@ -754,7 +754,7 @@ func TestRunChanges(t *testing.T) {
 
 	dir, base, vm := setup(t)
 	var out, errOut bytes.Buffer
-	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, "", nil, &out, &errOut); code != exitOK {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", []changeRoot{{host: dir, guest: "work", base: base, rules: syncRules(nil)}}, false, "", nil, &out, &errOut); code != exitOK {
 		t.Fatalf("show: exit %d: %s", code, errOut.String())
 	}
 	for _, want := range []string{"changed  a.txt", "added    c.txt", "deleted  b.txt", "+v2"} {
@@ -767,21 +767,82 @@ func TestRunChanges(t *testing.T) {
 	}
 
 	patch := filepath.Join(t.TempDir(), "run.patch")
-	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(read("", patch), "+++ b/c.txt") || read(dir, "a.txt") != "v1\n" {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", []changeRoot{{host: dir, guest: "work", base: base, rules: syncRules(nil)}}, false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(read("", patch), "+++ b/c.txt") || read(dir, "a.txt") != "v1\n" {
 		t.Errorf("-patch: exit %d, patch %q", code, read("", patch))
 	}
 
-	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return false }, &out, &errOut); code != exitOK || read(dir, "a.txt") != "v1\n" {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", []changeRoot{{host: dir, guest: "work", base: base, rules: syncRules(nil)}}, true, "", func() bool { return false }, &out, &errOut); code != exitOK || read(dir, "a.txt") != "v1\n" {
 		t.Errorf("-apply declined: exit %d, a.txt %q; want it untouched", code, read(dir, "a.txt"))
 	}
-	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", nil, &out, &errOut); code != exitFail || !strings.Contains(errOut.String(), "-patch") {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", []changeRoot{{host: dir, guest: "work", base: base, rules: syncRules(nil)}}, true, "", nil, &out, &errOut); code != exitFail || !strings.Contains(errOut.String(), "-patch") {
 		t.Errorf("-apply with no one to ask: exit %d, %q", code, errOut.String())
 	}
-	applied, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return true }, &out, &errOut)
+	applied, code := runChanges(context.Background(), vm, "0123abcd", []changeRoot{{host: dir, guest: "work", base: base, rules: syncRules(nil)}}, true, "", func() bool { return true }, &out, &errOut)
 	if code != exitOK || !slices.Equal(applied, []string{"a.txt", "b.txt", "c.txt"}) {
 		t.Fatalf("-apply: exit %d, applied %q: %s", code, applied, errOut.String())
 	}
 	if read(dir, "a.txt") != "v2\n" || read(dir, "c.txt") != "new\n" || read(dir, "b.txt") != "" || read(dir, "keep.txt") != "edited on the Mac meanwhile\n" || read(dir, ".git/HEAD") != "ref\n" {
 		t.Errorf("after -apply: a %q, c %q, b %q, keep %q, .git %q", read(dir, "a.txt"), read(dir, "c.txt"), read(dir, "b.txt"), read(dir, "keep.txt"), read(dir, ".git/HEAD"))
+	}
+}
+
+// TestOutScript: the guest's tar has the work folder under work/ and each
+// rw mount under its path in the home, with the ignore rules, no .git.
+func TestOutScript(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	for p, body := range map[string]string{"work/a.txt": "a", "work/node_modules/x.js": "x", "work/.git/HEAD": "ref",
+		"repo/b.txt": "b", "repo/.git/HEAD": "ref", ".gitconfig": "[user]"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(home, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(home, p), body)
+	}
+	script := outScript([]changeRoot{{guest: "work", rules: syncRules(nil)}, {guest: "repo", rules: syncRules(nil)}, {guest: ".gitconfig", rules: syncRules(nil)}})
+	if !strings.HasPrefix(script, "cd /home/runner && ") {
+		t.Fatalf("script %q: want it run from the runner's home", script)
+	}
+	cmd := exec.Command("sh", "-c", strings.Replace(script, "/home/runner", home, 1)+" | tar -tf - | sort")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); got != ".gitconfig\nrepo/b.txt\nwork/a.txt\n" {
+		t.Errorf("tar lists:\n%swant the two folders' files and the mounted file, nothing ignored", got)
+	}
+}
+
+// TestRunChangesMounts: an rw mount's changes come back to its Mac path
+// with the folder's, under one confirmation; -patch says it left them out.
+func TestRunChangesMounts(t *testing.T) {
+	t.Parallel()
+	dir, mounted := t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "a.txt"), "v1\n")
+	writeTestFile(t, filepath.Join(mounted, "notes.txt"), "old\n")
+	baseDir, _ := readManifest(dir, syncRules(nil))
+	baseMount, _ := readManifest(mounted, syncRules(nil))
+	roots := []changeRoot{{host: dir, guest: "work", base: baseDir, rules: syncRules(nil)}, {host: mounted, guest: "notes", base: baseMount, rules: syncRules(nil)}}
+	vm := func(_ context.Context, _ io.Reader, out, _ io.Writer, args ...string) error {
+		tw := tar.NewWriter(out)
+		for p, body := range map[string]string{"work/a.txt": "v2\n", "notes/notes.txt": "new\n"} {
+			_ = tw.WriteHeader(&tar.Header{Name: p, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+			_, _ = io.WriteString(tw, body)
+		}
+		return tw.Close()
+	}
+	var out, errOut bytes.Buffer
+	asked := 0
+	if _, code := runChanges(context.Background(), vm, "0123abcd", roots, true, "", func() bool { asked++; return true }, &out, &errOut); code != exitOK {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	read := func(p string) string { data, _ := os.ReadFile(p); return string(data) }
+	if asked != 1 || read(filepath.Join(dir, "a.txt")) != "v2\n" || read(filepath.Join(mounted, "notes.txt")) != "new\n" || !strings.Contains(out.String(), "in "+mounted+":") {
+		t.Errorf("asked %d times; a.txt %q, notes.txt %q; output:\n%s", asked, read(filepath.Join(dir, "a.txt")), read(filepath.Join(mounted, "notes.txt")), out.String())
+	}
+	errOut.Reset()
+	patch := filepath.Join(t.TempDir(), "p.patch")
+	writeTestFile(t, filepath.Join(mounted, "notes.txt"), "old\n")
+	if _, code := runChanges(context.Background(), vm, "0123abcd", roots, false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(errOut.String(), "rw mount") {
+		t.Errorf("-patch: exit %d, %q; want a word about the mount left out", code, errOut.String())
 	}
 }

@@ -364,7 +364,8 @@ func TestLoadConfigMounts(t *testing.T) {
 	}
 
 	for _, tt := range []struct{ name, body, wantErr string }{
-		{"rw", "mounts: [{host: /tmp/x, guest: /home/runner/x, mode: rw}]\n", "sbox sync"},
+		{"a mode that isn't ro or rw", "mounts: [{host: /tmp/x, guest: /home/runner/x, mode: rwx}]\n", "ro or rw"},
+		{"rw loads", "mounts: [{host: /tmp/x, guest: /home/runner/x, mode: rw}]\n", ""},
 		{"outside the home", "mounts: [{host: /tmp/x, guest: /etc/x}]\n", "/home/runner"},
 		{"the home itself", "mounts: [{host: /tmp/x, guest: /home/runner}]\n", "/home/runner"},
 		{"the project", "mounts: [{host: /tmp/x, guest: /home/runner/work/x}]\n", "project"},
@@ -373,7 +374,8 @@ func TestLoadConfigMounts(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			_, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body))
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
 				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
 			}
 		})

@@ -92,7 +92,7 @@ type config struct {
 type mount struct {
 	Host  string `yaml:"host"`           // absolute, or ~/...
 	Guest string `yaml:"guest"`          // under /home/runner, outside the project
-	Mode  string `yaml:"mode,omitempty"` // ro, the only mode
+	Mode  string `yaml:"mode,omitempty"` // ro (the default) or rw: sbox run -apply brings an rw mount's changes back
 }
 
 // mountSources resolves each mount's host path against home and checks
@@ -418,8 +418,8 @@ func (c *config) check() error {
 		}
 	}
 	for _, m := range c.Mounts {
-		if m.Mode != "" && m.Mode != "ro" {
-			return fmt.Errorf("mounts: %s: mode %q: mounts are copies in; the project comes back with sbox sync", m.Host, m.Mode)
+		if m.Mode != "" && m.Mode != "ro" && m.Mode != "rw" {
+			return fmt.Errorf("mounts: %s: mode %q: want ro or rw (rw comes back with sbox run -apply; sbox dev copies mounts in only)", m.Host, m.Mode)
 		}
 		if !filepath.IsAbs(m.Host) && !strings.HasPrefix(m.Host, "~/") {
 			return fmt.Errorf("mounts: host %q: want an absolute path or one starting with ~/", m.Host)

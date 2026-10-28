@@ -371,6 +371,11 @@ without `.git`, `node_modules` and the like or what the folder's
 `.gitignore` lists; files you changed on the Mac meanwhile are left alone.
 `.git` from the guest is never used.
 
+`mounts` in the config are copied in for `run` too. One with `mode: rw`
+comes back with `-apply` like the folder, shown under its own heading and
+written to its Mac path under the same confirmation; `-patch` and `-push`
+cover the folder alone.
+
 The rest comes from the config:
 
 ```yaml
