@@ -249,7 +249,7 @@ workspaces:
 
 // _allowAll is a user config whose default workspace lets a project ask
 // for anything: for tests about other things than workspaces.
-const _allowAll = "workspaces: {default: {allow: {egress: [\"*\"], services: [\"*\"], mounts: [/], rw: [/], secrets: [GH, GH_SBOX, CLAUDE_CODE_OAUTH_TOKEN]}}}\n"
+const _allowAll = "workspaces: {default: {allow: {egress: [\"*\"], services: [\"*\"], mounts: [/], rw: [/], secrets: [GH, GH_SBOX, GH_SBOX_TEST, CLAUDE_CODE_OAUTH_TOKEN]}}}\n"
 
 // allowAll writes _allowAll to a file and returns its path.
 func allowAll(t *testing.T) string {
