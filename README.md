@@ -45,7 +45,7 @@ sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <
 
 sbox init [dir]
 sbox config [-config <file>] [dir]
-sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir | GitHub URL> [-- <command> [args...]]
+sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]
 sbox setup-env [-config <file>] <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
@@ -262,6 +262,11 @@ BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]
 BLOCKED mcp     docs  host mcp.example.com:443 not in egress → egress: [mcp.example.com]
 BLOCKED tool    mcp__pg__execute ×2  denied by a permission rule (permissions.deny or mcp.deny)
 ```
+
+`sbox dev -trace` runs the terminal's command under strace and ends with
+what scan's rules make of it, as INFO lines, plus every write the
+sandbox refused (`BLOCKED write   /usr/local/lib/x  EROFS: the root is
+read-only → install into ~/.local or the project`).
 
 `sbox watch [id]` shows these as they happen, in a second terminal;
 `sbox log -blocked <id>` lists them for a running session, and

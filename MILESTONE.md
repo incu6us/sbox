@@ -593,6 +593,30 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     still has no proxy; `-restart` gives a new session with the proxy set
     and the home file still there.
 
+- ✅ The rest of dev mode's small items:
+  - `dev.ignore`: names, globs or root paths, one rule set for the copy-in,
+    the base and both sides of sync; `node_modules` and the like are no
+    longer copied in.
+  - The guest's unsynced changes, counted from its `sha256sum`s against
+    the base: in the terminal's title while attached (not on the screen,
+    which belongs to Claude Code), in the summary, and as the keep
+    question's default (keep with changes to sync, stop without).
+  - `-config <file>` on `dev`, `sync`, `setup-env` and `config`;
+    `-command <cmd>` on `dev`.
+  - Window resize, verified through a pseudo-terminal that is the attach's
+    controlling terminal.
+  - Doctor fetches a guest's page through a forwarded port (18 s in all).
+  - Live apply on reattach for `permissions`, `mcp` and `mounts`. Found
+    on the real VM: the guest has no `/dev/stdin`, so the settings helper
+    reads `-`.
+  - `dev.pause_after`: a watcher next to the microVM pauses it when no
+    TCP connection to the guest has been open that long.
+  - Claude Code's denied tool calls (`toolDenialKind` in its transcripts,
+    confirmed on 2.1) as BLOCKED lines in the summary and `sbox watch`.
+  - `sbox dev -trace`: strace on the terminal's command, scan's rules at
+    INFO, refused writes outside the home as BLOCKED lines.
+  - Verified on the real VM, one `vm`-tagged test each.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

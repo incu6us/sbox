@@ -127,7 +127,7 @@ func startSession(ctx context.Context, dir, project string, job guestJob, stderr
 			return "", false, exitFail
 		}
 	}
-	id, nonce, canary := ids[0], ids[1], ids[2]
+	id, nonce, canary := ids[0], ids[1], cmp.Or(job.canary, ids[2])
 
 	pr, pw := io.Pipe()
 	go func() { pw.CloseWithError(writeRunTar(pw, dir, job, nonce, canary)) }()
@@ -180,13 +180,14 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // says whether the session stays up; with none (no terminal to ask on) it
 // is stopped.
 func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
-	const usage = "usage: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir | GitHub URL> [-- <command> [args...]]"
+	const usage = "usage: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]"
 	flags := flag.NewFlagSet("sbox dev", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	fresh := flags.Bool("fresh", false, "")
 	restart := flags.Bool("restart", false, "")
 	flags.StringVar(&host.projectConfig, "config", "", "")
 	command := flags.String("command", "", "")
+	trace := flags.Bool("trace", false, "")
 	if flags.Parse(args) != nil {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return exitUsage
@@ -255,11 +256,16 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			_, _ = fmt.Fprintln(stderr, line)
 		}
 		started = time.Now()
+		var err error
+		if job.canary, err = randomHex(6); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox:", err)
+			return exitFail
+		}
 		var newDrive bool
 		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
 			return code
 		}
-		if err := recordBoot(host.stateDir, project, id, cfg); err != nil {
+		if err := recordBoot(host.stateDir, project, id, job.canary, cfg); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox: recording the session's config:", err)
 		}
 		if newDrive {
@@ -275,9 +281,19 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 
-	attach := append([]string{id}, args[1:]...)
-	if len(args) == 1 && cmp.Or(*command, cfg.devCommand()) != "" {
-		attach = append(attach, "--", "bash", "-lc", cmp.Or(*command, cfg.devCommand()))
+	var inner []string // the terminal's command; a login shell when empty
+	switch {
+	case len(args) > 1:
+		inner = args[2:]
+	case cmp.Or(*command, cfg.devCommand()) != "":
+		inner = []string{"bash", "-lc", cmp.Or(*command, cfg.devCommand())}
+	}
+	if *trace {
+		inner = traceCommand(inner)
+	}
+	attach := []string{id}
+	if len(inner) > 0 {
+		attach = append(attach, append([]string{"--"}, inner...)...)
 	}
 	stopWatch, watched := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -291,6 +307,13 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	<-watched
 	unsynced := guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
 	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm))
+	if *trace {
+		var out bytes.Buffer
+		_ = vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", _traceReadBack)
+		for _, line := range traceLines(out.String(), bootCanary(host.stateDir, project, id)) {
+			_, _ = fmt.Fprintln(stderr, line)
+		}
+	}
 	if host.keep != nil && host.keep(id, unsynced) {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
 		return code
@@ -458,8 +481,20 @@ func (h devHost) devConfig(dir string) (config, guestJob, error) {
 // bootRecord is the config a dev session booted with, kept on the Mac
 // next to the sync base.
 type bootRecord struct {
-	ID   string            `json:"id"`
-	Keys map[string]string `json:"keys"`
+	ID     string            `json:"id"`
+	Canary string            `json:"canary,omitempty"` // the fake credentials' marker, for -trace's rules
+	Keys   map[string]string `json:"keys"`
+}
+
+// bootCanary is session id's canary, or "" when sbox dev didn't record it
+// (the canary rules then stay quiet).
+func bootCanary(stateDir, project, id string) string {
+	var rec bootRecord
+	data, err := os.ReadFile(bootFile(stateDir, project))
+	if err != nil || json.Unmarshal(data, &rec) != nil || rec.ID != id {
+		return ""
+	}
+	return rec.Canary
 }
 
 func bootFile(stateDir, project string) string {
@@ -467,8 +502,8 @@ func bootFile(stateDir, project string) string {
 }
 
 // recordBoot remembers what session id booted with.
-func recordBoot(stateDir, project, id string, cfg config) error {
-	data, err := json.Marshal(bootRecord{ID: id, Keys: cfg.bootKeys()})
+func recordBoot(stateDir, project, id, canary string, cfg config) error {
+	data, err := json.Marshal(bootRecord{ID: id, Canary: canary, Keys: cfg.bootKeys()})
 	if err != nil {
 		return err
 	}

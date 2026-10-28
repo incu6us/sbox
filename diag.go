@@ -501,3 +501,63 @@ func toolDenials(ctx context.Context, vm sboxRunFunc, id string, since time.Time
 	}
 	return denialLines(out.String())
 }
+
+// traceCommand wraps a terminal's command (a login shell when empty) in
+// strace for sbox dev -trace: the runner traces what it starts, with
+// scan's syscalls, one file per process in the guest's tmpfs.
+func traceCommand(cmd []string) []string {
+	run := "bash -l"
+	if len(cmd) > 0 {
+		run = shellJoin(cmd)
+	}
+	return []string{"bash", "-lc", "rm -rf /tmp/sbox-trace && mkdir -p /tmp/sbox-trace && exec strace -ff -qq -s 200 -e trace=" +
+		_traced + " -o /tmp/sbox-trace/t -- " + run}
+}
+
+// _traceReadBack sends a -trace session's traces: "T <pid> <line>" for
+// what scan's rules read (the quiet paths dropped), "D <pid> <line>" for
+// every refused write, quiet or not.
+var _traceReadBack = `for f in /tmp/sbox-trace/t.*; do
+	[ -f "$f" ] || continue
+	pid=${f##*.}
+	grep -avE '` + _quietPaths + `' "$f" | sed "s/^/T $pid /"
+	grep -aE ' = -1 E(ROFS|ACCES) ' "$f" | sed "s/^/D $pid /"
+done | head -n ` + strconv.Itoa(_maxTraceLines)
+
+// traceLines turns _traceReadBack's output (written by the runner, so it
+// informs and never judges) into scan's findings at INFO and a BLOCKED
+// line per refused write outside the home.
+func traceLines(out, canary string) []string {
+	var traces processTraces
+	writes := map[string]string{} // path → errno
+	for _, line := range strings.Split(out, "\n") {
+		tag, rest, _ := strings.Cut(line, " ")
+		pidText, call, _ := strings.Cut(rest, " ")
+		pid, err := strconv.Atoi(pidText)
+		if err != nil {
+			continue
+		}
+		switch tag {
+		case "T":
+			traces.add(pid, call)
+		case "D":
+			if ev, ok := parseTrace(call); ok && ev.kind == "file" && ev.op != "read" && !strings.HasPrefix(ev.path, _home) {
+				writes[ev.path] = ev.result
+			}
+		}
+	}
+	r := entryRun{ep: entryPoint{Kind: "dev", Name: "terminal"}, ran: true}
+	attribute(&r, traces)
+	var lines []string
+	for _, f := range analyze(r, canary) {
+		lines = append(lines, fmt.Sprintf("INFO    %s  %s", f.Rule, printable(f.Detail)))
+	}
+	for _, p := range slices.Sorted(maps.Keys(writes)) {
+		cause := writes[p] + ": not the runner's"
+		if writes[p] == "EROFS" {
+			cause = "EROFS: the root is read-only → install into ~/.local or the project"
+		}
+		lines = append(lines, fmt.Sprintf("BLOCKED write   %s  %s", printable(p), cause))
+	}
+	return lines
+}

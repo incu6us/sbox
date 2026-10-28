@@ -277,3 +277,37 @@ func TestDenialScript(t *testing.T) {
 		t.Errorf("denialLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+func TestDevTrace(t *testing.T) {
+	t.Parallel()
+	wrapped := traceCommand([]string{"claude", "--continue"})
+	if len(wrapped) != 3 || wrapped[0] != "bash" || wrapped[1] != "-lc" ||
+		!strings.Contains(wrapped[2], "exec strace -ff -qq -s 200 -e trace="+_traced+" -o /tmp/sbox-trace/t -- 'claude' '--continue'") {
+		t.Errorf("traceCommand = %q", wrapped)
+	}
+	if shell := traceCommand(nil); !strings.HasSuffix(shell[2], "-- bash -l") {
+		t.Errorf("traceCommand(no command) = %q, want a login shell under strace", shell)
+	}
+
+	out := strings.Join([]string{
+		`T 12 execve("/usr/local/bin/node", ["node", "install.js"], 0x0 /* 3 vars */) = 0`,
+		`T 12 openat(AT_FDCWD, "/home/runner/.aws/credentials", O_RDONLY) = 3`,
+		`D 12 openat(AT_FDCWD, "/usr/local/lib/node_modules/x/y", O_WRONLY|O_CREAT|O_TRUNC, 0644) = -1 EROFS (Read-only file system)`,
+		`D 12 openat(AT_FDCWD, "/etc/hosts", O_WRONLY, 0644) = -1 EACCES (Permission denied)`,
+		`D 12 openat(AT_FDCWD, "/home/runner/x", O_WRONLY, 0644) = -1 EACCES (Permission denied)`,
+		`garbage`,
+	}, "\n")
+	got := traceLines(out, "c0ffee")
+	for _, want := range []string{
+		"INFO    credential-read  reads /home/runner/.aws/credentials",
+		"BLOCKED write   /usr/local/lib/node_modules/x/y  EROFS: the root is read-only → install into ~/.local or the project",
+		"BLOCKED write   /etc/hosts  EACCES: not the runner's",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("traceLines lacks %q:\n%s", want, strings.Join(got, "\n"))
+		}
+	}
+	if slices.ContainsFunc(got, func(l string) bool { return strings.Contains(l, "/home/runner/x") }) {
+		t.Errorf("a refused write in the home is the runner's own business, not the sandbox's:\n%s", strings.Join(got, "\n"))
+	}
+}

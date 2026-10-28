@@ -139,6 +139,7 @@ type guestJob struct {
 	// pauseAfter pauses a session when nothing has been connected to the
 	// guest (a terminal, a forwarded port) for this long; 0 never.
 	pauseAfter time.Duration
+	canary     string // the fake credentials' marker; a random one when empty
 }
 
 // mountCopy is one mount: a resolved Mac path and where it goes.
