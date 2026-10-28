@@ -156,15 +156,20 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
 	apply := flags.Bool("apply", false, "show what the command changed in the folder, then write it there once you confirm")
 	patchFile := flags.String("patch", "", "write what the command changed in the folder to this `file`, as a patch")
+	push := flags.Bool("push", false, "as -apply, then commit those files with -m and push the branch (its remote must be in push:)")
+	message := flags.String("m", "", "the commit message for -push")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-apply | -patch <file>] <dir | GitHub URL> -- <command> [args...]\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		return exitInfra
 	}
 	rest := flags.Args()
-	if len(rest) < 3 || rest[1] != "--" || *apply && *patchFile != "" {
+	if *push {
+		*apply = true
+	}
+	if len(rest) < 3 || rest[1] != "--" || *apply && *patchFile != "" || *push != (*message != "") {
 		flags.Usage()
 		return exitInfra
 	}
@@ -193,6 +198,12 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		if *apply && name != dir {
 			_, _ = fmt.Fprintln(stderr, "sbox: -apply writes into a folder of yours, not a GitHub download; -patch <file> works")
 			return exitInfra
+		}
+		if *push {
+			if _, err := pushTarget(dir, cfg.Push); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox:", err)
+				return exitInfra
+			}
 		}
 		rules = syncRules(gitignoreRules(dir))
 		if base, err = readManifest(dir, rules); err != nil {
@@ -236,8 +247,15 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 				return strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y")
 			}
 		}
-		if code := runChanges(ctx, sboxRun, res.id, dir, base, rules, *apply, *patchFile, confirm, stdout, stderr); code != exitOK {
+		applied, code := runChanges(ctx, sboxRun, res.id, dir, base, rules, *apply, *patchFile, confirm, stdout, stderr)
+		if code != exitOK {
 			return exitInfra
+		}
+		if *push && len(applied) > 0 {
+			if err := commitAndPush(dir, applied, *message, cfg.Push, stderr); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox:", err)
+				return exitInfra
+			}
 		}
 	}
 	return res.exitCode
