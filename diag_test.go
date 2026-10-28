@@ -31,6 +31,10 @@ DNS AAAA registry.yarnpkg.com
 DNS A registry.yarnpkg.com
 DNS A api.github.com
 DNS A x` + "\x1b[2J" + `
+REFUSED 172.16.0.1:8765
+REFUSED 192.168.31.56:80
+REFUSED 172.16.0.1:8765
+REFUSED x
 `
 
 func TestBlockedEvents(t *testing.T) {
@@ -44,6 +48,8 @@ func TestBlockedEvents(t *testing.T) {
 		"FAILED  egress  down.github.com:443 ×1  allowed, but the connection failed",
 		"BLOCKED dns     registry.yarnpkg.com (A, AAAA) ×3  not in egress → egress: [registry.yarnpkg.com]",
 		"BLOCKED dns     x\\x1b[2J (A) ×1  not in egress",
+		"BLOCKED service host.sbox:8765  not in services → services: [8765]",
+		"BLOCKED connect 192.168.31.56:80  straight to an address: the guest goes out only by name, through egress",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("blocked =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

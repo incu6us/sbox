@@ -34,7 +34,7 @@ fetch() { # name url sha256
 
 step "packages"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mmdebstrap e2fsprogs acl iproute2 >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mmdebstrap e2fsprogs acl iproute2 nftables >/dev/null
 # The jailer drops Firecracker to this user.
 id -u sbox-vm >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin sbox-vm
 mkdir -p /var/lib/sbox/runs /srv/sbox-jail

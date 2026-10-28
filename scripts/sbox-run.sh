@@ -227,6 +227,7 @@ session_events() {
 	sed 's/^/PORT /' "$state/runs/$1/drive/sbox/ports" 2>/dev/null || true
 	sed 's/^/EGRESS /' "$state/runs/$1/egress.log" 2>/dev/null || true
 	sed 's/^/DNS /' "$state/runs/$1/dns.log" 2>/dev/null || true
+	ip netns exec "sbox-$1" nft list set ip sbox refused 2>/dev/null | grep -oE '[0-9.]+ \. [0-9]+' | sed 's/ \. /:/; s/^/REFUSED /' || true
 }
 
 # redacted <id> <command...>: runs the command with the session's secrets
@@ -364,6 +365,23 @@ install -o sbox-vm -m 0600 /dev/null "$run/dns.log"
 ip netns exec "$netns" "${as_vm_user[@]}" \
 	python3 "$base/bin/sbox-dns.py" 172.16.0.1 53 "$run/dns.log" ${raw_hosts[@]+"${raw_hosts[@]}"} </dev/null >/dev/null 2>&1 &
 pids+=($!)
+
+# Refused connections: the guest's TCP attempts at anything but sbox's own
+# listeners here (DNS, the proxy relay, raw TCP and service relays) land in
+# an nft set that sbox-run events reads. It only records: the namespace has
+# no route out either way.
+listening="172.16.0.1 . 53, 172.16.0.1 . 3128"
+for entry in ${raw[@]+"${raw[@]}"}; do listening+=", 172.16.0.1 . ${entry##*:}"; done
+for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do listening+=", 172.16.0.1 . $port"; done
+in_ns nft -f - <<EOF || echo "sbox-run: refused connections won't be listed (nft failed)" >&2
+table ip sbox {
+	set refused { type ipv4_addr . inet_service; flags dynamic; size 4096; }
+	chain prerouting {
+		type filter hook prerouting priority 0;
+		iifname "tap0" tcp flags & (syn | ack) == syn ip daddr . tcp dport != { $listening } add @refused { ip daddr . tcp dport }
+	}
+}
+EOF
 
 # boot <jail id> <timeout> <phase> <deps drive mode: none|ro|rw>
 # Boots one microVM and returns the jailer's status (124/137: timed out).

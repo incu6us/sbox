@@ -39,7 +39,7 @@ type config struct {
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
-		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules and the like
+		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules, .gitignore and the like; ! takes one back
 		PauseAfter  time.Duration     `yaml:"pause_after,omitempty"` // pause the session after this long with no terminal or forwarded connection; off when unset
 	} `yaml:"dev,omitempty"`
 	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot
@@ -354,10 +354,11 @@ func (c *config) check() error {
 			return fmt.Errorf("mounts: guest %q: that's the project; sbox sync carries files there", m.Guest)
 		}
 	}
-	for _, pat := range c.Dev.Ignore {
+	for _, rule := range c.Dev.Ignore {
+		pat := strings.TrimPrefix(strings.TrimPrefix(rule, "!"), "/")
 		_, err := path.Match(pat, "")
 		if pat == "" || err != nil || path.IsAbs(pat) || path.Clean(pat) != pat || strings.HasPrefix(pat, "../") || pat == ".." {
-			return fmt.Errorf("dev.ignore: %q: want a name or glob (*.log), or a clean path from the project root (build/cache)", pat)
+			return fmt.Errorf("dev.ignore: %q: want a name or glob (*.log), or a clean path from the project root (build/cache, /dist), with ! to take one back", rule)
 		}
 	}
 	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {

@@ -560,6 +560,19 @@ writes a commented starter file and `sbox config` prints the effective one.
       root, left out of the copy-in, the base and both sides of sync;
       `node_modules`, `.venv`, `__pycache__` and `.DS_Store` are left out of
       the copy-in by default now (a Mac's `node_modules` has Mac binaries)
+    - [x] the project's root `.gitignore` joins `dev.ignore` (git's
+      trailing `/` and leading `**/` dropped, a slash before the end
+      anchoring); `!` takes a path back, `/name` anchors a name; the
+      preflight and `sbox config` name what `.gitignore` left out at the
+      root. Not read: nested `.gitignore` files, `**` mid-pattern; a
+      tracked file in an ignored folder stays out (`!folder` brings it
+      back). Found on the Next.js run: `.next` was 106 changes to sync
+    - [x] refused connections: an nft set in the session's namespace
+      records each address and port the guest tried that none of sbox's
+      relays listens on; `BLOCKED service host.sbox:<port>` (with the
+      `services` key) or `BLOCKED connect <addr>:<port>`, in the summary
+      and `sbox watch`. Found on the Postgres run: a connection to an
+      unlisted Mac port was refused without a word
     - [x] `-config <file>` (instead of the project's `sbox.yaml`, on
       `dev`, `sync`, `setup-env` and `config`, so the ignore rules agree)
       and `-command <cmd>` (instead of `dev.command`, this once)

@@ -498,6 +498,121 @@ func TestIgnoreRules(t *testing.T) {
 	}
 }
 
+// TestGitignoreInCopyAndSync: the project's .gitignore joins dev.ignore,
+// for the copy-in, the base and sync alike.
+func TestGitignoreInCopyAndSync(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	for p, body := range map[string]string{
+		".gitignore": "/.next/\n.env\n", "sbox.yaml": "dev: {ignore: [\"*.log\"]}\n", "pages/index.js": "home\n",
+		".env": "SECRET=1\n", ".next/cache/a": "built on the Mac\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, p), body)
+	}
+	project := mustProjectID(t, dir)
+	guest := &fakeSyncGuest{t: t, project: project, files: map[string]string{}, rules: syncRules([]string{"/.next", ".env", "*.log"}), newDrive: true}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if want := "left out by .gitignore: .env, .next"; !strings.Contains(stderr.String(), want) {
+		t.Errorf("preflight lacks %q:\n%s", want, stderr.String())
+	}
+	files := tarFiles(t, guest.started)
+	if files["skill/pages/index.js"] != "home\n" || files["skill/.gitignore"] == "" {
+		t.Errorf("copy-in lacks the project: %v", slices.Sorted(maps.Keys(files)))
+	}
+	for _, p := range []string{"skill/.env", "skill/.next/cache/a"} {
+		if _, ok := files[p]; ok {
+			t.Errorf("copy-in carries %s, which .gitignore lists", p)
+		}
+	}
+
+	guest.files = map[string]string{".gitignore": "/.next/\n.env\n", "sbox.yaml": "dev: {ignore: [\"*.log\"]}\n", "pages/index.js": "home\n",
+		".next/cache/b": "built in the guest\n", "dev.log": "log\n"}
+	stdout.Reset()
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK || !strings.Contains(stdout.String(), "nothing to sync") {
+		t.Errorf("sync: exit %d, output:\n%s\nwant nothing to sync: the guest's .next and log are ignored", code, stdout.String())
+	}
+}
+
+func TestGitignoreNote(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if got := gitignoreNote(dir, syncRules(nil)); got != "" {
+		t.Errorf("no .gitignore: %q, want no line", got)
+	}
+	writeTestFile(t, filepath.Join(dir, ".gitignore"), "node_modules\n*.log\n.env*\n")
+	for _, name := range []string{"a.log", "b.log", "c.log", "d.log", "e.log", ".env", ".env.example", "node_modules", "src"} {
+		writeTestFile(t, filepath.Join(dir, name), "")
+	}
+	rules := syncRules(append(gitignoreRules(dir), "!.env.example"))
+	want := `left out by .gitignore: .env, a.log, b.log, c.log, d.log and 1 more (dev.ignore: ["!.env"] copies one in)`
+	if got := gitignoreNote(dir, rules); got != want {
+		t.Errorf("gitignoreNote =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestGitignoreRules(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if got := gitignoreRules(dir); got != nil {
+		t.Errorf("no .gitignore: %q, want none", got)
+	}
+	gitignore := "# deps\n/node_modules\n/.pnp\n\n/.next/\n/out/\nbuild\n*.pem\n.env*\n!.env.example\n" +
+		"**/coverage\nlogs/**\ndocs/api/\n  \na/**/b\n[\n\\#notes\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignore), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/node_modules", "/.pnp", "/.next", "/out", "build", "*.pem", ".env*", "!.env.example",
+		"coverage", "/logs", "/docs/api", "\\#notes"}
+	if got := gitignoreRules(dir); !slices.Equal(got, want) {
+		t.Errorf("gitignoreRules =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// TestIgnoreRulesNegatedAndAnchored: a leading / ties a name to the root,
+// and a leading ! takes a path back out of the rules; the guest's find
+// prunes the same paths the Mac skips.
+func TestIgnoreRulesNegatedAndAnchored(t *testing.T) {
+	t.Parallel()
+	rules := ignoreRules{"/dist", ".env*", "!.env.example", "out/*", "!out/keep"}
+	want := map[string]bool{
+		"dist": true, "web/dist": false, ".env": true, ".env.local": true, "web/.env": true,
+		".env.example": false, "out/a.js": true, "out/keep": false, "out": false,
+	}
+	for rel, w := range want {
+		if got := rules.skip(rel); got != w {
+			t.Errorf("skip(%q) = %v, want %v", rel, got, w)
+		}
+	}
+	dir := t.TempDir()
+	for rel := range want {
+		if rel == "out" || rel == "web" {
+			continue
+		}
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("sh", "-c", "find . "+rules.findPrune()+" -prune -o -type f -print | sort")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out); got != "./.env.example\n./out/keep\n./web/dist\n" {
+		t.Errorf("find with findPrune kept:\n%swant .env.example, out/keep and web/dist", got)
+	}
+}
+
 func TestDevIgnoreInCopyAndSync(t *testing.T) {
 	t.Parallel()
 	dir, state := t.TempDir(), t.TempDir()
