@@ -131,3 +131,54 @@ func (c config) workspaceFor(dir, override, home string) (string, error) {
 	}
 	return best, nil
 }
+
+// allowsEgress reports whether an egress request (host:port, the host a
+// name or *.domain, the port a number or *) is inside one of the
+// patterns: the same entry, a wildcard over its host (*.a.com covers
+// x.a.com and *.b.a.com, not a.com), a * port over any port, or *.
+func allowsEgress(patterns []string, req string) bool {
+	host, port, _ := strings.Cut(req, ":")
+	for _, p := range patterns {
+		if p == "*" {
+			return true
+		}
+		ph, pp, _ := strings.Cut(p, ":")
+		if pp != "*" && pp != port {
+			continue
+		}
+		if ph == host || strings.HasPrefix(ph, "*.") && strings.HasSuffix(host, ph[1:]) && len(host) > len(ph)-1 {
+			return true
+		}
+	}
+	return false
+}
+
+// allowsService reports whether port, or *, is listed.
+func allowsService(allow []string, port int) bool {
+	return slices.Contains(allow, "*") || slices.Contains(allow, strconv.Itoa(port))
+}
+
+// allowsSecret reports whether a secret's source (env:VAR) is a Mac
+// variable listed: what matters is what's read, not the guest's name.
+func allowsSecret(allow []string, ref string) bool {
+	return slices.Contains(allow, strings.TrimPrefix(ref, "env:"))
+}
+
+// allowsMount reports whether a mount's Mac path is one of the allowed
+// paths or inside one, from rw alone when the mount is rw; all of them
+// with ~ expanded and symlinks resolved.
+func allowsMount(ro, rw []string, host string, writable bool, home string) bool {
+	host = macPath(host, home)
+	lists := [][]string{rw}
+	if !writable {
+		lists = append(lists, ro)
+	}
+	for _, list := range lists {
+		for _, p := range list {
+			if under(host, macPath(p, home)) {
+				return true
+			}
+		}
+	}
+	return false
+}
