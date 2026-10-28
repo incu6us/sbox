@@ -754,7 +754,7 @@ func TestRunChanges(t *testing.T) {
 
 	dir, base, vm := setup(t)
 	var out, errOut bytes.Buffer
-	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, "", nil, &out, &errOut); code != exitOK {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, "", nil, &out, &errOut); code != exitOK {
 		t.Fatalf("show: exit %d: %s", code, errOut.String())
 	}
 	for _, want := range []string{"changed  a.txt", "added    c.txt", "deleted  b.txt", "+v2"} {
@@ -767,18 +767,19 @@ func TestRunChanges(t *testing.T) {
 	}
 
 	patch := filepath.Join(t.TempDir(), "run.patch")
-	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(read("", patch), "+++ b/c.txt") || read(dir, "a.txt") != "v1\n" {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(read("", patch), "+++ b/c.txt") || read(dir, "a.txt") != "v1\n" {
 		t.Errorf("-patch: exit %d, patch %q", code, read("", patch))
 	}
 
-	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return false }, &out, &errOut); code != exitOK || read(dir, "a.txt") != "v1\n" {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return false }, &out, &errOut); code != exitOK || read(dir, "a.txt") != "v1\n" {
 		t.Errorf("-apply declined: exit %d, a.txt %q; want it untouched", code, read(dir, "a.txt"))
 	}
-	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", nil, &out, &errOut); code != exitFail || !strings.Contains(errOut.String(), "-patch") {
+	if _, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", nil, &out, &errOut); code != exitFail || !strings.Contains(errOut.String(), "-patch") {
 		t.Errorf("-apply with no one to ask: exit %d, %q", code, errOut.String())
 	}
-	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return true }, &out, &errOut); code != exitOK {
-		t.Fatalf("-apply: exit %d: %s", code, errOut.String())
+	applied, code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return true }, &out, &errOut)
+	if code != exitOK || !slices.Equal(applied, []string{"a.txt", "b.txt", "c.txt"}) {
+		t.Fatalf("-apply: exit %d, applied %q: %s", code, applied, errOut.String())
 	}
 	if read(dir, "a.txt") != "v2\n" || read(dir, "c.txt") != "new\n" || read(dir, "b.txt") != "" || read(dir, "keep.txt") != "edited on the Mac meanwhile\n" || read(dir, ".git/HEAD") != "ref\n" {
 		t.Errorf("after -apply: a %q, c %q, b %q, keep %q, .git %q", read(dir, "a.txt"), read(dir, "c.txt"), read(dir, "b.txt"), read(dir, "keep.txt"), read(dir, ".git/HEAD"))

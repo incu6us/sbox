@@ -314,10 +314,10 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     on `analyze` with a secret tail.
 - [x] **5. Read-write mounts.** (Done for the folder `sbox run` is given, which is the case that came up: `-apply` and `-patch <file>`. The guest tars its work folder with sync's rules onto a raw drive, its byte count in the first block, so no filesystem the guest wrote is ever mounted; `sbox-run out` hands it over once; sync's plan, diffs and writes do the rest. `mode: rw` for other mounts is left until asked for. Not for dev mode: `sbox sync` covers it.) `out.ext4`, the bind mounts, the fetch call, the
     diff, `-out`, `-apply` with confirmation.
-- [ ] **6. Push.** (Not for dev mode: `.git` stays the Mac's and you push from there.) Remote check before the run; `-push` applies the returned diff
+- [x] **6. Push.** (`sbox run -push -m <message>`: the branch's upstream URL, as written in the Mac's `.git/config`, must be in `push:` before the VM starts and again before pushing; the run's files alone are committed, by your git with your credentials. Not for dev mode: `.git` stays the Mac's and you push from there.) Remote check before the run; `-push` applies the returned diff
     to the host's own repository and pushes from there. `.git` from the VM is
     never used.
-- [ ] **7.** `MILESTONE.md` entry and README section per item above.
+- [x] **7.** `MILESTONE.md` entry and README section per item above.
 
 ## Verification
 

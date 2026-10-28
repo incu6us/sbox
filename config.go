@@ -78,6 +78,7 @@ type config struct {
 		BlockOn         string            `yaml:"block_on,omitempty"`         // BLOCK from this severity; CRITICAL when unset
 		ReviewOn        string            `yaml:"review_on,omitempty"`        // REVIEW from this severity; MEDIUM when unset
 	} `yaml:"rules,omitempty"`
+	Push   []string `yaml:"push,omitempty"` // host/owner/repo sbox run -push may push the folder's branch to
 	Report struct {
 		Format    string `yaml:"format,omitempty"`     // text or json; -json wins
 		MaxListed int    `yaml:"max_listed,omitempty"` // per category; 15 when unset
@@ -125,6 +126,7 @@ type mcpServer struct {
 
 var (
 	_registryHost = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+	_pushRepo     = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+/[a-z0-9_.-]+/[a-z0-9_.-]+$`)
 	_envName      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	_serverName   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
@@ -325,6 +327,7 @@ func loadConfig(userFile, projectFile string) (config, error) {
 		cfg.Report.Format = cmp.Or(c.Report.Format, cfg.Report.Format)
 		cfg.Report.MaxListed = cmp.Or(c.Report.MaxListed, cfg.Report.MaxListed)
 		cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
+		cfg.Push = append(cfg.Push, c.Push...)
 		if c.Dev.VCPUs != 0 {
 			cfg.Dev.VCPUs = c.Dev.VCPUs
 		}
@@ -508,6 +511,12 @@ func (c *config) check() error {
 			return fmt.Errorf("rules.expected_hosts: %q: want a host name or *.domain", c.Rules.ExpectedHosts[i])
 		}
 		c.Rules.ExpectedHosts[i] = h
+	}
+	for i, r := range c.Push {
+		if r = strings.ToLower(r); !_pushRepo.MatchString(r) {
+			return fmt.Errorf("push: %q: want host/owner/repo, like github.com/org/repo", c.Push[i])
+		}
+		c.Push[i] = r
 	}
 	if f := c.Report.Format; f != "" && f != "text" && f != "json" {
 		return fmt.Errorf("report.format: %q: want text or json", f)

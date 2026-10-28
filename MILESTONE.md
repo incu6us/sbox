@@ -672,6 +672,27 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     `TestDevStateIsKeptOnVM`, `TestDevMCPCommandsOnVM`, `TestDevHooksOnVM`,
     `TestDevLiveNetworkOnVM`), the cache cleanup by unit test.
 
+- ✅ The config for `sbox run` and `sbox scan` (2026-10-28), the config
+  plan's remaining commits:
+  - Both read the user's file plus `-config`, never one from the target;
+    the behaviour flags became keys: `egress`, `timeouts.run|entry|prefetch`,
+    `vm`, `prefetch.enabled|registries`.
+  - Scan's calibration: `rules.expected_hosts|severity|credential_paths|
+    block_on|review_on`, `report.format|max_listed|fail_on`; each override
+    that changes a verdict is in the header and JSON `config.overrides`.
+  - `secrets` for both: real values after the fakes; the Mac redacts every
+    guest line (value, hex, base64) before printing or judging, and a
+    redacted secret in a lookup or a network tool's arguments is CRITICAL.
+  - `sbox run -apply`, `-patch <file>`, `-push -m`: the work folder comes
+    back as a tar on a raw drive (no guest filesystem mounted), through
+    sync's plan, diffs and writes; `-push` commits the run's files only,
+    the remote checked against `push:` before and after.
+  - Found: `sbox run` hid every output line starting with `[` (meant for
+    kernel lines); `tail | head` died of SIGPIPE on a large out drive.
+  - Verified on the real VM (`TestRunSecretsOnVM`, `TestRunApplyOnVM`,
+    and by hand: config sizes and egress, a probe scanned with and
+    without rules, `-push` to a bare repository through `insteadOf`).
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

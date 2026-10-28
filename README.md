@@ -40,7 +40,7 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-config <file>] [-v] [-apply | -patch <file>] <dir | GitHub URL> -- <command> [args...]
+sbox run [-config <file>] [-v] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]
 sbox scan [-config <file>] [-v] [-json] <dir | GitHub URL>
 
 sbox init [dir]
@@ -362,6 +362,7 @@ command, passed through exactly (quotes, spaces and `$` arrive intact).
 | `-v` | Also show kernel and Firecracker output, marked `·`. Useful when a run fails to start. |
 | `-apply` | After the command, show what it changed in the folder (sync's diffs) and write it there once you answer `y`. Needs a terminal, and a folder, not a GitHub URL. |
 | `-patch <file>` | Write what the command changed to `<file>` as a patch instead (`git apply`, `patch -p1`). |
+| `-push -m <message>` | As `-apply`, then commit just those files with the message and push the branch, with your own git and credentials. The branch's upstream must be listed under `push:` in the config (`push: [github.com/org/repo]`); that's checked before the VM starts and again before the push. |
 
 With either, the guest's copy of the folder comes back after the command,
 without `.git`, `node_modules` and the like or what the folder's

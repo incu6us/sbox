@@ -671,10 +671,10 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 // (or listed as conflicts). It shows them with diffs, writes them to
 // patchFile as a patch, or with apply writes them into dir once confirm
 // says yes; with no confirm (no terminal), -apply is refused.
-func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manifest, rules ignoreRules, apply bool, patchFile string, confirm func() bool, stdout, stderr io.Writer) int {
-	fail := func(err error) int {
+func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manifest, rules ignoreRules, apply bool, patchFile string, confirm func() bool, stdout, stderr io.Writer) (applied []string, code int) {
+	fail := func(err error) ([]string, int) {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitFail
+		return nil, exitFail
 	}
 	tmp, err := os.MkdirTemp("", "sbox-run-")
 	if err != nil {
@@ -713,22 +713,27 @@ func runChanges(ctx context.Context, vm sboxRunFunc, id, dir string, base manife
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: the command's changes are in %s\n", patchFile)
-		return exitOK
+		return nil, exitOK
 	}
 	if !writePlan(stdout, plan, host, guest, dir, pulled, true) || !apply {
-		return exitOK
+		return nil, exitOK
 	}
 	if confirm == nil {
 		return fail(errors.New("-apply asks before writing: run it in a terminal, or use -patch <file>"))
 	}
 	if !confirm() {
 		_, _ = fmt.Fprintf(stderr, "sbox: %s left as it was\n", dir)
-		return exitOK
+		return nil, exitOK
 	}
 	if err := applyPulls(dir, pulled, plan, guest); err != nil {
 		return fail(err)
 	}
-	return exitOK
+	for _, a := range plan {
+		if a.Op == opPull || a.Op == opPullDelete {
+			applied = append(applied, a.Path)
+		}
+	}
+	return applied, exitOK
 }
 
 // pushOnBoot brings the Mac's changes into a kept home when sbox dev boots

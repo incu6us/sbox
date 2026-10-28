@@ -544,3 +544,20 @@ func TestRulesAndReportKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestPushKey(t *testing.T) {
+	t.Parallel()
+	user, extra := filepath.Join(t.TempDir(), "config.yaml"), filepath.Join(t.TempDir(), "ci.yaml")
+	writeTestFile(t, user, "push: [github.com/Org/Repo]\n")
+	writeTestFile(t, extra, "push: [gitlab.example/a/b]\n")
+	cfg, err := toolConfig(user, extra)
+	if err != nil || !slices.Equal(cfg.Push, []string{"github.com/org/repo", "gitlab.example/a/b"}) {
+		t.Errorf("push = %q, %v", cfg.Push, err)
+	}
+	for _, bad := range []string{"push: [https://github.com/o/r]", "push: [github.com/o]", "push: [github.com/o/r/extra]"} {
+		writeTestFile(t, extra, bad+"\n")
+		if _, err := toolConfig(user, extra); err == nil {
+			t.Errorf("%s: loaded, want a refusal", bad)
+		}
+	}
+}

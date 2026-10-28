@@ -1225,7 +1225,7 @@ func TestRunApplyOnVM(t *testing.T) {
 	if err != nil || res.exitCode != 0 {
 		t.Fatalf("run: %v, exit %d: %s", err, res.exitCode, errOut.String())
 	}
-	if code := runChanges(ctx, sboxRun, res.id, dir, base, rules, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
+	if _, code := runChanges(ctx, sboxRun, res.id, dir, base, rules, true, "", func() bool { return true }, &out, &errOut); code != exitOK {
 		t.Fatalf("runChanges: exit %d: %s", code, errOut.String())
 	}
 	read := func(p string) string { data, _ := os.ReadFile(filepath.Join(dir, p)); return string(data) }
