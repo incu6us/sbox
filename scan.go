@@ -99,6 +99,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 	configFile := flags.String("config", "", "a config `file` read after ~/.config/sbox/config.yaml (timeouts.entry, prefetch, vm)")
 	verbose := flags.Bool("v", false, "also show the entry points' own output")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
+	refetch := flags.Bool("refetch", false, "download a GitHub target again, even a commit already cached")
 	flags.Usage = func() {
 		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir | GitHub URL>\n\n")
 		flags.PrintDefaults()
@@ -123,7 +124,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 	}
 	secretNames := slices.Sorted(maps.Keys(secrets))
 	jsonOut := *asJSON || cfg.Report.Format == "json"
-	dir, name, err := resolveTarget(flags.Arg(0), githubFetch(ctx))
+	dir, name, where, err := resolveTarget(flags.Arg(0), githubFetch(ctx, *refetch))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra
@@ -201,7 +202,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 	}
 	verdict := rules.verdict(all)
 	if jsonOut {
-		err = writeScanJSON(stdout, name, pre, runs, findings, verdict, all, rules.overrides(), secretNames)
+		err = writeScanJSON(stdout, where, pre, runs, findings, verdict, all, rules.overrides(), secretNames)
 	} else {
 		writeScanReport(stdout, pre, runs, findings, verdict, all, cmp.Or(cfg.Report.MaxListed, _maxListed))
 	}

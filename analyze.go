@@ -283,7 +283,7 @@ func countSeverities(findings []finding) map[severity]int {
 // writeScanJSON writes the report as one object, with the config's
 // overrides and the names of its real secrets under config when there are
 // any.
-func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, overrides, secrets []string) error {
+func writeScanJSON(w io.Writer, target targetJSON, pre *prefetchResult, runs []entryRun, findings [][]finding, verdict string, all []finding, overrides, secrets []string) error {
 	type dnsJSON struct {
 		Name  string   `json:"name"`
 		Types []string `json:"types"`
@@ -307,7 +307,7 @@ func writeScanJSON(w io.Writer, target string, pre *prefetchResult, runs []entry
 		Secrets   []string `json:"secrets,omitempty"`
 	}
 	report := struct {
-		Target   string          `json:"target"`
+		Target   targetJSON      `json:"target"`
 		Verdict  string          `json:"verdict"`
 		Counts   map[string]int  `json:"counts"`
 		Config   *configJSON     `json:"config,omitempty"`

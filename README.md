@@ -40,8 +40,8 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-config <file>] [-v] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]
-sbox scan [-config <file>] [-v] [-json] <dir | GitHub URL>
+sbox run [-config <file>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]
+sbox scan [-config <file>] [-v] [-json] [-refetch] <dir | GitHub URL>
 
 sbox init [dir]
 sbox config [-config <file>] [dir]
@@ -360,6 +360,7 @@ command, passed through exactly (quotes, spaces and `$` arrive intact).
 |---|---|
 | `-config <file>` | A config file read after `~/.config/sbox/config.yaml`. A file inside the target is never read. |
 | `-v` | Also show kernel and Firecracker output, marked `·`. Useful when a run fails to start. |
+| `-refetch` | Download a GitHub target again, even a commit already in the cache. |
 | `-apply` | After the command, show what it changed in the folder (sync's diffs) and write it there once you answer `y`. Needs a terminal, and a folder, not a GitHub URL. |
 | `-patch <file>` | Write what the command changed to `<file>` as a patch instead (`git apply`, `patch -p1`). |
 | `-push -m <message>` | As `-apply`, then commit just those files with the message and push the branch, with your own git and credentials. The branch's upstream must be listed under `push:` in the config (`push: [github.com/org/repo]`); that's checked before the VM starts and again before the push. |
@@ -468,7 +469,8 @@ verdict: REVIEW  (0 critical, 1 high, 2 medium, 0 low)
 
 Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 **REVIEW**, otherwise **PASS**. `-json` prints the same report as one object
-(`target`, `verdict`, `counts`, and per entry point `kind`, `name`, `source`,
+(`target` as `{"url", "commit", "path"}` for a GitHub URL or `{"path"}`
+for a folder, `verdict`, `counts`, and per entry point `kind`, `name`, `source`,
 `command`, `ran`, `exit_code`, `processes`, `network`, `files`, `dns`,
 `findings`).
 
@@ -477,6 +479,7 @@ Verdict, as skills-audit: any critical → **BLOCK**, medium or high →
 | `-config <file>` | A config file read after `~/.config/sbox/config.yaml`; never one from the target. |
 | `-v` | Also show the entry points' own output. |
 | `-json` | Print the report as JSON. |
+| `-refetch` | Download a GitHub target again, even a commit already in the cache. |
 
 From the config: `timeouts.entry` (each entry point, `20s`),
 `timeouts.prefetch` (the dependency download, `3m`), `prefetch.enabled`

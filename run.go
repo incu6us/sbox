@@ -156,10 +156,11 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
 	apply := flags.Bool("apply", false, "show what the command changed in the folder, then write it there once you confirm")
 	patchFile := flags.String("patch", "", "write what the command changed in the folder to this `file`, as a patch")
+	refetch := flags.Bool("refetch", false, "download a GitHub target again, even a commit already cached")
 	push := flags.Bool("push", false, "as -apply, then commit those files with -m and push the branch (its remote must be in push:)")
 	message := flags.String("m", "", "the commit message for -push")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -184,7 +185,7 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		return exitInfra
 	}
 
-	dir, name, err := resolveTarget(rest[0], githubFetch(ctx))
+	dir, name, _, err := resolveTarget(rest[0], githubFetch(ctx, *refetch))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitInfra

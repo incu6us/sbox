@@ -97,7 +97,7 @@ func TestFetchTarget(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	fetch := func(cache string, tg target, max int64) (string, string, error) {
-		return fetchTarget(context.Background(), srv.Client(), srv.URL, tg, cache, max)
+		return fetchTarget(context.Background(), srv.Client(), srv.URL, tg, cache, max, false)
 	}
 
 	cache := t.TempDir()
@@ -120,6 +120,9 @@ func TestFetchTarget(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Errorf("a commit ref was downloaded %d times, want once (it can't move)", hits.Load())
+	}
+	if _, _, err := fetchTarget(context.Background(), srv.Client(), srv.URL, target{owner: "o", repo: "r", ref: sha}, cache, 1<<20, true); err != nil || hits.Load() != 2 {
+		t.Errorf("-refetch: %v, %d downloads; want the commit fetched again", err, hits.Load())
 	}
 
 	// Entries unused for 30 days go on the next fetch; one just used stays.
@@ -178,13 +181,14 @@ func TestResolveTarget(t *testing.T) {
 		}
 		return "/cache/o/r/HEAD/tree", sha, nil
 	}
-	if dir, name, err := resolveTarget("./local", fetch); dir != "./local" || name != "./local" || err != nil || len(asked) != 0 {
-		t.Errorf("a local path: %q, %q, %v, fetched %v", dir, name, err, asked)
+	if dir, name, where, err := resolveTarget("./local", fetch); dir != "./local" || name != "./local" || where != (targetJSON{Path: "./local"}) || err != nil || len(asked) != 0 {
+		t.Errorf("a local path: %q, %q, %+v, %v, fetched %v", dir, name, where, err, asked)
 	}
-	if dir, name, err := resolveTarget("github.com/o/r", fetch); dir != "/cache/o/r/HEAD/tree" || name != "github.com/o/r@0123456789ab" || err != nil {
-		t.Errorf("a URL: %q, %q, %v", dir, name, err)
+	if dir, name, where, err := resolveTarget("https://github.com/o/r/tree/main/plugins/x", fetch); dir != "/cache/o/r/HEAD/tree" || name != "github.com/o/r@0123456789ab/plugins/x" || err != nil ||
+		where != (targetJSON{URL: "https://github.com/o/r", Commit: sha, Path: "plugins/x"}) {
+		t.Errorf("a URL: %q, %q, %+v, %v", dir, name, where, err)
 	}
-	if _, _, err := resolveTarget("github.com/o/missing", fetch); err == nil {
+	if _, _, _, err := resolveTarget("github.com/o/missing", fetch); err == nil {
 		t.Error("a failed fetch: no error")
 	}
 }

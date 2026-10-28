@@ -62,6 +62,6 @@ Conventions shared by every plan:
   - [x] 3 pinned Lima download
   - [x] 4 verified on a Mac without Lima
 - [x] 2. Config ([config.md](config.md)): every commit; rw mounts as `sbox run -apply`/`-patch` for the folder given, `mode: rw` for other mounts left until asked for
-- [x] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3, the cache cleanup (`-refetch` and a JSON object left out on purpose)
+- [x] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3, the cache cleanup, `-refetch`, the JSON `target` object
 - [x] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4 (redaction for sessions; hostname, but not the work directory name)
 - [x] 5. Snapshots ([snapshots.md](snapshots.md)): measured (boot and init 1.8 s of a 2.4 s start); deferred, since a start happens once per dev session
