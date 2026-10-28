@@ -218,8 +218,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 	cfg, job, err := host.devConfig(args[0])
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitUsage
+		return configFailed(stderr, err)
 	}
 	live, found, code := liveSession(ctx, project, stderr, vm)
 	if code != exitOK {
@@ -361,8 +360,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	}
 	cfg, job, err := host.devConfig(args[0])
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitUsage
+		return configFailed(stderr, err)
 	}
 	if len(cfg.Dev.Setup) == 0 {
 		_, _ = fmt.Fprintln(stdout, "no dev.setup steps in the config")
@@ -388,6 +386,7 @@ type devHost struct {
 	cwd                  string                      // where sbox dev <GitHub URL> makes its folder; "." when empty
 	fetch                fetchFunc                   // GitHub downloads; githubFetch when nil
 	projectConfig        string                      // -config: the file used instead of the project's sbox.yaml
+	workspace            string                      // -workspace: the user's choice for this run; by folder when empty
 	title                func(string)                // sets the terminal's title; no change notice when nil
 	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
 }
@@ -465,7 +464,30 @@ func (h devHost) loadConfig(dir string) (config, error) {
 		}
 		project = h.projectConfig
 	}
-	return loadConfig(h.userConfig, project)
+	home := h.home
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	cfg, ws, misses, err := layered(h.userConfig, project, dir, h.workspace, home, nil)
+	if err == nil && len(misses) > 0 {
+		return cfg, &blockedError{dir: dir, ws: ws, misses: misses, cfg: cfg}
+	}
+	return cfg, err
+}
+
+// configFailed prints why a project's config can't be used: the BLOCKED
+// lines and what to do when it asks for more than its workspace allows.
+func configFailed(stderr io.Writer, err error) int {
+	var blocked *blockedError
+	if !errors.As(err, &blocked) {
+		_, _ = fmt.Fprintln(stderr, "sbox:", err)
+		return exitUsage
+	}
+	for _, line := range blocked.lines() {
+		_, _ = fmt.Fprintln(stderr, line)
+	}
+	_, _ = fmt.Fprintf(stderr, "sbox: %v; nothing was started (add the keys above to your config, or remove them from %s)\n", err, filepath.Join(blocked.dir, "sbox.yaml"))
+	return exitFail
 }
 
 // devConfig loads the project's config and builds the session's job: the

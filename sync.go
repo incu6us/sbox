@@ -481,8 +481,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 	}
 	cfg, err := mac.loadConfig(dir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitUsage
+		return configFailed(stderr, err)
 	}
 	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
 	if _, err := loadBase(stateDir, project); err != nil {

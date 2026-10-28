@@ -182,3 +182,120 @@ func allowsMount(ro, rw []string, host string, writable bool, home string) bool 
 	}
 	return false
 }
+
+// request is one thing a project's sbox.yaml asks for that reaches past
+// its VM: as approvals and BLOCKED lines name it (entry), and as the
+// workspace's allow list would take it (list, value).
+type request struct {
+	key, entry  string // egress, service, mount, secret; "evil.example:443", "~/.ssh → /home/runner/.ssh"
+	list, value string // allow.<list>: [value]
+}
+
+// id is how approvals remember a request.
+func (r request) id() string { return r.key + " " + r.entry }
+
+// blocked is the request's BLOCKED line in workspace ws, with the key to
+// add.
+func (r request) blocked(ws string) string {
+	return fmt.Sprintf("BLOCKED %-7s %s  not allowed in workspace %s → workspaces.%s.allow.%s: [%s]", r.key, r.entry, ws, ws, r.list, r.value)
+}
+
+// blockedError is a project asking for more than its workspace allows:
+// the BLOCKED lines, and the config without those requests.
+type blockedError struct {
+	dir, ws string
+	misses  []request
+	cfg     config
+}
+
+func (e *blockedError) Error() string {
+	return fmt.Sprintf("%s asks for more than workspace %s allows", e.dir, e.ws)
+}
+
+// lines are the BLOCKED lines.
+func (e *blockedError) lines() []string {
+	var out []string
+	for _, r := range e.misses {
+		out = append(out, r.blocked(e.ws))
+	}
+	return out
+}
+
+// layered builds a project's config through its workspace: the user's
+// file (global grants), the workspace's grants, then the project's own
+// file, whose egress, services, mounts and secrets each stay only if
+// already granted, allowed by the workspace, or approved (by request id).
+// It returns that config, the workspace's name and what was left out.
+func layered(userFile, projectFile, dir, override, home string, approved map[string]bool) (config, string, []request, error) {
+	user, err := readConfigFile(userFile, true)
+	if err != nil {
+		return config{}, "", nil, err
+	}
+	project, err := readConfigFile(projectFile, false)
+	if err != nil {
+		return config{}, "", nil, err
+	}
+	ws, err := user.workspaceFor(dir, override, home)
+	if err != nil {
+		return config{}, "", nil, err
+	}
+	w := user.Workspaces[ws]
+	grants := config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
+
+	// What the project may have: the grants, and the workspace's allow.
+	egress := slices.Concat(user.Egress, w.Egress, w.Allow.Egress)
+	services := slices.Clone(w.Allow.Services)
+	for _, p := range slices.Concat(user.Services, w.Services) {
+		services = append(services, strconv.Itoa(p))
+	}
+	ro, rw := slices.Clone(w.Allow.Mounts), slices.Clone(w.Allow.RW)
+	for _, m := range slices.Concat(user.Mounts, w.Mounts) {
+		if m.Mode == "rw" {
+			rw = append(rw, m.Host)
+		} else {
+			ro = append(ro, m.Host)
+		}
+	}
+	vars := slices.Clone(w.Allow.Secrets)
+	for ref := range maps.Values(user.Secrets) {
+		vars = append(vars, strings.TrimPrefix(ref, "env:"))
+	}
+	for ref := range maps.Values(w.Secrets) {
+		vars = append(vars, strings.TrimPrefix(ref, "env:"))
+	}
+
+	var misses []request
+	keep := func(r request, ok bool) bool {
+		if ok || approved[r.id()] {
+			return true
+		}
+		misses = append(misses, r)
+		return false
+	}
+	project.Egress = slices.DeleteFunc(project.Egress, func(e string) bool {
+		return !keep(request{"egress", e, "egress", strings.TrimSuffix(e, ":443")}, allowsEgress(egress, e))
+	})
+	project.Services = slices.DeleteFunc(project.Services, func(p int) bool {
+		return !keep(request{"service", strconv.Itoa(p), "services", strconv.Itoa(p)}, allowsService(services, p))
+	})
+	project.Mounts = slices.DeleteFunc(project.Mounts, func(m mount) bool {
+		r := request{"mount", m.Host + " → " + m.Guest, "mounts", m.Host}
+		if m.Mode == "rw" {
+			r = request{"mount", m.Host + " → " + m.Guest + " (rw)", "rw", m.Host}
+		}
+		return !keep(r, allowsMount(ro, rw, m.Host, m.Mode == "rw", home))
+	})
+	for _, name := range slices.Sorted(maps.Keys(project.Secrets)) {
+		ref := project.Secrets[name]
+		if !keep(request{"secret", name + " ← " + ref, "secrets", strings.TrimPrefix(ref, "env:")}, allowsSecret(vars, ref)) {
+			delete(project.Secrets, name)
+		}
+	}
+
+	var cfg config
+	cfg.merge(user)
+	cfg.merge(grants)
+	cfg.merge(project)
+	cfg, err = cfg.finish()
+	return cfg, ws, misses, err
+}
