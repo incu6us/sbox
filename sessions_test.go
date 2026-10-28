@@ -853,3 +853,31 @@ func TestDevMainPreflightAndSummary(t *testing.T) {
 		t.Errorf("the preflight should come before the summary:\n%s", out)
 	}
 }
+
+func TestIsTerminal(t *testing.T) {
+	t.Parallel()
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	file, err := os.CreateTemp(t.TempDir(), "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for name, f := range map[string]*os.File{"/dev/null": null, "a pipe": r, "a file": file} {
+		if isTerminal(f) {
+			t.Errorf("isTerminal(%s) = true, want false", name)
+		}
+	}
+	if pty := openTerminal(t); pty != nil && !isTerminal(pty) {
+		t.Error("isTerminal(a pseudo-terminal) = false, want true")
+	}
+}
