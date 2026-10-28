@@ -14,6 +14,7 @@ same machinery; new work goes into dev mode first.
 | 3 | GitHub URLs as the project source | [github-targets.md](github-targets.md) | `sbox dev github.com/o/r`; stdlib only, independent |
 | 4 | Report hardening, items 3 and 4 only (redaction, fingerprint) | [hardening.md](hardening.md) | Redaction before real secrets enter the guest; the rest is scan-only |
 | 5 | Firecracker snapshots | [snapshots.md](snapshots.md) | Sessions are long, so boot time matters less than before; measure first still applies |
+| 6 | Workspaces: what a project may reach (mounts, secrets, egress, services) | [workspaces.md](workspaces.md) | Closes a hole: a downloaded repo's `sbox.yaml` grants itself your files and the network |
 
 ## Shelved (scan mode)
 
@@ -65,3 +66,4 @@ Conventions shared by every plan:
 - [x] 3. GitHub URLs ([github-targets.md](github-targets.md)): commits 1 to 3, the cache cleanup, `-refetch`, the JSON `target` object
 - [x] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4 (redaction for sessions; hostname, but not the work directory name)
 - [x] 5. Snapshots ([snapshots.md](snapshots.md)): measured (boot and init 1.8 s of a 2.4 s start); deferred, since a start happens once per dev session
+- [ ] 6. Workspaces ([workspaces.md](workspaces.md)): planned
