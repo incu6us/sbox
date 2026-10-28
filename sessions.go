@@ -239,6 +239,8 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 			}
 			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
+		} else if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, stderr); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox: copying the Mac's changes in:", err)
 		}
 		if code := runHooks(ctx, id, cfg, false, stdout, stderr, vm); code != exitOK {
 			_, _ = fmt.Fprintf(stderr, "sbox: the terminal opens anyway; fix it there, then sbox setup-env %s\n", args[0])

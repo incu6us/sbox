@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -200,6 +201,7 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 				body, _ := io.ReadAll(tr)
 				g.files[strings.TrimPrefix(hdr.Name, "./")] = string(body)
 			}
+		case slices.Equal(cmd, []string{"ss", "-Hltn"}), slices.Equal(cmd, []string{"true"}): // sbox dev's exit summary, its terminal
 		case slices.Equal(cmd, []string{"sh", "-c", _deleteScript}):
 			list, _ := io.ReadAll(in)
 			for _, p := range strings.Split(strings.TrimSuffix(string(list), "\x00"), "\x00") {
@@ -299,5 +301,102 @@ func TestSyncMain(t *testing.T) {
 	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, guest.run, t.TempDir()); code != exitFail ||
 		!strings.Contains(stderr.String(), "no sync base") {
 		t.Errorf("without a base: exit %d, stderr %q; want a refusal", code, stderr.String())
+	}
+}
+
+func TestDevMainPushesMacEditsOnBoot(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	write := func(p, body string) {
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"mac-edits", "guest-edits", "mac-deletes"} {
+		write(p, "v1\n")
+	}
+	project := mustProjectID(t, dir)
+	if err := recordBase(state, project, dir); err != nil {
+		t.Fatal(err)
+	}
+	write("mac-edits", "mac v2\n")
+	write("mac-adds", "new\n")
+	if err := os.Remove(filepath.Join(dir, "mac-deletes")); err != nil {
+		t.Fatal(err)
+	}
+	guest := &fakeSyncGuest{t: t, project: project, files: map[string]string{"mac-edits": "v1\n", "guest-edits": "guest v2\n", "mac-deletes": "v1\n"}}
+
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if guest.files["mac-edits"] != "mac v2\n" || guest.files["mac-adds"] != "new\n" || guest.files["mac-deletes"] != "" || guest.files["guest-edits"] != "guest v2\n" {
+		t.Errorf("guest after boot: %v; want the Mac's changes in, the guest's own kept", guest.files)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "guest-edits")); string(data) != "v1\n" {
+		t.Errorf("the Mac's guest-edits = %q: nothing comes back at boot", data)
+	}
+	for _, want := range []string{"3 changes from the Mac copied in", "the guest has 1 change of its own: sbox sync " + dir} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
+		}
+	}
+	base, _ := loadBase(state, project)
+	host, _ := readManifest(dir)
+	if base["mac-edits"] != host["mac-edits"] || base["guest-edits"] == (fileState{}) {
+		t.Errorf("base after boot %v: want the pushed paths moved, the guest's change still pending", base)
+	}
+}
+
+func TestSyncPatch(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	write := func(root, p, body string) {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"edited.txt", "deleted.txt", "src/kept.go"} {
+		write(dir, p, "line one\nline two\n")
+	}
+	project := mustProjectID(t, dir)
+	if err := recordBase(state, project, dir); err != nil {
+		t.Fatal(err)
+	}
+	guest := &fakeSyncGuest{t: t, project: project, running: "abababababababab", files: map[string]string{
+		"edited.txt": "line one\nline 2\n", "src/kept.go": "line one\nline two\n", "src/new.go": "package main\n",
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := syncMain(context.Background(), []string{"-patch", dir}, &stdout, &stderr, guest.run, state); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	patch := stdout.String()
+	if !strings.Contains(patch, "--- a/edited.txt\n+++ b/edited.txt\n") || !strings.Contains(patch, "+++ b/src/new.go\n") {
+		t.Errorf("patch lacks git-style headers:\n%s", patch)
+	}
+
+	copyDir := t.TempDir()
+	for _, p := range []string{"edited.txt", "deleted.txt", "src/kept.go"} {
+		write(copyDir, p, "line one\nline two\n")
+	}
+	cmd := exec.Command("patch", "-p1", "-s", "-E") // -E: remove files the patch empties, as git apply does
+	cmd.Dir, cmd.Stdin = copyDir, strings.NewReader(patch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("patch -p1 -E: %v\n%s\n%s", err, out, patch)
+	}
+	got, _ := readManifest(copyDir)
+	want := manifest{}
+	for p, body := range guest.files {
+		sum := sha256.Sum256([]byte(body))
+		want[p] = fileState{Hash: hex.EncodeToString(sum[:])}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("after the patch the copy is %v, want the guest's files %v", got, want)
+	}
+	if base, _ := loadBase(state, project); base["edited.txt"] == want["edited.txt"] {
+		t.Error("-patch moved the base; it only prints")
 	}
 }

@@ -571,6 +571,17 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     paths depend on `/home/runner/work`); redaction in `run` and `scan`,
     which carry no secrets.
 
+- ✅ Sync, the parts left from step 4. `sbox sync -patch` prints the
+  guest's changes as one unified diff with git's prefixes (tested by
+  applying it with `patch -p1 -E` and comparing with the guest); the base
+  doesn't move, and the next sync finds both sides agree. `sbox dev` on a
+  kept home pushes the Mac's changes in before the hooks run: only the
+  Mac-to-guest half of the plan, the base moved for those paths alone,
+  and a line counting the guest's own changes.
+  - Verified on the real VM: a Mac edit between two sessions is in the
+    guest at the second boot; the guest's new file comes back by patch,
+    and the following sync has nothing to do.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

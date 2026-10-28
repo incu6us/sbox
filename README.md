@@ -49,7 +49,7 @@ sbox dev [-fresh] <dir | GitHub URL> [-- <command> [args...]]
 sbox setup-env <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
-sbox sync [-apply] <dir>
+sbox sync [-apply | -patch] <dir>
 sbox ps
 sbox stop|pause|resume <session-id>
 sbox log [-f] [-blocked] <session-id>
@@ -256,7 +256,10 @@ before the session boots.
 
 `sbox sync <dir>` shows what changed in the guest and on the Mac since
 they last agreed, with diffs; `sbox sync -apply <dir>` brings each side's
-changes to the other. A file changed differently on both sides is listed
+changes to the other; `sbox sync -patch <dir> > guest.patch` writes the
+guest's changes as a patch for `git apply` (or `patch -p1 -E`) instead.
+When `sbox dev` boots a kept home it copies your Mac edits in first, so
+the agent starts from them; its own changes still wait for `sbox sync`. A file changed differently on both sides is listed
 as a conflict and left alone. Never synced: symlinks, `.git` (each side
 keeps its own history: commit the synced files on the Mac),
 `node_modules`, `.venv`, `__pycache__`, `.DS_Store`.
