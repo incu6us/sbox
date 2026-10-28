@@ -102,3 +102,70 @@ func TestWorkspaceFor(t *testing.T) {
 		t.Errorf("-workspace nope: %v, want a refusal naming it", err)
 	}
 }
+
+func TestAllowsEgress(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		allow []string
+		req   string
+		want  bool
+	}{
+		{[]string{"registry.npmjs.org:443"}, "registry.npmjs.org:443", true},
+		{[]string{"registry.npmjs.org:443"}, "registry.npmjs.org:80", false},
+		{[]string{"*.github.com:443"}, "api.github.com:443", true},
+		{[]string{"*.github.com:443"}, "github.com:443", false},
+		{[]string{"*.github.com:443"}, "evilgithub.com:443", false},
+		{[]string{"github.com:*"}, "github.com:22", true},
+		{[]string{"*.a.com:*"}, "x.y.a.com:8443", true},
+		{[]string{"*.a.com:443"}, "*.b.a.com:443", true},
+		{[]string{"*.b.a.com:443"}, "*.a.com:443", false},
+		{[]string{"a.com:443"}, "*.a.com:443", false},
+		{[]string{"github.com:443"}, "github.com:*", false},
+		{[]string{"github.com:*"}, "github.com:*", true},
+		{[]string{"*"}, "anything.example:22", true},
+		{nil, "x.example:443", false},
+	} {
+		if got := allowsEgress(tt.allow, tt.req); got != tt.want {
+			t.Errorf("allowsEgress(%q, %q) = %v, want %v", tt.allow, tt.req, got, tt.want)
+		}
+	}
+}
+
+func TestAllowsServiceSecretMount(t *testing.T) {
+	t.Parallel()
+	if !allowsService([]string{"5432"}, 5432) || allowsService([]string{"5432"}, 6379) || !allowsService([]string{"*"}, 1) {
+		t.Error("allowsService")
+	}
+	if !allowsSecret([]string{"CLIENT_A_NPM_TOKEN"}, "env:CLIENT_A_NPM_TOKEN") || allowsSecret([]string{"CLIENT_A_NPM_TOKEN"}, "env:AWS_SECRET_ACCESS_KEY") {
+		t.Error("allowsSecret")
+	}
+
+	home := t.TempDir()
+	for _, d := range []string{"work/shared/sub", "work/out", "elsewhere"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(home, "work"), filepath.Join(home, "w")); err != nil {
+		t.Fatal(err)
+	}
+	ro, rw := []string{"~/w/shared/"}, []string{"~/work/out"}
+	for _, tt := range []struct {
+		host string
+		rw   bool
+		want bool
+	}{
+		{"~/work/shared", false, true},
+		{"~/work/shared/sub", false, true},
+		{"~/work/shared/sub", true, false}, // read-only allowance, rw asked
+		{"~/work/out", true, true},
+		{"~/work/out", false, true}, // rw covers read-only
+		{"~/elsewhere", false, false},
+		{"~/.ssh", false, false},
+		{"~/work/shared/../../elsewhere", false, false},
+	} {
+		if got := allowsMount(ro, rw, tt.host, tt.rw, home); got != tt.want {
+			t.Errorf("allowsMount(%s, rw %v) = %v, want %v", tt.host, tt.rw, got, tt.want)
+		}
+	}
+}
