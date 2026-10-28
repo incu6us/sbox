@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Writes sbox's Claude Code settings into the runner's home, in the guest.
 
-Usage: sbox-claude.py <want.json> <home>    (run as the runner)
+Usage: sbox-claude.py <want.json | -> <home>    (run as the runner)
 
 want.json is {"settings": {...}, "mcpServers": {...}} from the config.
 Each key under "settings" replaces that key in ~/.claude/settings.json
@@ -43,8 +43,11 @@ def save(path, data):
 
 
 def apply(want_path, home):
-    with open(want_path) as f:
-        want = json.load(f)
+    if want_path == "-":
+        want = json.load(sys.stdin)
+    else:
+        with open(want_path) as f:
+            want = json.load(f)
     settings_path = os.path.join(home, ".claude", "settings.json")
     claude_path = os.path.join(home, ".claude.json")
     settings, claude = load(settings_path), load(claude_path)
@@ -74,6 +77,15 @@ def selftest():
     apply(want_path, home)
     assert load(os.path.join(home, ".claude.json"))["mcpServers"]["docs"]["type"] == "http"
     assert load(os.path.join(home, ".claude", "settings.json"))["skipDangerousModePermissionPrompt"] is True
+
+    # "-" reads the settings from stdin (the guest has no /dev/stdin).
+    import io
+    stdin, sys.stdin = sys.stdin, io.StringIO(json.dumps({"mcpServers": {"live": {"command": "b"}}}))
+    try:
+        apply("-", home)
+    finally:
+        sys.stdin = stdin
+    assert "live" in load(os.path.join(home, ".claude.json"))["mcpServers"]
     print("ok")
 
 

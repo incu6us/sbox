@@ -182,7 +182,9 @@ threads, so a fork bomb or a runaway build fails inside the guest.
 A session takes the config when it boots. Change `sbox.yaml` under a
 running session and the next `sbox dev` says which keys differ
 (`the config changed since session <id> started (egress, ports)`);
-`sbox dev -restart <dir>` stops it and boots a new one with the config as
+Changes to `permissions`, `mcp` and `mounts` are applied right there
+(Claude Code reads them the next time it starts); for the rest,
+`sbox dev -restart <dir>` stops the session and boots a new one with the config as
 it is now, on the same home: files, installed tools and Claude Code's
 history stay, running processes don't. `dev.command` applies at every
 attach; `image.packages` needs `sbox setup`.

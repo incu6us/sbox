@@ -868,3 +868,38 @@ func TestAttachWindowResizeOnVM(t *testing.T) {
 		t.Errorf("attach: %v, output %q; want the first size, then the new one", err, text)
 	}
 }
+
+// TestDevLiveApplyOnVM changes Claude Code's settings and the mounts under
+// a kept session: attaching again applies them without a restart.
+func TestDevLiveApplyOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state, home := t.TempDir(), t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	var kept string
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{kept}, io.Discard, io.Discard, sboxRun) })
+	host := devHost{stateDir: state, home: home, keep: func(id string, _ int) bool { kept = id; return true }}
+	dev := func(script string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {one: {command: \"true\"}}}\n")
+	dev("true")
+	first := kept
+	writeTestFile(t, filepath.Join(home, "notes.txt"), "from the mac\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mcp: {servers: {one: {command: \"true\"}, two: {command: \"true\"}}}\nmounts: [{host: ~/notes.txt, guest: /home/runner/notes.txt}]\n")
+	out, notes := dev(`python3 -c 'import json; print(sorted(json.load(open("/home/runner/.claude.json"))["mcpServers"]))'; cat ~/notes.txt`)
+	if kept != first || out != "['one', 'two']\nfrom the mac\n" || !strings.Contains(notes, "applied mcp, mounts to session "+first) || strings.Contains(notes, "-restart") {
+		t.Errorf("reattach: session %s (was %s), %q, notes %q; want both applied to the same session", kept, first, out, notes)
+	}
+}
