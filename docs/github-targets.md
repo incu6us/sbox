@@ -79,8 +79,12 @@ it is executed on the host. The host-side readers (`findEntryPoints`,
 
 Done with these differences: `sbox dev <url>` copies the fetched tree
 into a new `./<repo>` folder and works there (sync needs a folder you can
-find); the commit comes from the tarball's pax header, not `ETag`. Not
-done: `-refetch`, the 30-day cache cleanup, the JSON `target` field.
+find); the commit comes from the tarball's pax header, not `ETag`. The
+30-day cleanup: each fetch marks its entry used and removes the ones
+unused for 30 days. Left out on purpose: `-refetch` (branches and tags
+are fetched every time already, and a commit's tarball can't change) and
+a JSON `target` object (the `target` string already reads
+`github.com/o/r@<commit>/<path>`; an object would break readers of it).
 
 ## Out of scope
 
