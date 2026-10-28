@@ -443,3 +443,68 @@ func TestLoadConfigPauseAfter(t *testing.T) {
 		t.Errorf("10s: err %v, want a refusal (a minute at least)", err)
 	}
 }
+
+// TestRunAndScanKeys: the keys sbox run and sbox scan take from the
+// user's file and -config, and what each mode makes of them.
+func TestRunAndScanKeys(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	var defaults config
+	if defaults.runTimeout() != time.Minute || defaults.entryTimeout() != 20*time.Second || defaults.prefetchTimeout() != 3*time.Minute || !defaults.prefetchOn() {
+		t.Errorf("defaults: run %v, entry %v, prefetch %v on %v", defaults.runTimeout(), defaults.entryTimeout(), defaults.prefetchTimeout(), defaults.prefetchOn())
+	}
+
+	cfg, err := loadConfig(
+		write(t, "vm: {vcpus: 4}\ntimeouts: {run: 5m, entry: 30s}\nprefetch: {registries: [npm.internal.example.com]}\n"),
+		write(t, "vm: {memory_mib: 4096}\ntimeouts: {prefetch: 1m}\nprefetch: {enabled: false, registries: [pypi.internal.example.com]}\negress: [api.github.com]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.runTimeout() != 5*time.Minute || cfg.entryTimeout() != 30*time.Second || cfg.prefetchTimeout() != time.Minute || cfg.prefetchOn() {
+		t.Errorf("run %v, entry %v, prefetch %v on %v", cfg.runTimeout(), cfg.entryTimeout(), cfg.prefetchTimeout(), cfg.prefetchOn())
+	}
+	job := cfg.runJob([]string{"make", "test"})
+	if !slices.Equal(job.command, []string{"make", "test"}) || !slices.Equal(job.egress, []string{"api.github.com:443"}) || job.vcpus != 4 || job.memoryMiB != 4096 ||
+		!slices.Equal(job.registries, []string{"npm.internal.example.com", "pypi.internal.example.com"}) {
+		t.Errorf("runJob = %+v", job)
+	}
+	if dev := devJob(cfg, nil); dev.vcpus != 4 || dev.memoryMiB != 4096 {
+		t.Errorf("dev without dev.vcpus: %d vCPUs, %d MiB; want vm's", dev.vcpus, dev.memoryMiB)
+	}
+	cfg.Dev.VCPUs = 2
+	if dev := devJob(cfg, nil); dev.vcpus != 2 {
+		t.Errorf("dev.vcpus set: %d, want it over vm's", dev.vcpus)
+	}
+
+	for _, bad := range []string{"vm: {vcpus: 99}", "vm: {memory_mib: 10}", "timeouts: {run: 500ms}", "timeouts: {entry: 0.5s}",
+		"prefetch: {registries: [\"bad host\"]}", "prefetch: {registries: [\"https://npm.example.com\"]}"} {
+		if _, err := loadConfig("", write(t, bad+"\n")); err == nil {
+			t.Errorf("%s: loaded, want a refusal", bad)
+		}
+	}
+}
+
+// TestToolConfig: sbox run and scan read the user's file and -config,
+// which must exist, and never a file inside the target.
+func TestToolConfig(t *testing.T) {
+	t.Parallel()
+	user, extra := filepath.Join(t.TempDir(), "config.yaml"), filepath.Join(t.TempDir(), "ci.yaml")
+	writeTestFile(t, user, "timeouts: {run: 2m}\n")
+	writeTestFile(t, extra, "egress: [api.github.com]\n")
+	cfg, err := toolConfig(user, extra)
+	if err != nil || cfg.runTimeout() != 2*time.Minute || !slices.Equal(cfg.Egress, []string{"api.github.com:443"}) {
+		t.Errorf("toolConfig = %+v, %v; want both files", cfg, err)
+	}
+	if _, err := toolConfig(user, filepath.Join(t.TempDir(), "none.yaml")); err == nil || !strings.Contains(err.Error(), "-config") {
+		t.Errorf("a missing -config: %v, want a refusal", err)
+	}
+	if cfg, err := toolConfig(user, ""); err != nil || len(cfg.Egress) != 0 {
+		t.Errorf("no -config: %+v, %v", cfg, err)
+	}
+}

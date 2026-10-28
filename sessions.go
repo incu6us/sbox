@@ -655,7 +655,7 @@ func markApplied(stateDir, project, id string, cfg config, keys []string) error 
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
 	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets,
-		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore), pauseAfter: cfg.Dev.PauseAfter}
+		vcpus: cmp.Or(cfg.Dev.VCPUs, cfg.VM.VCPUs), memoryMiB: cmp.Or(cfg.Dev.MemoryMiB, cfg.VM.MemoryMiB), claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore), pauseAfter: cfg.Dev.PauseAfter}
 }
 
 // runHooks runs the config's setup and start steps in session id (setup

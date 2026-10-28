@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,8 +56,19 @@ type config struct {
 		Deny    []string             `yaml:"deny,omitempty"`
 	} `yaml:"mcp,omitempty"`
 	Timeouts struct {
-		Setup time.Duration `yaml:"setup,omitempty"` // each dev.setup and dev.start step; 10m when unset
+		Setup    time.Duration `yaml:"setup,omitempty"`    // each dev.setup and dev.start step; 10m when unset
+		Run      time.Duration `yaml:"run,omitempty"`      // sbox run's command; 1m when unset
+		Entry    time.Duration `yaml:"entry,omitempty"`    // each of sbox scan's entry points; 20s when unset
+		Prefetch time.Duration `yaml:"prefetch,omitempty"` // sbox scan's dependency download; 3m when unset
 	} `yaml:"timeouts,omitempty"`
+	VM struct {
+		VCPUs     int `yaml:"vcpus,omitempty"` // the microVM's size for run, scan, and dev unless dev sets its own; 2 and 1024 when unset
+		MemoryMiB int `yaml:"memory_mib,omitempty"`
+	} `yaml:"vm,omitempty"`
+	Prefetch struct {
+		Enabled    *bool    `yaml:"enabled,omitempty"`    // sbox scan downloads dependencies first; true when unset
+		Registries []string `yaml:"registries,omitempty"` // hosts added to the prefetch proxy's three public registries
+	} `yaml:"prefetch,omitempty"`
 }
 
 // mount is a Mac file or folder copied into the guest's home at each
@@ -98,8 +110,9 @@ type mcpServer struct {
 }
 
 var (
-	_envName    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	_serverName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	_registryHost = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+	_envName      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	_serverName   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
 
 // bootKeys is what a session takes from the config when it boots, one
@@ -182,6 +195,34 @@ func (c config) secretValues(lookup func(string) (string, bool)) (map[string]str
 	return values, nil
 }
 
+// toolConfig is sbox run's and sbox scan's config: the user's file, and
+// the -config file when given, which must exist. A file inside the target
+// is never read: it would grant itself permissions.
+func toolConfig(userFile, configFile string) (config, error) {
+	if configFile != "" {
+		if _, err := os.Stat(configFile); err != nil {
+			return config{}, fmt.Errorf("-config: %w", err)
+		}
+	}
+	return loadConfig(userFile, configFile)
+}
+
+// runTimeout, entryTimeout and prefetchTimeout are sbox run's and sbox
+// scan's limits.
+func (c config) runTimeout() time.Duration { return cmp.Or(c.Timeouts.Run, time.Minute) }
+
+func (c config) entryTimeout() time.Duration { return cmp.Or(c.Timeouts.Entry, 20*time.Second) }
+
+func (c config) prefetchTimeout() time.Duration { return cmp.Or(c.Timeouts.Prefetch, 3*time.Minute) }
+
+// prefetchOn reports whether sbox scan downloads dependencies first.
+func (c config) prefetchOn() bool { return c.Prefetch.Enabled == nil || *c.Prefetch.Enabled }
+
+// runJob is sbox run's job for command.
+func (c config) runJob(command []string) guestJob {
+	return guestJob{command: command, egress: c.Egress, vcpus: c.VM.VCPUs, memoryMiB: c.VM.MemoryMiB, registries: c.Prefetch.Registries}
+}
+
 // setupTimeout is how long each setup or start step may take.
 func (c config) setupTimeout() time.Duration {
 	if c.Timeouts.Setup == 0 {
@@ -250,6 +291,15 @@ func loadConfig(userFile, projectFile string) (config, error) {
 		if c.Dev.PauseAfter != 0 {
 			cfg.Dev.PauseAfter = c.Dev.PauseAfter
 		}
+		cfg.VM.VCPUs = cmp.Or(c.VM.VCPUs, cfg.VM.VCPUs)
+		cfg.VM.MemoryMiB = cmp.Or(c.VM.MemoryMiB, cfg.VM.MemoryMiB)
+		cfg.Timeouts.Run = cmp.Or(c.Timeouts.Run, cfg.Timeouts.Run)
+		cfg.Timeouts.Entry = cmp.Or(c.Timeouts.Entry, cfg.Timeouts.Entry)
+		cfg.Timeouts.Prefetch = cmp.Or(c.Timeouts.Prefetch, cfg.Timeouts.Prefetch)
+		if c.Prefetch.Enabled != nil {
+			cfg.Prefetch.Enabled = c.Prefetch.Enabled
+		}
+		cfg.Prefetch.Registries = append(cfg.Prefetch.Registries, c.Prefetch.Registries...)
 		if c.Dev.VCPUs != 0 {
 			cfg.Dev.VCPUs = c.Dev.VCPUs
 		}
@@ -387,6 +437,24 @@ func (c *config) check() error {
 	}
 	if c.Dev.VCPUs < 0 || c.Dev.VCPUs > 32 {
 		return fmt.Errorf("dev.vcpus: %d: want 1 to 32", c.Dev.VCPUs)
+	}
+	if c.VM.VCPUs < 0 || c.VM.VCPUs > 32 {
+		return fmt.Errorf("vm.vcpus: %d: want 1 to 32", c.VM.VCPUs)
+	}
+	if c.VM.MemoryMiB != 0 && (c.VM.MemoryMiB < 256 || c.VM.MemoryMiB > 65536) {
+		return fmt.Errorf("vm.memory_mib: %d: want 256 to 65536", c.VM.MemoryMiB)
+	}
+	for name, d := range map[string]time.Duration{"run": c.Timeouts.Run, "entry": c.Timeouts.Entry, "prefetch": c.Timeouts.Prefetch} {
+		if d != 0 && d < time.Second {
+			return fmt.Errorf("timeouts.%s: %v: want 1s or more", name, d)
+		}
+	}
+	for i, r := range c.Prefetch.Registries {
+		r = strings.ToLower(r)
+		if !_registryHost.MatchString(r) {
+			return fmt.Errorf("prefetch.registries: %q: want a host name (no scheme, port or path)", c.Prefetch.Registries[i])
+		}
+		c.Prefetch.Registries[i] = r
 	}
 	if c.Dev.MemoryMiB != 0 && (c.Dev.MemoryMiB < 256 || c.Dev.MemoryMiB > 65536) {
 		return fmt.Errorf("dev.memory_mib: %d: want 256 to 65536", c.Dev.MemoryMiB)
