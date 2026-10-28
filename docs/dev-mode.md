@@ -490,6 +490,10 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] keep as the default only when the guest has unsynced changes
       (or the count is unknown); with nothing to sync the default is stop,
       and the summary says which
+- [x] **5d. Toolchains.** `image.packages` through setup and the stamp,
+    `pids.max` in the jailer cgroup, the read-only-root line in preflight.
+    Probe: `go version` after adding `golang-go`; a fork bomb in the guest
+    ends with the session still attached.
     - [x] `image.packages`: Debian names only, user config only, sorted;
       `provision.sh` adds them to mmdebstrap's list and a hash of them to
       the stamp (no list, old stamp: nothing rebuilds)
