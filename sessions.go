@@ -187,7 +187,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
-	cfg, secrets, err := host.devConfig(args[0])
+	cfg, job, err := host.devConfig(args[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
@@ -217,12 +217,12 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
 	} else {
-		for _, line := range devPreflight(cfg, secrets, readMCPJSON(args[0])) {
+		for _, line := range devPreflight(cfg, job.secrets, readMCPJSON(args[0])) {
 			_, _ = fmt.Fprintln(stderr, line)
 		}
 		started = time.Now()
 		var newDrive bool
-		if id, newDrive, code = startSession(ctx, args[0], project, devJob(cfg, secrets), stderr, vm); code != exitOK {
+		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
 			return code
 		}
 		if newDrive {
@@ -262,7 +262,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
-	cfg, secrets, err := host.devConfig(args[0])
+	cfg, job, err := host.devConfig(args[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
@@ -271,7 +271,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		_, _ = fmt.Fprintln(stdout, "no dev.setup steps in the config")
 		return exitOK
 	}
-	id, done, code := projectSession(ctx, args[0], project, devJob(cfg, secrets), stderr, vm, host.stateDir)
+	id, done, code := projectSession(ctx, args[0], project, job, stderr, vm, host.stateDir)
 	if code != exitOK {
 		return code
 	}
@@ -286,21 +286,38 @@ type devHost struct {
 	stateDir, userConfig string
 	keep                 func(id string) bool
 	lookupEnv            func(string) (string, bool) // the Mac's environment, for secrets; os.LookupEnv when nil
+	home                 string                      // for ~ in mounts; the user's home when empty
 }
 
-// devConfig loads the project's config and reads its secrets from the
-// Mac's environment.
-func (h devHost) devConfig(dir string) (config, map[string]string, error) {
+// devConfig loads the project's config and builds the session's job: the
+// secrets read from the Mac's environment, the mounts' host paths found.
+// Either missing is an error here, before anything starts.
+func (h devHost) devConfig(dir string) (config, guestJob, error) {
 	cfg, err := loadConfig(h.userConfig, filepath.Join(dir, "sbox.yaml"))
 	if err != nil {
-		return config{}, nil, err
+		return config{}, guestJob{}, err
 	}
 	lookup := h.lookupEnv
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
 	secrets, err := cfg.secretValues(lookup)
-	return cfg, secrets, err
+	if err != nil {
+		return config{}, guestJob{}, err
+	}
+	home := h.home
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	srcs, err := cfg.mountSources(home)
+	if err != nil {
+		return config{}, guestJob{}, err
+	}
+	job := devJob(cfg, secrets)
+	for i, src := range srcs {
+		job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+	}
+	return cfg, job, nil
 }
 
 // devJob is what a dev session runs: nothing but the guest's sshd, with

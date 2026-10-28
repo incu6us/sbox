@@ -199,6 +199,19 @@ mcp:
   deny: ["mcp__pg__execute"]
 ```
 
+Files from the Mac go in as copies, refreshed at every boot, so the Mac's
+version wins; nothing comes back (the project itself comes back with
+`sbox sync`):
+
+```yaml
+mounts:
+  - {host: ~/.gitconfig, guest: /home/runner/.gitconfig}
+  - {host: ~/.config/gh, guest: /home/runner/.config/gh}   # a real credential replaces the fake one
+```
+
+A missing host path stops `sbox dev` before anything starts. Guest paths
+are under `/home/runner`, outside the project.
+
 A secret's value is never written in a file: a missing variable stops
 `sbox dev` before anything starts, the value travels root-only to the
 guest, and it is never on the kept home. An MCP server inherits the

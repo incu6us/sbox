@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -38,6 +40,7 @@ type config struct {
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
 	} `yaml:"dev,omitempty"`
+	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot
 	Secrets map[string]string `yaml:"secrets,omitempty"` // guest variable → env:HOST_VARIABLE, read when a session starts
 	// Claude Code's own rules in the guest, written to ~/.claude/settings.json.
 	Permissions struct {
@@ -52,6 +55,34 @@ type config struct {
 	Timeouts struct {
 		Setup time.Duration `yaml:"setup,omitempty"` // each dev.setup and dev.start step; 10m when unset
 	} `yaml:"timeouts,omitempty"`
+}
+
+// mount is a Mac file or folder copied into the guest's home at each
+// boot, so the Mac's version wins; nothing comes back (sbox sync is for
+// the project).
+type mount struct {
+	Host  string `yaml:"host"`           // absolute, or ~/...
+	Guest string `yaml:"guest"`          // under /home/runner, outside the project
+	Mode  string `yaml:"mode,omitempty"` // ro, the only mode
+}
+
+// mountSources resolves each mount's host path against home and checks
+// it exists, following a symlink at the top (a dotfile linked from a
+// dotfiles repository is the usual case).
+func (c config) mountSources(home string) ([]string, error) {
+	var srcs []string
+	for _, m := range c.Mounts {
+		p := m.Host
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			p = filepath.Join(home, rest)
+		}
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			return nil, fmt.Errorf("mounts: %s: no such file or folder on the Mac", m.Host)
+		}
+		srcs = append(srcs, real)
+	}
+	return srcs, nil
 }
 
 // mcpServer is an MCP server for Claude Code in the guest: a command it
@@ -155,6 +186,7 @@ func loadConfig(userFile, projectFile string) (config, error) {
 			return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
 		}
 		cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
+		cfg.Mounts = append(cfg.Mounts, c.Mounts...)
 		cfg.Dev.Setup = append(cfg.Dev.Setup, c.Dev.Setup...)
 		cfg.Dev.Start = append(cfg.Dev.Start, c.Dev.Start...)
 		if len(c.Dev.Env) > 0 && cfg.Dev.Env == nil {
@@ -266,6 +298,21 @@ func (c *config) check() error {
 	for _, steps := range [][]string{c.Dev.Setup, c.Dev.Start} {
 		if slices.Contains(steps, "") {
 			return errors.New("dev: a setup or start step is empty")
+		}
+	}
+	for _, m := range c.Mounts {
+		if m.Mode != "" && m.Mode != "ro" {
+			return fmt.Errorf("mounts: %s: mode %q: mounts are copies in; the project comes back with sbox sync", m.Host, m.Mode)
+		}
+		if !filepath.IsAbs(m.Host) && !strings.HasPrefix(m.Host, "~/") {
+			return fmt.Errorf("mounts: host %q: want an absolute path or one starting with ~/", m.Host)
+		}
+		guest := path.Clean(m.Guest)
+		if !strings.HasPrefix(guest, "/home/runner/") || guest != m.Guest {
+			return fmt.Errorf("mounts: guest %q: want a clean path under /home/runner/ (the rest of the guest is read-only)", m.Guest)
+		}
+		if guest == "/home/runner/work" || strings.HasPrefix(guest, "/home/runner/work/") {
+			return fmt.Errorf("mounts: guest %q: that's the project; sbox sync carries files there", m.Guest)
 		}
 	}
 	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {

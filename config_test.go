@@ -323,3 +323,58 @@ mcp:
 		})
 	}
 }
+
+func TestLoadConfigMounts(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := write(t, "mounts:\n  - {host: ~/.gitconfig, guest: /home/runner/.gitconfig}\n")
+	project := write(t, "mounts:\n  - {host: ~/notes, guest: /home/runner/notes, mode: ro}\n")
+	cfg, err := loadConfig(user, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Mounts) != 2 || cfg.Mounts[0].Host != "~/.gitconfig" || cfg.Mounts[1].Guest != "/home/runner/notes" {
+		t.Errorf("mounts = %+v, want both files', in order", cfg.Mounts)
+	}
+
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := cfg.mountSources(home)
+	real, _ := filepath.EvalSymlinks(home) // macOS: /var is /private/var
+	if err != nil || len(srcs) != 2 || srcs[0] != filepath.Join(real, ".gitconfig") || srcs[1] != filepath.Join(real, "notes") {
+		t.Errorf("mountSources = %q, %v; want ~ expanded", srcs, err)
+	}
+	if err := os.Remove(filepath.Join(home, ".gitconfig")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.mountSources(home); err == nil || !strings.Contains(err.Error(), "~/.gitconfig") || !strings.Contains(err.Error(), "no such") {
+		t.Errorf("a missing host path: err %v, want it named", err)
+	}
+
+	for _, tt := range []struct{ name, body, wantErr string }{
+		{"rw", "mounts: [{host: /tmp/x, guest: /home/runner/x, mode: rw}]\n", "sbox sync"},
+		{"outside the home", "mounts: [{host: /tmp/x, guest: /etc/x}]\n", "/home/runner"},
+		{"the home itself", "mounts: [{host: /tmp/x, guest: /home/runner}]\n", "/home/runner"},
+		{"the project", "mounts: [{host: /tmp/x, guest: /home/runner/work/x}]\n", "project"},
+		{"dot dot", "mounts: [{host: /tmp/x, guest: /home/runner/../../etc}]\n", "/home/runner"},
+		{"relative host", "mounts: [{host: x, guest: /home/runner/x}]\n", "absolute"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want one naming %q", err, tt.wantErr)
+			}
+		})
+	}
+}

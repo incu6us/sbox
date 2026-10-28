@@ -881,3 +881,42 @@ func TestIsTerminal(t *testing.T) {
 		t.Error("isTerminal(a pseudo-terminal) = false, want true")
 	}
 }
+
+func TestDevMainMounts(t *testing.T) {
+	t.Parallel()
+	dir, home := t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts:\n  - {host: ~/.gitconfig, guest: /home/runner/.gitconfig}\n  - {host: ~/tools, guest: /home/runner/tools}\n")
+	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\tname = me\n")
+	if err := os.MkdirAll(filepath.Join(home, "tools", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, "tools", "bin", "x"), "#!/bin/sh\n")
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), home: home}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	files := tarFiles(t, vm.stdins[1])
+	if files["mounts/0"] != "[user]\n\tname = me\n" || files["mounts/1/bin/x"] != "#!/bin/sh\n" ||
+		files["sbox/mounts"] != "0 /home/runner/.gitconfig\n1 /home/runner/tools\n" {
+		t.Errorf("run tar: mounts/0 %q, mounts/1/bin/x %q, sbox/mounts %q", files["mounts/0"], files["mounts/1/bin/x"], files["sbox/mounts"])
+	}
+	if !strings.Contains(stderr.String(), "mounts   ~/.gitconfig → /home/runner/.gitconfig, ~/tools → /home/runner/tools") {
+		t.Errorf("preflight lacks the mounts:\n%s", stderr.String())
+	}
+
+	if err := os.Remove(filepath.Join(home, ".gitconfig")); err != nil {
+		t.Fatal(err)
+	}
+	none := fakeVM{}
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), home: home}); code != exitUsage ||
+		len(none.calls) != 0 || !strings.Contains(stderr.String(), "~/.gitconfig") {
+		t.Errorf("missing mount: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
+	}
+}

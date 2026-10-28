@@ -226,6 +226,13 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 		}
 		lines = append(lines, "services "+strings.Join(ps, ", "))
 	}
+	if len(cfg.Mounts) > 0 {
+		var ms []string
+		for _, m := range cfg.Mounts {
+			ms = append(ms, m.Host+" → "+m.Guest)
+		}
+		lines = append(lines, "mounts   "+strings.Join(ms, ", "))
+	}
 	if len(secrets) > 0 {
 		lines = append(lines, "secrets  "+strings.Join(slices.Sorted(maps.Keys(secrets)), ", "))
 	}

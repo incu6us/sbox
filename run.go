@@ -133,8 +133,12 @@ type guestJob struct {
 	secrets   map[string]string // the same, but root-only on the drive and never on the kept home
 	vcpus     int               // the main microVM's size; 0 keeps sbox-run's default
 	memoryMiB int
-	claude    []byte // Claude Code settings for scripts/sbox-claude.py to merge in the guest
+	claude    []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
+	mounts    []mountCopy // Mac files and folders the guest init copies into the home
 }
+
+// mountCopy is one mount: a resolved Mac path and where it goes.
+type mountCopy struct{ src, guest string }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
 // It exits with the command's status, 124 on timeout, 125 when sbox fails.
@@ -310,13 +314,12 @@ func printable(s string) string {
 	return b.String()
 }
 
-// writeRunTar packs what the guest gets: skill/ (the directory, symlinks
-// kept as links), sbox/init.sh, sbox/nonce, sbox/canary and sbox/scan.sh
-// for root only, sbox/cmd.sh and sbox/in/* for the runner.
-func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) error {
-	tw := tar.NewWriter(w)
-	total := int64(0)
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+// packTree adds src (a folder, or a single file) to tw under prefix:
+// regular files, folders and symlinks as links; sockets, devices and pipes
+// are skipped. total counts file bytes across calls, capped at
+// _maxRunBytes.
+func packTree(tw *tar.Writer, src, prefix string, total *int64) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -332,7 +335,7 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 		} else if !info.Mode().IsRegular() && !info.IsDir() {
 			return nil // sockets, devices, pipes
 		}
-		rel, err := filepath.Rel(dir, p)
+		rel, err := filepath.Rel(src, p)
 		if err != nil {
 			return err
 		}
@@ -340,7 +343,7 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 		if err != nil {
 			return err
 		}
-		hdr.Name = filepath.ToSlash(filepath.Join("skill", rel))
+		hdr.Name = filepath.ToSlash(filepath.Join(prefix, rel))
 		hdr.Uid, hdr.Gid, hdr.Uname, hdr.Gname = 0, 0, "", ""
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
@@ -348,8 +351,8 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		if total += info.Size(); total > _maxRunBytes {
-			return fmt.Errorf("%s: larger than %d MiB", dir, _maxRunBytes>>20)
+		if *total += info.Size(); *total > _maxRunBytes {
+			return fmt.Errorf("%s: larger than %d MiB", src, _maxRunBytes>>20)
 		}
 		f, err := os.Open(p)
 		if err != nil {
@@ -359,6 +362,22 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 		_, err = io.Copy(tw, f)
 		return err
 	})
+}
+
+// writeRunTar packs what the guest gets: skill/ (the directory, symlinks
+// kept as links), sbox/init.sh, sbox/nonce, sbox/canary and sbox/scan.sh
+// for root only, sbox/cmd.sh and sbox/in/* for the runner.
+func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) error {
+	tw := tar.NewWriter(w)
+	total := int64(0)
+	err := packTree(tw, dir, "skill", &total)
+	var mountList strings.Builder
+	for i, m := range job.mounts {
+		if err == nil {
+			err = packTree(tw, m.src, fmt.Sprintf("mounts/%d", i), &total)
+		}
+		fmt.Fprintf(&mountList, "%d %s\n", i, m.guest)
+	}
 	if err != nil {
 		return err
 	}
@@ -387,6 +406,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 			}
 			files = append(files, file{name, b.String(), mode})
 		}
+	}
+	if len(job.mounts) > 0 {
+		files = append(files, file{"sbox/mounts", mountList.String(), 0o644})
 	}
 	if job.claude != nil {
 		files = append(files, file{"sbox/claude.json", string(job.claude), 0o644}, file{"sbox/claude.py", _claudeScript, 0o644})

@@ -300,13 +300,15 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     commit: `vm`, `timeouts`, `prefetch.registries`, `rules`, `report`,
     and the overrides line in the report header. `go.mod` gains the dependency; the two docs change their
     stdlib line. Tests: a full file, an unknown key, flag override.
-- [ ] **3. Read-only mounts.** Tar packing, guest copy, cap, tests on
-    `writeRunTar` output.
+- [x] **3. Read-only mounts.** Tar packing, guest copy, cap, tests on
+    `writeRunTar` output. (Dev mode: copied in at each boot, under
+    `/home/runner` outside the project; `sbox run` and `scan` don't take
+    them yet.)
 - [ ] **4. Secrets.** (Partly, in dev mode: from the Mac's environment, root-only on the drive, tmpfs in the guest. Canary tails and the header line wait for scan mode.) Drive file, guest export, canary tails, header line. Tests
     on `analyze` with a secret tail.
-- [ ] **5. Read-write mounts.** `out.ext4`, the bind mounts, the fetch call, the
+- [ ] **5. Read-write mounts.** (Not for dev mode: `sbox sync` covers it.) `out.ext4`, the bind mounts, the fetch call, the
     diff, `-out`, `-apply` with confirmation.
-- [ ] **6. Push.** Remote check before the run; `-push` applies the returned diff
+- [ ] **6. Push.** (Not for dev mode: `.git` stays the Mac's and you push from there.) Remote check before the run; `-push` applies the returned diff
     to the host's own repository and pushes from there. `.git` from the VM is
     never used.
 - [ ] **7.** `MILESTONE.md` entry and README section per item above.
