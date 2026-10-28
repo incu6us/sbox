@@ -214,7 +214,10 @@ are under `/home/runner`, outside the project.
 
 A secret's value is never written in a file: a missing variable stops
 `sbox dev` before anything starts, the value travels root-only to the
-guest, and it is never on the kept home. An MCP server inherits the
+guest, and it is never on the kept home. What sbox prints from a session
+(the summary, `sbox log`, `sbox watch`) has each secret, and its hex and
+base64 forms, replaced by `[redacted:NAME]`, so a token echoed into a DNS
+lookup doesn't land in your scrollback. An MCP server inherits the
 secrets, so a token it needs goes under `secrets`. sbox owns the
 `permissions` key of the guest's `~/.claude/settings.json` and the servers
 it names in `~/.claude.json`; everything else Claude Code keeps there

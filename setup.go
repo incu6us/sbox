@@ -25,6 +25,8 @@ var (
 	_dnsScript string
 	//go:embed scripts/sbox-proxy.py
 	_proxyScript string
+	//go:embed scripts/sbox-redact.py
+	_redactScript string
 )
 
 const _runScriptPath = "/opt/sbox/bin/sbox-run"
@@ -34,6 +36,7 @@ var _vmTools = []struct{ path, body string }{
 	{_runScriptPath, _runScript},
 	{"/opt/sbox/bin/sbox-dns.py", _dnsScript},
 	{"/opt/sbox/bin/sbox-proxy.py", _proxyScript},
+	{"/opt/sbox/bin/sbox-redact.py", _redactScript},
 }
 
 // artifact is a pinned download, checked against its SHA-256 before use.

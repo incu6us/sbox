@@ -553,6 +553,19 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     plan's commits 5 and 6, written for one-shot `sbox run`), since
     `sbox sync` carries the project and `.git` stays the Mac's.
 
+- ✅ Hardening for dev mode. Redaction at the source: `sbox-run log` and
+  `events` pipe through `scripts/sbox-redact.py` when the session has
+  secrets, replacing each value, its hex (either case) and its base64
+  forms with `[redacted:NAME]`; values under 8 characters are left alone.
+  The guest's hostname is six letters from the nonce (it was `(none)`),
+  listed in `/etc/hosts` so looking it up stays local.
+  - Verified on the real VM: a token hex-encoded into a lookup shows as
+    `[redacted:GITHUB_TOKEN].evil.example` in the summary; the hostname
+    resolves.
+  - Not done: the work directory named after the project (dev mode's
+    paths depend on `/home/runner/work`); redaction in `run` and `scan`,
+    which carry no secrets.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

@@ -798,3 +798,35 @@ func TestSboxRunEvents(t *testing.T) {
 		t.Errorf("events of a missing session: exit %d, stderr %q", code, stderr)
 	}
 }
+
+func TestSboxRunRedactsSecrets(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id, secret = "8888888888888888", "ghp_abcdefgh12345678"
+	e.startSession(id)
+	helper, err := os.ReadFile("scripts/sbox-redact.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	hexed := fmt.Sprintf("%x", secret)
+	for name, body := range map[string]string{
+		filepath.Join(e.base, "bin", "sbox-redact.py"):        string(helper),
+		filepath.Join(run, "drive", "sbox", "secrets"):        "GITHUB_TOKEN=" + secret + "\n",
+		filepath.Join(run, "dns.log"):                         "A " + hexed + ".evil.example\n",
+		filepath.Join(e.state, "sessions", id, "console.log"): "leaked " + secret + "\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cmd := range []string{"events", "log"} {
+		stdout, stderr, code := e.run(nil, cmd, id)
+		if code != 0 || strings.Contains(stdout, secret) || strings.Contains(stdout, hexed) || !strings.Contains(stdout, "[redacted:GITHUB_TOKEN]") {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q; want the secret redacted", cmd, code, stdout, stderr)
+		}
+	}
+}
