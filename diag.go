@@ -337,6 +337,7 @@ func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		return exitUsage
 	}
 	_, _ = fmt.Fprintf(stdout, "watching session %s (Ctrl-C to stop)\n", id)
+	since := time.Now()
 	shown := map[string]string{} // what a line is about → the line last printed for it
 	for {
 		var events, ss bytes.Buffer
@@ -348,7 +349,8 @@ func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		}
 		_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
 		ev := parseEvents(events.String())
-		for _, line := range append(ev.blocked(), portLines(ss.String(), ev.ports)...) {
+		lines := append(ev.blocked(), portLines(ss.String(), ev.ports)...)
+		for _, line := range append(lines, toolDenials(ctx, vm, id, since)...) {
 			f := strings.Fields(line)
 			key := strings.Join(f[:min(3, len(f))], " ")
 			if shown[key] != line {
@@ -431,4 +433,71 @@ func consoleText(raw string) string {
 		}
 	}
 	return b.String()
+}
+
+// _denialScript runs in the guest as the runner and prints a "kind\ttool"
+// line for each tool call Claude Code denied since argv[1] (an RFC 3339
+// time, compared as text with the transcripts' timestamps). The format,
+// confirmed on Claude Code 2.1's transcripts: a user entry carrying
+// toolDenialKind answers a tool_use, named in an earlier assistant entry.
+const _denialScript = `import glob, json, os, sys
+since, uses = sys.argv[1], {}
+for path in sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl"))):
+    for line in open(path, errors="replace"):
+        if '"tool_use"' not in line and "toolDenialKind" not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        content = (d.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use":
+                uses[c.get("id")] = c.get("name")
+            elif "toolDenialKind" in d and c.get("type") == "tool_result" and str(d.get("timestamp", "")) >= since:
+                print("%s\t%s" % (d["toolDenialKind"], uses.get(c.get("tool_use_id"), "?")))
+`
+
+var (
+	_denialKind = regexp.MustCompile(`^[a-z-]{1,40}$`)
+	_toolName   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,100}$`)
+)
+
+// denialLines groups the denial script's output (from the guest, so
+// parsed strictly) into BLOCKED tool lines, most denied first.
+func denialLines(out string) []string {
+	counts := map[string]int{}
+	for _, line := range strings.Split(out, "\n") {
+		kind, tool, ok := strings.Cut(line, "\t")
+		if ok && _denialKind.MatchString(kind) && _toolName.MatchString(tool) {
+			counts[tool+"\t"+kind]++
+		}
+	}
+	var lines []string
+	for _, key := range byCount(counts) {
+		tool, kind, _ := strings.Cut(key, "\t")
+		cause := "denied (" + kind + ")"
+		switch kind {
+		case "permission-rule":
+			cause = "denied by a permission rule (permissions.deny or mcp.deny)"
+		case "user-rejected":
+			cause = "rejected at the prompt"
+		}
+		lines = append(lines, fmt.Sprintf("BLOCKED tool    %s ×%d  %s", tool, counts[key], cause))
+	}
+	return lines
+}
+
+// toolDenials asks session id's guest for Claude Code's denied tool calls
+// since since; none when it can't answer.
+func toolDenials(ctx context.Context, vm sboxRunFunc, id string, since time.Time) []string {
+	var out bytes.Buffer
+	if err := vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "python3", "-I", "-c", _denialScript, since.UTC().Format(time.RFC3339)); err != nil {
+		return nil
+	}
+	return denialLines(out.String())
 }

@@ -222,6 +222,7 @@ func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, a
 				body, _ := io.ReadAll(tr)
 				g.files[strings.TrimPrefix(hdr.Name, "./")] = string(body)
 			}
+		case slices.Contains(cmd, _denialScript): // sbox dev's summary: no transcripts here
 		case slices.Equal(cmd, []string{"sh", "-c", sumScript(g.pullRules())}):
 			for _, p := range slices.Sorted(maps.Keys(g.files)) {
 				if !g.pullRules().skip(p) && !g.pullRules().skip(path.Dir(p)) {

@@ -504,6 +504,28 @@ for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do
 	pids+=($!)
 done
 
+# dev.pause_after: pause the session's microVM once nothing has been
+# connected to the guest (a terminal, a forwarded port) for that many
+# seconds. sbox dev resumes it when attaching again.
+idle_pause() {
+	local limit=$1 dir=$sessions/$id busy now
+	busy=$(date +%s)
+	while sleep "${SBOX_IDLE_POLL:-$((limit < 30 ? limit : 30))}"; do
+		now=$(date +%s)
+		if [[ $(cat "$dir/state" 2>/dev/null) != running ]] ||
+			[[ -n $(ip netns exec "$netns" ss -Htn state established dst 172.16.0.2 2>/dev/null) ]]; then
+			busy=$now
+		elif ((now - busy >= limit)) && vm_api "$id" Paused >/dev/null; then
+			echo paused >"$dir/state"
+		fi
+	done
+}
+pause_after=$(cat "$run/drive/sbox/pause_after" 2>/dev/null || true)
+if [[ ${SBOX_SESSION:-} == 1 && $pause_after =~ ^[1-9][0-9]{0,6}$ ]]; then
+	idle_pause "$pause_after" </dev/null >/dev/null 2>&1 &
+	pids+=($!)
+fi
+
 # Exit 124 on timeout, 0 otherwise: the console (stdout) belongs to the
 # guest, so the timeout is reported out of its reach.
 status=0

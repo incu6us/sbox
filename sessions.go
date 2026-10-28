@@ -578,7 +578,7 @@ func markApplied(stateDir, project, id string, cfg config, keys []string) error 
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
 	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets,
-		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore)}
+		vcpus: cfg.Dev.VCPUs, memoryMiB: cfg.Dev.MemoryMiB, claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore), pauseAfter: cfg.Dev.PauseAfter}
 }
 
 // runHooks runs the config's setup and start steps in session id (setup
@@ -603,7 +603,8 @@ func collectSummary(ctx context.Context, id, dir string, started time.Time, unsy
 	var events, ss bytes.Buffer
 	_ = vm(ctx, nil, &events, io.Discard, "events", id)
 	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
-	return sessionSummary(time.Since(started), dir, unsynced, parseEvents(events.String()), portLines(ss.String(), cfg.Ports))
+	blocked := append(portLines(ss.String(), cfg.Ports), toolDenials(ctx, vm, id, started)...)
+	return sessionSummary(time.Since(started), dir, unsynced, parseEvents(events.String()), blocked)
 }
 
 // liveSession finds the project's running or paused session.

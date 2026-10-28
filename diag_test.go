@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -166,6 +168,12 @@ func (v *eventsVM) run(ctx context.Context, in io.Reader, out, errOut io.Writer,
 			_, _ = fmt.Fprintf(out, "EGRESS DENY b.example:443\n")
 		}
 	case "attach":
+		if slices.Contains(args, _denialScript) {
+			if n >= 4 { // from the second round on: each round attaches twice
+				_, _ = io.WriteString(out, "user-rejected\tBash\n")
+			}
+			return nil
+		}
 		_, _ = io.WriteString(out, "LISTEN 0 511 127.0.0.1:3000 0.0.0.0:*\n")
 	case "log":
 		if n > v.rounds {
@@ -191,6 +199,7 @@ func TestWatchMain(t *testing.T) {
 		"BLOCKED egress  a.example:443 ×1  not in egress",
 		"BLOCKED port    3000  listening on loopback only, the forward can't reach it → listen on 0.0.0.0 (e.g. --host 0.0.0.0)",
 		"BLOCKED egress  b.example:443 ×1  not in egress",
+		"BLOCKED tool    Bash ×1  rejected at the prompt",
 		"BLOCKED egress  b.example:443 ×2  not in egress",
 		"session 0123abcd ended",
 	}
@@ -232,5 +241,39 @@ func TestLogMainConsole(t *testing.T) {
 		if code := logMain(context.Background(), []string{"0123456789abcdef"}, &stdout, &stderr, vm.run, 0); code != exitOK || stdout.String() != want {
 			t.Errorf("log of %q: exit %d, %q; want %q", raw, code, stdout.String(), want)
 		}
+	}
+}
+
+func TestDenialScript(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	dir := filepath.Join(home, ".claude", "projects", "-home-runner-work")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := strings.Join([]string{
+		`{"type":"assistant","timestamp":"2026-10-28T10:00:00.000Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"rm -rf /"}}]}}`,
+		`{"type":"user","timestamp":"2026-10-28T10:00:01.000Z","toolDenialKind":"permission-rule","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"denied"}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-28T09:00:00.000Z","message":{"content":[{"type":"tool_use","id":"t0","name":"WebFetch","input":{}}]}}`,
+		`{"type":"user","timestamp":"2026-10-28T09:00:01.000Z","toolDenialKind":"permission-rule","message":{"content":[{"type":"tool_result","tool_use_id":"t0","is_error":true}]}}`,
+		`{"type":"assistant","timestamp":"2026-10-28T10:01:00.000Z","message":{"content":[{"type":"tool_use","id":"t2","name":"mcp__pg__execute","input":{}}]}}`,
+		`{"type":"user","timestamp":"2026-10-28T10:01:01.000Z","toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true}]}}`,
+		`not json`,
+	}, "\n") + "\n"
+	writeTestFile(t, filepath.Join(dir, "s.jsonl"), transcript)
+	cmd := exec.Command("python3", "-I", "-c", _denialScript, "2026-10-28T09:30:00")
+	cmd.Env = []string{"HOME=" + home}
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "permission-rule\tBash\nuser-rejected\tmcp__pg__execute\n" {
+		t.Errorf("denial script: %v, %q; want the two denials after the start, the earlier one left out", err, out)
+	}
+
+	got := denialLines("permission-rule\tBash\npermission-rule\tBash\nuser-rejected\tmcp__pg__execute\nweird kind\tx\nother-kind\tTool name with spaces\n")
+	want := []string{
+		"BLOCKED tool    Bash ×2  denied by a permission rule (permissions.deny or mcp.deny)",
+		"BLOCKED tool    mcp__pg__execute ×1  rejected at the prompt",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("denialLines =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
