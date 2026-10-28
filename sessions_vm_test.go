@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -819,5 +820,51 @@ func TestDevChangeCountOnVM(t *testing.T) {
 	}
 	if asked != 1 || !strings.Contains(errOut.String(), "the guest has 1 change: sbox sync") {
 		t.Errorf("keep asked with %d unsynced, summary:\n%s", asked, errOut.String())
+	}
+}
+
+// TestAttachWindowResizeOnVM attaches to a session from a pseudo-terminal
+// that is the attach's controlling terminal, as in a real shell, and
+// resizes it mid-command: the guest sees the new size.
+func TestAttachWindowResizeOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	master, slave := openPTY(t)
+	if master == nil {
+		t.Skip("no pseudo-terminals")
+	}
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+
+	setWinsize(t, master, 30, 100)
+	// What sboxRun runs, as its own process with the terminal as its
+	// controlling one, so the kernel's SIGWINCH reaches it.
+	cmd := exec.Command(limactlBin(), "shell", "--workdir", "/", _vmName, "sudo", _runScriptPath,
+		"attach", id, "--", "sh", "-c", "stty size; sleep 4; stty size")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	read := make(chan struct{})
+	go func() { _, _ = io.Copy(&out, master); close(read) }()
+	time.Sleep(2500 * time.Millisecond)
+	setWinsize(t, master, 40, 120)
+	err := cmd.Wait()
+	_ = slave.Close()
+	select {
+	case <-read:
+	case <-time.After(2 * time.Second):
+	}
+	text := strings.ReplaceAll(out.String(), "\r", "")
+	if err != nil || !strings.Contains(text, "30 100\n") || !strings.Contains(text, "40 120\n") {
+		t.Errorf("attach: %v, output %q; want the first size, then the new one", err, text)
 	}
 }
