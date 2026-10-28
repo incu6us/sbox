@@ -258,3 +258,43 @@ func allowAll(t *testing.T) string {
 	writeTestFile(t, p, _allowAll)
 	return p
 }
+
+// TestDevMainApproveOnce: in a terminal the user can allow a project's
+// requests for that project alone; the answer is remembered, and only
+// new requests are asked about.
+func TestDevMainApproveOnce(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, "egress: [api.anthropic.com]\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [one.example]\n")
+	var asked [][]string
+	answer := true
+	dev := func() (string, int) {
+		vm := &fakeVM{answer: func(args []string) string {
+			if args[0] == "start" {
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		host := devHost{stateDir: state, userConfig: user, approve: func(lines []string) bool { asked = append(asked, lines); return answer }}
+		code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host)
+		return stderr.String(), code
+	}
+	if notes, code := dev(); code != exitOK || len(asked) != 1 || len(asked[0]) != 1 || !strings.Contains(asked[0][0], "one.example:443") {
+		t.Fatalf("first run: exit %d, asked %q\n%s", code, asked, notes)
+	}
+	data, _ := os.ReadFile(filepath.Join(state, "projects", mustProjectID(t, dir), "approved.json"))
+	if !strings.Contains(string(data), "egress one.example:443") {
+		t.Errorf("approved.json = %s", data)
+	}
+	if notes, code := dev(); code != exitOK || len(asked) != 1 {
+		t.Errorf("second run: exit %d, asked %d times; want no question\n%s", code, len(asked), notes)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [one.example, two.example]\n")
+	answer = false
+	if _, code := dev(); code != exitFail || len(asked) != 2 || len(asked[1]) != 1 || !strings.Contains(asked[1][0], "two.example:443") {
+		t.Errorf("a new request, declined: exit %d, asked %q; want two.example alone, and a refusal", code, asked)
+	}
+}

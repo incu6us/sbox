@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // workspace is a named set of permissions in the user's own file: what
@@ -206,6 +211,7 @@ type blockedError struct {
 	dir, ws string
 	misses  []request
 	cfg     config
+	shown   bool // the lines were printed already, with the question
 }
 
 func (e *blockedError) Error() string {
@@ -298,4 +304,50 @@ func layered(userFile, projectFile, dir, override, home string, approved map[str
 	cfg.merge(project)
 	cfg, err = cfg.finish()
 	return cfg, ws, misses, err
+}
+
+// approvedFile is where the requests the user allowed for one project are
+// kept, next to its sync base; sbox clean removes it with the rest.
+func approvedFile(stateDir, project string) string {
+	return filepath.Join(stateDir, "projects", project, "approved.json")
+}
+
+// loadApproved reads a project's approvals: request id → the day it was
+// approved. None when the file is missing or unreadable.
+func loadApproved(stateDir, project string) map[string]string {
+	approved := map[string]string{}
+	if data, err := os.ReadFile(approvedFile(stateDir, project)); err == nil {
+		_ = json.Unmarshal(data, &approved)
+	}
+	return approved
+}
+
+// saveApproved adds requests to a project's approvals, dated today.
+func saveApproved(stateDir, project string, misses []request) error {
+	approved := loadApproved(stateDir, project)
+	for _, r := range misses {
+		approved[r.id()] = time.Now().Format(time.DateOnly)
+	}
+	data, err := json.MarshalIndent(approved, "", "  ")
+	if err != nil {
+		return err
+	}
+	p := approvedFile(stateDir, project)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, append(data, '\n'), 0o644)
+}
+
+// askApprove shows the BLOCKED lines and asks on out whether to allow
+// them for this project alone, reading the answer from in.
+func askApprove(in io.Reader, out io.Writer) func(lines []string) bool {
+	return func(lines []string) bool {
+		for _, line := range lines {
+			_, _ = fmt.Fprintln(out, line)
+		}
+		_, _ = fmt.Fprint(out, "sbox: allow these for this project alone, and remember? [y/N] ")
+		answer, _ := bufio.NewReader(in).ReadString('\n')
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y")
+	}
 }
