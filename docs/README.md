@@ -43,11 +43,11 @@ Conventions shared by every plan:
 
 ## Status
 
-- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: `-trace`, `sync -patch`, auto-push, the verification list)
+- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: `-trace`, the live change notice, doctor's forwarding check, the verification list)
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
-  - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions (`-patch`, auto-push and the notice left)
+  - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions, `-patch`, the Mac's edits pushed at boot (the live notice left)
   - [x] 5 ports and services (doctor's forwarding check left)
   - [x] 5b egress from the config, wildcards, raw TCP (ssh, databases)
   - [x] 5c reattach and detach

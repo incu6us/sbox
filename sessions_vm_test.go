@@ -697,3 +697,51 @@ func TestDevMountsOnVM(t *testing.T) {
 		t.Errorf("second session: %q, want the Mac's version back", out)
 	}
 }
+
+// TestDevPushOnBootAndPatchOnVM edits a project on the Mac between two
+// sbox dev sessions (the edit is in the guest at the second boot), then
+// takes the guest's own change back as a patch.
+func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "README"), "v1\n")
+	dev := func(script string) (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+	dev("true")
+	writeTestFile(t, filepath.Join(dir, "README"), "mac v2\n")
+	out, notes := dev("cat README; echo from the guest > NOTES")
+	if out != "mac v2\n" || !strings.Contains(notes, "1 change from the Mac copied in") {
+		t.Errorf("second session: %q, notes %q; want the Mac's edit in the guest", out, notes)
+	}
+
+	var patch, errOut bytes.Buffer
+	if code := syncMain(ctx, []string{"-patch", dir}, &patch, &errOut, sboxRun, state); code != exitOK || !strings.Contains(patch.String(), "+++ b/NOTES") {
+		t.Fatalf("sbox sync -patch: exit %d, %s\n%s", code, errOut.String(), patch.String())
+	}
+	cmd := exec.Command("patch", "-p1", "-s", "-E")
+	cmd.Dir, cmd.Stdin = dir, &patch
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("patch: %v\n%s", err, out)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "NOTES")); string(data) != "from the guest\n" {
+		t.Errorf("NOTES after the patch = %q", data)
+	}
+	var plan bytes.Buffer
+	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, state); code != exitOK || !strings.Contains(plan.String(), "nothing to sync") {
+		t.Errorf("sync after the patch: exit %d:\n%s", code, plan.String())
+	}
+}

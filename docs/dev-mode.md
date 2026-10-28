@@ -442,8 +442,12 @@ writes a commented starter file and `sbox config` prints the effective one.
     `.git`, `node_modules`, `.venv`, `__pycache__`, `.DS_Store` are never
     synced. Tests on the merge, the manifest, the extraction and the
     writes with fixtures, then on the real VM.
-    - [ ] `-patch`: write the guest's changes as a patch instead
-    - [ ] push the Mac's changes automatically when `sbox dev` reuses a home
+    - [x] `-patch`: write the guest's changes as a patch instead (git's
+      `a/` `b/` prefixes, for `git apply` or `patch -p1 -E`; the base
+      doesn't move; escaped when printed to a terminal)
+    - [x] push the Mac's changes automatically when `sbox dev` reuses a home
+      (only the Mac-to-guest half, before the hooks; the guest's own
+      changes wait for `sbox sync`, with a line saying how many)
     - [ ] the change-count notice in the terminal
 - [x] **5. Ports and services.** From the config: `ports` (guest to the
     Mac's localhost) and `services` (the Mac's localhost to the guest, as

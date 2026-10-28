@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  config   print a project's effective config, and which secrets are set: sbox config [dir]\n"+
 			"  start    start a session on a directory and print its id: sbox start <dir> -- <command>\n"+
 			"  attach   a terminal in a running session: sbox attach <id> [-- <command>]\n"+
-			"  sync     show what the Mac and the guest each changed; -apply brings it across: sbox sync [-apply] <dir>\n"+
+			"  sync     show what the Mac and the guest each changed; -apply brings it across, -patch prints the guest's as a patch: sbox sync [-apply | -patch] <dir>\n"+
 			"  ps       list sessions and their state\n"+
 			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
 			"  pause    freeze a session in memory: sbox pause <id>\n"+

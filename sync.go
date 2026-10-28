@@ -289,12 +289,13 @@ func pullScript() string {
 // what each side changed, and with -apply brings each change to the other
 // side. Paths changed differently on both sides are left alone.
 func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, stateDir string) int {
-	apply := len(args) > 0 && args[0] == "-apply"
-	if apply {
-		args = args[1:]
+	var mode string
+	if len(args) > 0 && (args[0] == "-apply" || args[0] == "-patch") {
+		mode, args = args[0], args[1:]
 	}
+	apply := mode == "-apply"
 	if len(args) != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply] <dir>")
+		_, _ = fmt.Fprintln(stderr, "usage: sbox sync [-apply | -patch] <dir>")
 		return exitUsage
 	}
 	dir := args[0]
@@ -340,6 +341,14 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 		return exitFail
 	}
 	plan := planSync(base, host, guest)
+	if mode == "-patch" {
+		patch := guestPatch(plan, host, dir, pulled)
+		if f, ok := stdout.(*os.File); ok && isTerminal(f) {
+			patch = consoleText(patch) // the guest wrote it: escaped for a terminal, raw into a file
+		}
+		_, _ = io.WriteString(stdout, patch)
+		return exitOK
+	}
 	changes := writePlan(stdout, plan, host, guest, dir, pulled, !apply)
 	if !apply {
 		if changes {
@@ -477,6 +486,66 @@ func nextBase(base manifest, plan []syncAction, host, guest manifest) manifest {
 	return next
 }
 
+// pushOnBoot brings the Mac's changes into a kept home when sbox dev boots
+// it, so the agent starts from your latest edits: only the Mac-to-guest
+// half of the sync plan is carried out, and the base moves for those paths
+// alone. The guest's own changes and conflicts wait for sbox sync, with a
+// line saying so. A project with no base (never copied in) is left alone.
+func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir string, stderr io.Writer) error {
+	base, err := loadBase(stateDir, project)
+	if err != nil {
+		return nil
+	}
+	tmp, err := os.MkdirTemp("", "sbox-sync-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+	pulled := filepath.Join(tmp, "guest")
+	if err := pullGuest(ctx, vm, id, pulled, stderr); err != nil {
+		return err
+	}
+	guest, err := readManifest(pulled)
+	if err != nil {
+		return err
+	}
+	host, err := readManifest(dir)
+	if err != nil {
+		return err
+	}
+	var pushes []syncAction
+	waiting := 0
+	for _, a := range planSync(base, host, guest) {
+		switch a.Op {
+		case opPush, opPushDelete, opSame:
+			pushes = append(pushes, a)
+		default:
+			waiting++
+		}
+	}
+	if err := applyPushes(ctx, vm, id, dir, pushes, host, stderr); err != nil {
+		return err
+	}
+	if err := saveBase(stateDir, project, nextBase(base, pushes, host, guest)); err != nil {
+		return err
+	}
+	if n := len(pushes); n > 0 {
+		_, _ = fmt.Fprintf(stderr, "sbox: %d %s from the Mac copied in\n", n, plural(n, "change", "changes"))
+	}
+	if waiting > 0 {
+		_, _ = fmt.Fprintf(stderr, "sbox: the guest has %d %s of its own: sbox sync %s\n", waiting, plural(waiting, "change", "changes"), dir)
+	}
+	return nil
+}
+
+// plural picks the word for n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
 // writePlan prints what each side changed, with diffs of changed files
 // when diffs is set, and reports whether anything is to be done.
 func writePlan(w io.Writer, plan []syncAction, host, guest manifest, dir, pulled string, diffs bool) bool {
@@ -522,6 +591,30 @@ func writePlan(w io.Writer, plan []syncAction, host, guest manifest, dir, pulled
 	}
 	_, _ = io.WriteString(w, b.String())
 	return len(fromGuest)+len(fromHost) > 0
+}
+
+// guestPatch is the guest's side of a plan as one unified diff with git's
+// a/ and b/ prefixes, for git apply or patch -p1 on the Mac. The base
+// doesn't move: once applied, the next sync finds both sides agree.
+func guestPatch(plan []syncAction, host manifest, dir, pulled string) string {
+	var b strings.Builder
+	for _, a := range plan {
+		mac, guest := filepath.Join(dir, filepath.FromSlash(a.Path)), filepath.Join(pulled, filepath.FromSlash(a.Path))
+		left, right := "a/"+a.Path, "b/"+a.Path
+		switch a.Op {
+		case opPull:
+			if _, onHost := host[a.Path]; !onHost {
+				mac, left = os.DevNull, os.DevNull
+			}
+		case opPullDelete:
+			guest, right = os.DevNull, os.DevNull
+		default:
+			continue
+		}
+		out, _ := exec.Command("diff", "-u", "--label", left, "--label", right, mac, guest).Output() // exit 1 means "differs"
+		b.Write(out)
+	}
+	return b.String()
 }
 
 func changeLabel(existed bool) string {
