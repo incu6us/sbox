@@ -270,7 +270,11 @@ When `sbox dev` boots a kept home it copies your Mac edits in first, so
 the agent starts from them; its own changes still wait for `sbox sync`. A file changed differently on both sides is listed
 as a conflict and left alone. Never synced: symlinks, `.git` (each side
 keeps its own history: commit the synced files on the Mac),
-`node_modules`, `.venv`, `__pycache__`, `.DS_Store`.
+`node_modules`, `.venv`, `__pycache__`, `.DS_Store`, and what `dev.ignore`
+lists (`[dist, "*.log", build/cache]`: a name or glob at any depth, or a
+path from the project root). `sbox dev` doesn't copy those in either,
+except `.git`, so the agent has your history; dependencies are installed
+in the guest, by `dev.setup` for instance.
 
 ```
 $ sbox sync ./myapp

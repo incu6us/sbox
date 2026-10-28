@@ -76,7 +76,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "attach":
 		return attachMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun)
 	case "sync":
-		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
+		return syncMain(ctx, args[1:], stdout, stderr, sboxRun, devHost{stateDir: hostStateDir(), userConfig: userConfigFile()})
 	case "dev":
 		var keep func(string) bool
 		if isTerminal(os.Stdin) {

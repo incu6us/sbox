@@ -487,7 +487,7 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 		return answer("NEW " + args[1] + "\n")(args)
 	})
 	base, err := loadBase(state, project)
-	want, _ := readManifest(dir)
+	want, _ := readManifest(dir, syncRules(nil))
 	if err != nil || !maps.Equal(base, want) {
 		t.Errorf("base after a new drive: %v, %v; want the folder's manifest %v", base, err, want)
 	}

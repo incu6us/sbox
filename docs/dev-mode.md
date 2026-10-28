@@ -545,7 +545,11 @@ writes a commented starter file and `sbox config` prints the effective one.
       (`TestDevSecretsOnVM`, `TestDevAgentSettingsOnVM`: `claude mcp list`
       shows the servers)
     - [ ] the "could not start" check for `.mcp.json` servers: step 7
-    - [ ] `dev.pause_after`, `dev.ignore`, `-config`, `-command`
+    - [x] `dev.ignore`: names or globs at any depth, or paths from the
+      root, left out of the copy-in, the base and both sides of sync;
+      `node_modules`, `.venv`, `__pycache__` and `.DS_Store` are left out of
+      the copy-in by default now (a Mac's `node_modules` has Mac binaries)
+    - [ ] `dev.pause_after`, `-config`, `-command`
 - [x] **6b. Config changes under a running session.** The config a
     session booted with is recorded on the Mac; attaching again and
     `sbox setup-env` name the keys that changed; `sbox dev -restart`

@@ -219,7 +219,7 @@ func TestSyncOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut bytes.Buffer
-	if code := syncMain(ctx, []string{dir}, &out, &errOut, sboxRun, state); code != exitOK {
+	if code := syncMain(ctx, []string{dir}, &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("dry run: exit %d: %s", code, errOut.String())
 	}
 	for _, want := range []string{"changed  README", "added    added.txt", "deleted  keep.txt", "added    mac.txt", "+guest"} {
@@ -227,7 +227,7 @@ func TestSyncOnVM(t *testing.T) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())
 		}
 	}
-	if code := syncMain(ctx, []string{"-apply", dir}, &out, &errOut, sboxRun, state); code != exitOK {
+	if code := syncMain(ctx, []string{"-apply", dir}, &out, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK {
 		t.Fatalf("apply: exit %d: %s", code, errOut.String())
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "README")); string(got) != "guest\n" {
@@ -729,7 +729,7 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 	}
 
 	var patch, errOut bytes.Buffer
-	if code := syncMain(ctx, []string{"-patch", dir}, &patch, &errOut, sboxRun, state); code != exitOK || !strings.Contains(patch.String(), "+++ b/NOTES") {
+	if code := syncMain(ctx, []string{"-patch", dir}, &patch, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK || !strings.Contains(patch.String(), "+++ b/NOTES") {
 		t.Fatalf("sbox sync -patch: exit %d, %s\n%s", code, errOut.String(), patch.String())
 	}
 	cmd := exec.Command("patch", "-p1", "-s", "-E")
@@ -741,7 +741,7 @@ func TestDevPushOnBootAndPatchOnVM(t *testing.T) {
 		t.Errorf("NOTES after the patch = %q", data)
 	}
 	var plan bytes.Buffer
-	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, state); code != exitOK || !strings.Contains(plan.String(), "nothing to sync") {
+	if code := syncMain(ctx, []string{dir}, &plan, &errOut, sboxRun, devHost{stateDir: state}); code != exitOK || !strings.Contains(plan.String(), "nothing to sync") {
 		t.Errorf("sync after the patch: exit %d:\n%s", code, plan.String())
 	}
 }
