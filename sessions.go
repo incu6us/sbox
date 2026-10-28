@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -180,10 +182,11 @@ func attachMain(ctx context.Context, args []string, stdin io.Reader, stdout, std
 // work drive (the runner's home, with the project in it) is kept between
 // sessions; -fresh stops the live session and discards the drive first.
 // When the drive is new, what was copied in becomes the sync base, kept in
-// stateDir on the Mac. Ports, services and egress come from userConfig and
-// the project's sbox.yaml. At detach, keep says whether the session stays
-// up; with no keep (no terminal to ask on) it is stopped.
-func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string, keep func(id string) bool) int {
+// host.stateDir on the Mac. The session's network and environment come
+// from the user's config and the project's sbox.yaml. At detach, host.keep
+// says whether the session stays up; with none (no terminal to ask on) it
+// is stopped.
+func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
 	fresh := len(args) > 0 && args[0] == "-fresh"
 	if fresh {
 		args = args[1:]
@@ -197,7 +200,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
-	cfg, err := loadConfig(userConfig, filepath.Join(args[0], "sbox.yaml"))
+	cfg, secrets, err := host.devConfig(args[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
@@ -227,12 +230,15 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
 	} else {
+		if len(secrets) > 0 {
+			_, _ = fmt.Fprintln(stderr, "sbox: secrets:", strings.Join(slices.Sorted(maps.Keys(secrets)), ", "))
+		}
 		var newDrive bool
-		if id, newDrive, code = startSession(ctx, args[0], project, devJob(cfg), stderr, vm); code != exitOK {
+		if id, newDrive, code = startSession(ctx, args[0], project, devJob(cfg, secrets), stderr, vm); code != exitOK {
 			return code
 		}
 		if newDrive {
-			if err := recordBase(stateDir, project, args[0]); err != nil {
+			if err := recordBase(host.stateDir, project, args[0]); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
 			}
 			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
@@ -243,7 +249,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	}
 
 	code = attachMain(ctx, append([]string{id}, args[1:]...), stdin, stdout, stderr, vm)
-	if keep != nil && keep(id) {
+	if host.keep != nil && host.keep(id) {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
 		return code
 	}
@@ -253,7 +259,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 
 // setupEnvMain implements `sbox setup-env <dir>`: the project's dev.setup
 // steps again, in its live session or in one started for them.
-func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, stateDir, userConfig string) int {
+func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, host devHost) int {
 	if len(args) != 1 {
 		_, _ = fmt.Fprintln(stderr, "usage: sbox setup-env <dir>")
 		return exitUsage
@@ -263,7 +269,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
 	}
-	cfg, err := loadConfig(userConfig, filepath.Join(args[0], "sbox.yaml"))
+	cfg, secrets, err := host.devConfig(args[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
@@ -272,7 +278,7 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		_, _ = fmt.Fprintln(stdout, "no dev.setup steps in the config")
 		return exitOK
 	}
-	id, done, code := projectSession(ctx, args[0], project, devJob(cfg), stderr, vm, stateDir)
+	id, done, code := projectSession(ctx, args[0], project, devJob(cfg, secrets), stderr, vm, host.stateDir)
 	if code != exitOK {
 		return code
 	}
@@ -280,10 +286,34 @@ func setupEnvMain(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	return runHooks(ctx, id, cfg, true, stdout, stderr, vm)
 }
 
+// devHost is what dev commands take from the Mac: where the sync base and
+// the user's config live, and how to ask about keeping a session at
+// detach (nil: no terminal to ask on).
+type devHost struct {
+	stateDir, userConfig string
+	keep                 func(id string) bool
+	lookupEnv            func(string) (string, bool) // the Mac's environment, for secrets; os.LookupEnv when nil
+}
+
+// devConfig loads the project's config and reads its secrets from the
+// Mac's environment.
+func (h devHost) devConfig(dir string) (config, map[string]string, error) {
+	cfg, err := loadConfig(h.userConfig, filepath.Join(dir, "sbox.yaml"))
+	if err != nil {
+		return config{}, nil, err
+	}
+	lookup := h.lookupEnv
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	secrets, err := cfg.secretValues(lookup)
+	return cfg, secrets, err
+}
+
 // devJob is what a dev session runs: nothing but the guest's sshd, with
-// the config's network and environment.
-func devJob(cfg config) guestJob {
-	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env}
+// the config's network and environment, and the secrets' values.
+func devJob(cfg config, secrets map[string]string) guestJob {
+	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets}
 }
 
 // runHooks runs the config's setup and start steps in session id (setup

@@ -373,7 +373,7 @@ func TestDevMain(t *testing.T) {
 		return nil
 	}}
 	var stdout, stderr bytes.Buffer
-	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil)
+	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil})
 	if code != 3 || len(vm.calls) != 4 {
 		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and ps, start, attach, stop", code, vm.calls, stderr.String())
 	}
@@ -384,19 +384,19 @@ func TestDevMain(t *testing.T) {
 	}
 
 	shell := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, t.TempDir(), "", nil); code != exitOK ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK ||
 		len(shell.calls) != 4 || !slices.Equal(shell.calls[2], []string{"attach", shell.calls[1][1]}) {
 		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
 	}
 
 	fresh := fakeVM{answer: ready}
-	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, t.TempDir(), "", nil); code != exitOK ||
+	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK ||
 		len(fresh.calls) != 5 || !slices.Equal(fresh.calls[1], []string{"forget", project}) || fresh.calls[2][0] != "start" {
 		t.Errorf("sbox dev -fresh: exit %d, calls %q; want ps, forget %s, then start, attach, stop", code, fresh.calls, project)
 	}
 
 	failed := fakeVM{stdout: "no ready line\n"}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, t.TempDir(), "", nil); code != exitFail || len(failed.calls) != 2 {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitFail || len(failed.calls) != 2 {
 		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
 	}
 }
@@ -470,7 +470,7 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 	run := func(state string, a func([]string) string) {
 		vm := fakeVM{answer: a}
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, state, "", nil); code != exitOK {
+		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state, userConfig: "", keep: nil}); code != exitOK {
 			t.Fatalf("devMain: exit %d, %s", code, stderr.String())
 		}
 	}
@@ -511,7 +511,7 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 		return ""
 	}}
 	var stdout, stderr bytes.Buffer
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), user, nil); code != exitOK {
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: user, keep: nil}); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	files := tarFiles(t, vm.stdins[1]) // start's run tar, after ps
@@ -523,7 +523,7 @@ func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := fakeVM{}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, bad.run, t.TempDir(), user, nil); code != exitUsage ||
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, bad.run, devHost{stateDir: t.TempDir(), userConfig: user, keep: nil}); code != exitUsage ||
 		len(bad.calls) != 0 || !strings.Contains(stderr.String(), "sbox.yaml") {
 		t.Errorf("a bad sbox.yaml: exit %d, calls %q, stderr %q; want usage, no VM call, the file named", code, bad.calls, stderr.String())
 	}
@@ -576,7 +576,7 @@ func TestDevMainReattaches(t *testing.T) {
 			t.Parallel()
 			vm := fakeVM{answer: ps(tt.ps)}
 			var stdout, stderr bytes.Buffer
-			if code := devMain(context.Background(), tt.args, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", tt.keep); code != exitOK {
+			if code := devMain(context.Background(), tt.args, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: tt.keep}); code != exitOK {
 				t.Fatalf("exit %d: %s", code, stderr.String())
 			}
 			var newID string
@@ -627,7 +627,7 @@ func TestDevMainSaysWhereToolsGo(t *testing.T) {
 			return ""
 		}}
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), []string{t.TempDir()}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil); code != exitOK {
+		if code := devMain(context.Background(), []string{t.TempDir()}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK {
 			t.Fatalf("exit %d: %s", code, stderr.String())
 		}
 		if said := strings.Contains(stderr.String(), "the root is read-only"); said != newDrive {
@@ -661,7 +661,7 @@ func TestDevMainRunsHooks(t *testing.T) {
 			return nil
 		}}
 		var stdout, stderr bytes.Buffer
-		if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil); code != exitOK {
+		if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK {
 			t.Fatalf("exit %d: %s", code, stderr.String())
 		}
 		return vm, stderr.String()
@@ -715,23 +715,73 @@ func TestSetupEnvMain(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	live := vmWith("0123abcd running 1700000000 " + project + "\n")
-	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, live.run, t.TempDir(), ""); code != 2 ||
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, live.run, devHost{stateDir: t.TempDir(), userConfig: ""}); code != 2 ||
 		!slices.EqualFunc(live.calls, [][]string{{"ps"}, {"attach", "0123abcd", "--", "sh", "-c", script}}, slices.Equal) {
 		t.Errorf("live session: exit %d, calls %q; want setup forced in it and its exit status", code, live.calls)
 	}
 
 	none := vmWith("")
-	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, none.run, t.TempDir(), ""); code != 2 || len(none.calls) != 4 ||
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), userConfig: ""}); code != 2 || len(none.calls) != 4 ||
 		none.calls[1][0] != "start" || none.calls[3][0] != "stop" || tarFiles(t, none.stdins[1])["sbox/env"] != "A=b\n" {
 		t.Errorf("no session: exit %d, calls %q; want one started with the config, then stopped", code, none.calls)
 	}
 
 	empty := t.TempDir()
 	quiet := vmWith("")
-	if code := setupEnvMain(context.Background(), []string{empty}, &stdout, &stderr, quiet.run, t.TempDir(), ""); code != exitOK || len(quiet.calls) != 0 {
+	if code := setupEnvMain(context.Background(), []string{empty}, &stdout, &stderr, quiet.run, devHost{stateDir: t.TempDir(), userConfig: ""}); code != exitOK || len(quiet.calls) != 0 {
 		t.Errorf("no setup steps: exit %d, calls %q; want nothing done", code, quiet.calls)
 	}
-	if code := setupEnvMain(context.Background(), nil, &stdout, &stderr, quiet.run, t.TempDir(), ""); code != exitUsage {
+	if code := setupEnvMain(context.Background(), nil, &stdout, &stderr, quiet.run, devHost{stateDir: t.TempDir(), userConfig: ""}); code != exitUsage {
 		t.Errorf("no folder: exit %d, want usage", code)
+	}
+}
+
+// tarMode returns the mode of name in a tar, or -1.
+func tarMode(t *testing.T, data []byte, name string) int64 {
+	t.Helper()
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return -1
+		}
+		if hdr.Name == name {
+			return hdr.Mode
+		}
+	}
+}
+
+func TestDevMainSecrets(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("secrets: {GITHUB_TOKEN: env:GH_SBOX}\ndev: {env: {GITHUB_TOKEN: fake}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host := map[string]string{"GH_SBOX": "ghp_real"}
+	lookup := func(k string) (string, bool) { v, ok := host[k]; return v, ok }
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	run := vm.stdins[1]
+	if got := tarFiles(t, run)["sbox/secrets"]; got != "GITHUB_TOKEN=ghp_real\n" || tarMode(t, run, "sbox/secrets") != 0o400 {
+		t.Errorf("sbox/secrets = %q, mode %o; want the value, root-only", got, tarMode(t, run, "sbox/secrets"))
+	}
+	if !strings.Contains(stderr.String(), "secrets: GITHUB_TOKEN") || strings.Contains(stderr.String()+stdout.String(), "ghp_real") {
+		t.Errorf("stderr %q: want the secret's name and never its value", stderr.String())
+	}
+
+	delete(host, "GH_SBOX")
+	none := fakeVM{}
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitUsage ||
+		len(none.calls) != 0 || !strings.Contains(stderr.String(), "GH_SBOX") {
+		t.Errorf("unset host variable: exit %d, calls %q, stderr %q; want usage before any VM call", code, none.calls, stderr.String())
 	}
 }

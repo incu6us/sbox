@@ -33,12 +33,32 @@ type config struct {
 		Setup []string          `yaml:"setup"` // steps run once per home, and again when the list changes
 		Start []string          `yaml:"start"` // steps run at every fresh boot; a trailing & runs one in the background
 	} `yaml:"dev"`
+	Secrets  map[string]string `yaml:"secrets"` // guest variable → env:HOST_VARIABLE, read when a session starts
 	Timeouts struct {
 		Setup time.Duration `yaml:"setup"` // each dev.setup and dev.start step; 10m when unset
 	} `yaml:"timeouts"`
 }
 
 var _envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// secretValues reads each secret's host variable through lookup. A
+// missing one is an error, as is a value that can't be one line of the
+// guest's environment file.
+func (c config) secretValues(lookup func(string) (string, bool)) (map[string]string, error) {
+	values := make(map[string]string, len(c.Secrets))
+	for _, k := range slices.Sorted(maps.Keys(c.Secrets)) {
+		host := strings.TrimPrefix(c.Secrets[k], "env:")
+		v, ok := lookup(host)
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("secrets: %s: host variable %s is unset", k, host)
+		case strings.ContainsAny(v, "\n\r\x00"):
+			return nil, fmt.Errorf("secrets: %s: host variable %s is more than one line", k, host)
+		}
+		values[k] = v
+	}
+	return values, nil
+}
 
 // setupTimeout is how long each setup or start step may take.
 func (c config) setupTimeout() time.Duration {
@@ -85,6 +105,10 @@ func loadConfig(userFile, projectFile string) (config, error) {
 			cfg.Dev.Env = make(map[string]string)
 		}
 		maps.Copy(cfg.Dev.Env, c.Dev.Env)
+		if len(c.Secrets) > 0 && cfg.Secrets == nil {
+			cfg.Secrets = make(map[string]string)
+		}
+		maps.Copy(cfg.Secrets, c.Secrets)
 		if c.Timeouts.Setup != 0 {
 			cfg.Timeouts.Setup = c.Timeouts.Setup
 		}
@@ -153,6 +177,14 @@ func (c *config) check() error {
 		}
 		if strings.ContainsAny(v, "\n\r\x00") {
 			return fmt.Errorf("dev.env: %s: values are one line", k)
+		}
+	}
+	for k, v := range c.Secrets {
+		if !_envName.MatchString(k) {
+			return fmt.Errorf("secrets: %q: want a variable name (letters, digits, _)", k)
+		}
+		if host, ok := strings.CutPrefix(v, "env:"); !ok || !_envName.MatchString(host) {
+			return fmt.Errorf("secrets: %s: want env:<HOST_VARIABLE>; values are never written in the file", k) // not v: it may be the secret
 		}
 	}
 	for _, steps := range [][]string{c.Dev.Setup, c.Dev.Start} {

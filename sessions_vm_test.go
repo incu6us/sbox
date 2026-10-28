@@ -207,7 +207,7 @@ func TestSyncOnVM(t *testing.T) {
 	dev := func(script string) string {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "", nil); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: "", keep: nil}); code != exitOK {
 			t.Fatalf("dev %q: exit %d: %s", script, code, errOut.String())
 		}
 		return out.String()
@@ -338,8 +338,8 @@ func TestDevReattachOnVM(t *testing.T) {
 	dev := func(script string, keep bool) (string, string) {
 		t.Helper()
 		var out, errOut bytes.Buffer
-		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "",
-			func(id string) bool { kept = id; return keep })
+		code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun,
+			devHost{stateDir: state, keep: func(id string) bool { kept = id; return keep }})
 		if code != exitOK {
 			t.Fatalf("sbox dev %q: exit %d: %s", script, code, errOut.String())
 		}
@@ -475,7 +475,7 @@ func TestDevHooksOnVM(t *testing.T) {
 		t.Helper()
 		var out, errOut bytes.Buffer
 		script := `sleep 2; cat ~/setup-runs ~/started ~/bg; echo "terminal: $GREETING"`
-		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "", nil); code != exitOK {
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: "", keep: nil}); code != exitOK {
 			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
 		}
 		return out.String(), errOut.String()
@@ -504,13 +504,42 @@ func TestDevHooksOnVM(t *testing.T) {
 
 	config("echo setup-env >> ~/setup-runs")
 	var envOut, envErr bytes.Buffer
-	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, state, ""); code != exitOK {
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: ""}); code != exitOK {
 		t.Fatalf("sbox setup-env: exit %d: %s", code, envErr.String())
 	}
-	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, state, ""); code != exitOK {
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, devHost{stateDir: state, userConfig: ""}); code != exitOK {
 		t.Fatalf("sbox setup-env again: exit %d: %s", code, envErr.String())
 	}
 	if out, _ := dev(); strings.Count(out, "setup-env") != 2 {
 		t.Errorf("after two sbox setup-env: %q, want the steps run each time, and not again by sbox dev", out)
+	}
+}
+
+// TestDevSecretsOnVM checks that a secret from the Mac's environment
+// reaches the terminal, wins over dev.env, and is not on the kept home.
+func TestDevSecretsOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	yaml := "secrets: {GITHUB_TOKEN: env:GH_SBOX_TEST}\ndev: {env: {GITHUB_TOKEN: fake, PLAIN: yes}}\n"
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const value = "ghp_sboxvmtest0123456789"
+	lookup := func(k string) (string, bool) { return value, k == "GH_SBOX_TEST" }
+	script := `echo "token=$GITHUB_TOKEN plain=$PLAIN"; grep -rlI ` + value + ` /home/runner 2>/dev/null | grep -v '^/proc' || echo not-on-home`
+	var out, errOut bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: t.TempDir(), lookupEnv: lookup}); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "token="+value+" plain=yes") || !strings.Contains(out.String(), "not-on-home") {
+		t.Errorf("guest: %q, want the secret over dev.env, dev.env too, and the value nowhere in the home", out.String())
 	}
 }

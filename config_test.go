@@ -179,3 +179,52 @@ func TestLoadConfigDevHooks(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigSecrets(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	user := write(t, "secrets: {CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN, GITHUB_TOKEN: env:GH_ALL}\n")
+	project := write(t, "secrets: {GITHUB_TOKEN: env:GH_REPO}\n")
+	cfg, err := loadConfig(user, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(cfg.Secrets, map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "env:CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN": "env:GH_REPO"}) {
+		t.Errorf("secrets = %v, want both files', the project's winning", cfg.Secrets)
+	}
+
+	host := map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-1", "GH_REPO": "ghp_2"}
+	lookup := func(k string) (string, bool) { v, ok := host[k]; return v, ok }
+	got, err := cfg.secretValues(lookup)
+	if err != nil || !maps.Equal(got, map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-1", "GITHUB_TOKEN": "ghp_2"}) {
+		t.Errorf("secretValues = %v, %v; want the host's values", got, err)
+	}
+	delete(host, "GH_REPO")
+	if _, err := cfg.secretValues(lookup); err == nil || !strings.Contains(err.Error(), "GH_REPO") || !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Errorf("a missing host variable: err %v, want both names", err)
+	}
+	host["GH_REPO"] = "two\nlines"
+	if _, err := cfg.secretValues(lookup); err == nil || strings.Contains(err.Error(), "two") {
+		t.Errorf("a two-line value: err %v, want a refusal that doesn't show the value", err)
+	}
+
+	for _, tt := range []struct{ name, body, wantErr, notInErr string }{
+		{"a literal value", "secrets: {GITHUB_TOKEN: ghp_literal}\n", "env:", "ghp_literal"},
+		{"a bad guest name", "secrets: {GITHUB-TOKEN: env:X}\n", "GITHUB-TOKEN", ""},
+		{"a bad host name", "secrets: {A: \"env:X Y\"}\n", "env:", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := loadConfig(filepath.Join(t.TempDir(), "none"), write(t, tt.body))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || (tt.notInErr != "" && strings.Contains(err.Error(), tt.notInErr)) {
+				t.Errorf("err = %v, want one naming %q and not showing %q", err, tt.wantErr, tt.notInErr)
+			}
+		})
+	}
+}

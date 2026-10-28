@@ -521,6 +521,13 @@ writes a commented starter file and `sbox config` prints the effective one.
     the generated guest `settings.json` and `.claude.json` MCP entries, the
     project-root file in dev mode, and the "could not start" check for
     `.mcp.json` servers.
+    - [x] secrets: `NAME: env:HOST_VARIABLE` (never a literal value, and
+      errors never print one), read from the Mac's environment before any
+      VM call, a missing one an error; root-only `sbox/secrets` on the run
+      drive; the guest init writes `dev.env` then the secrets (a secret
+      wins) to a tmpfs file that `~/.ssh/environment` links to, so values
+      are never on the kept home. `sbox dev` prints the names. Canary tails
+      are scan-mode (`analyze`) and wait for it
 - [ ] **7. Diagnostics, summary and `-trace`.** The preflight in `sbox dev`,
     the BLOCKED/MISSING line format with hints, the guest watcher's port
     and tool-denial records (transcript format confirmed here), `sbox
