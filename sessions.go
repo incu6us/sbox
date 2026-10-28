@@ -441,7 +441,7 @@ func (h devHost) checkout(ctx context.Context, t target, stderr io.Writer) (stri
 	}
 	fetch := h.fetch
 	if fetch == nil {
-		fetch = githubFetch(ctx)
+		fetch = githubFetch(ctx, false)
 	}
 	src, commit, err := fetch(t)
 	if err == nil {

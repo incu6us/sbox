@@ -87,9 +87,9 @@ const _codeload = "https://codeload.github.com"
 // cacheRoot/<owner>/<repo>/<ref>/ and returns its folder and the commit.
 // No git runs: the tarball is extracted with the safe extractor, so no
 // hooks, filters or submodules. A commit ref is reused from the cache;
-// branches and tags move, so they are fetched again. max caps the
-// download.
-func fetchTarget(ctx context.Context, client *http.Client, base string, t target, cacheRoot string, max int64) (string, string, error) {
+// branches and tags move, so they are fetched again, and refetch fetches a
+// commit again too. max caps the download.
+func fetchTarget(ctx context.Context, client *http.Client, base string, t target, cacheRoot string, max int64, refetch bool) (string, string, error) {
 	ref := t.ref
 	if ref == "" {
 		ref = "HEAD"
@@ -97,7 +97,7 @@ func fetchTarget(ctx context.Context, client *http.Client, base string, t target
 	dest := filepath.Join(cacheRoot, t.owner, t.repo, ref)
 	name := fmt.Sprintf("github.com/%s/%s", t.owner, t.repo)
 	commit, err := os.ReadFile(filepath.Join(dest, "commit"))
-	if err != nil || !_sha.MatchString(ref) {
+	if err != nil || !_sha.MatchString(ref) || refetch {
 		if commit, err = download(ctx, client, base, t, ref, dest, max); err != nil {
 			return "", "", fmt.Errorf("%s: %w", name, err)
 		}
@@ -212,28 +212,37 @@ func tarballCommit(f *os.File) ([]byte, error) {
 type fetchFunc func(target) (dir, commit string, err error)
 
 // githubFetch is the real fetchFunc: codeload, the user's cache folder,
-// the run tar's size cap.
-func githubFetch(ctx context.Context) fetchFunc {
+// the run tar's size cap; refetch ignores the cache.
+func githubFetch(ctx context.Context, refetch bool) fetchFunc {
 	return func(t target) (string, string, error) {
 		cache, err := os.UserCacheDir()
 		if err != nil {
 			return "", "", err
 		}
 		client := &http.Client{Timeout: 5 * time.Minute}
-		return fetchTarget(ctx, client, _codeload, t, filepath.Join(cache, "sbox", "targets"), _maxRunBytes)
+		return fetchTarget(ctx, client, _codeload, t, filepath.Join(cache, "sbox", "targets"), _maxRunBytes, refetch)
 	}
 }
 
-// resolveTarget turns a run or scan argument into a local folder and the
-// name to show for it: a GitHub URL is fetched, anything else is a path.
-func resolveTarget(arg string, fetch fetchFunc) (dir, name string, err error) {
+// targetJSON is what a scan ran on, in its JSON report: a GitHub
+// repository at a commit, with the folder in it, or a local folder.
+type targetJSON struct {
+	URL    string `json:"url,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	Path   string `json:"path"`
+}
+
+// resolveTarget turns a run or scan argument into a local folder, the
+// name to show for it and its JSON form: a GitHub URL is fetched,
+// anything else is a path.
+func resolveTarget(arg string, fetch fetchFunc) (dir, name string, where targetJSON, err error) {
 	t, ok := parseTarget(arg)
 	if !ok {
-		return arg, arg, nil
+		return arg, arg, targetJSON{Path: arg}, nil
 	}
 	dir, commit, err := fetch(t)
 	if err != nil {
-		return "", "", err
+		return "", "", targetJSON{}, err
 	}
-	return dir, t.display(commit), nil
+	return dir, t.display(commit), targetJSON{URL: fmt.Sprintf("https://github.com/%s/%s", t.owner, t.repo), Commit: commit, Path: t.path}, nil
 }

@@ -216,21 +216,25 @@ func TestScanReportsTakeTheConfig(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := writeScanJSON(&out, "github.com/o/r@abc", nil, runs, findings, verdictPass, nil, []string{"severity: connect LOW"}, []string{"GITHUB_TOKEN"}); err != nil {
+	where := targetJSON{URL: "https://github.com/o/r", Commit: "abc", Path: "plugins/x"}
+	if err := writeScanJSON(&out, where, nil, runs, findings, verdictPass, nil, []string{"severity: connect LOW"}, []string{"GITHUB_TOKEN"}); err != nil {
 		t.Fatal(err)
 	}
 	var report struct {
-		Target string `json:"target"`
+		Target targetJSON `json:"target"`
 		Config struct {
 			Overrides []string `json:"overrides"`
 			Secrets   []string `json:"secrets"`
 		} `json:"config"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Target != "github.com/o/r@abc" || !slices.Equal(report.Config.Overrides, []string{"severity: connect LOW"}) || !slices.Equal(report.Config.Secrets, []string{"GITHUB_TOKEN"}) {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Target != where || !slices.Equal(report.Config.Overrides, []string{"severity: connect LOW"}) || !slices.Equal(report.Config.Secrets, []string{"GITHUB_TOKEN"}) {
 		t.Errorf("JSON %s: %v", out.String(), err)
 	}
 	out.Reset()
-	if err := writeScanJSON(&out, "x", nil, runs, findings, verdictPass, nil, nil, nil); err != nil || strings.Contains(out.String(), `"config"`) {
+	if err := writeScanJSON(&out, targetJSON{Path: "x"}, nil, runs, findings, verdictPass, nil, nil, nil); err != nil || strings.Contains(out.String(), `"config"`) ||
+		!strings.Contains(out.String(), `"target": {
+    "path": "x"
+  }`) {
 		t.Errorf("no overrides: %s, %v; want no config object", out.String(), err)
 	}
 }
