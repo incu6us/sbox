@@ -9,12 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,7 +29,7 @@ var _sessionID = regexp.MustCompile(`^[a-f0-9]{8,32}$`)
 var _sessionDone = map[string]string{"stop": "stopped", "pause": "paused", "resume": "resumed"}
 
 // sessionMain implements `sbox ps`, `sbox clean`, and
-// `sbox stop|pause|resume|log <id>`.
+// `sbox stop|pause|resume <id>`.
 func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr io.Writer, vm sboxRunFunc) int {
 	if cmd == "clean" {
 		if len(args) != 0 {
@@ -66,21 +64,8 @@ func sessionMain(ctx context.Context, cmd string, args []string, stdout, stderr 
 		_, _ = fmt.Fprintf(stderr, "sbox: %q is not a session id (sbox ps lists them)\n", id)
 		return exitUsage
 	}
-	var out bytes.Buffer
-	if err := vm(ctx, nil, &out, stderr, cmd, id); err != nil {
+	if err := vm(ctx, nil, io.Discard, stderr, cmd, id); err != nil {
 		return vmFailed(stderr, err)
-	}
-	if cmd == "log" {
-		var b strings.Builder
-		for _, line := range strings.SplitAfter(out.String(), "\n") {
-			text, nl := strings.CutSuffix(line, "\n")
-			b.WriteString(printable(strings.TrimSuffix(text, "\r"))) // the serial console sends CR LF
-			if nl {
-				b.WriteString("\n")
-			}
-		}
-		_, _ = io.WriteString(stdout, b.String())
-		return exitOK
 	}
 	_, _ = fmt.Fprintln(stdout, id, _sessionDone[cmd])
 	return exitOK
@@ -221,7 +206,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}
 
-	id := live.ID
+	id, started := live.ID, live.Started
 	if found {
 		if live.State == "paused" {
 			if err := vm(ctx, nil, io.Discard, stderr, "resume", id); err != nil {
@@ -230,9 +215,10 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
 	} else {
-		if len(secrets) > 0 {
-			_, _ = fmt.Fprintln(stderr, "sbox: secrets:", strings.Join(slices.Sorted(maps.Keys(secrets)), ", "))
+		for _, line := range devPreflight(cfg, secrets, readMCPJSON(args[0])) {
+			_, _ = fmt.Fprintln(stderr, line)
 		}
+		started = time.Now()
 		var newDrive bool
 		if id, newDrive, code = startSession(ctx, args[0], project, devJob(cfg, secrets), stderr, vm); code != exitOK {
 			return code
@@ -253,6 +239,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		attach = append(attach, "--", "bash", "-lc", cfg.devCommand())
 	}
 	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
+	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, cfg, vm))
 	if host.keep != nil && host.keep(id) {
 		_, _ = fmt.Fprintf(stderr, "sbox: session %s keeps running: sbox dev attaches again, sbox stop %s ends it\n", id, id)
 		return code
@@ -334,6 +321,16 @@ func runHooks(ctx context.Context, id string, cfg config, force bool, stdout, st
 	}
 	script := hookScript(cfg.Dev.Setup, start, cfg.setupTimeout(), force)
 	return attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), stdout, stderr, vm)
+}
+
+// collectSummary asks the session what it saw (the helpers' events and the
+// guest's listening ports) and returns sessionSummary's lines; a session
+// that can't answer gets just the first line.
+func collectSummary(ctx context.Context, id, dir string, started time.Time, cfg config, vm sboxRunFunc) string {
+	var events, ss bytes.Buffer
+	_ = vm(ctx, nil, &events, io.Discard, "events", id)
+	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
+	return sessionSummary(time.Since(started), dir, parseEvents(events.String()), portLines(ss.String(), cfg.Ports))
 }
 
 // liveSession finds the project's running or paused session.

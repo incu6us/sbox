@@ -57,7 +57,7 @@ func TestConfigMain(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"api.anthropic.com:443", "3000", "CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN # set", "GITHUB_TOKEN: env:GH_SBOX # unset on this Mac"} {
+	for _, want := range []string{"api.anthropic.com:443", "3000", "CLAUDE_CODE_OAUTH_TOKEN: env:CLAUDE_CODE_OAUTH_TOKEN # set", "GITHUB_TOKEN: env:GH_SBOX # unset on this Mac", "# ports    3000 → the Mac's localhost:3000"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("sbox config lacks %q:\n%s", want, out)
 		}

@@ -84,6 +84,14 @@ type fakeVM struct {
 	err            error
 }
 
+// withoutSummary drops the calls sbox dev makes for its exit summary
+// (TestDevMainPreflightAndSummary covers them).
+func withoutSummary(calls [][]string) [][]string {
+	return slices.DeleteFunc(slices.Clone(calls), func(c []string) bool {
+		return c[0] == "events" || (c[0] == "attach" && slices.Equal(c[2:], []string{"--", "ss", "-Hltn"}))
+	})
+}
+
 func (f *fakeVM) run(_ context.Context, in io.Reader, out, errOut io.Writer, args ...string) error {
 	f.calls = append(f.calls, args)
 	var data []byte
@@ -127,10 +135,6 @@ func TestSessionMain(t *testing.T) {
 		{name: "stop", cmd: "stop", args: []string{id}, wantOut: id + " stopped", wantCalls: [][]string{{"stop", id}}},
 		{name: "pause", cmd: "pause", args: []string{id}, wantOut: id + " paused", wantCalls: [][]string{{"pause", id}}},
 		{name: "resume", cmd: "resume", args: []string{id}, wantOut: id + " resumed", wantCalls: [][]string{{"resume", id}}},
-		{name: "log escapes guest output", cmd: "log", args: []string{id}, vm: fakeVM{stdout: "hi\n\x1b[2Jx\n"},
-			wantOut: "hi\n\\x1b[2Jx\n", wantCalls: [][]string{{"log", id}}},
-		{name: "log drops the serial console's carriage returns", cmd: "log", args: []string{id}, vm: fakeVM{stdout: "tick 1\r\ntick 2\r\n"},
-			wantOut: "tick 1\ntick 2\n", wantCalls: [][]string{{"log", id}}},
 		{name: "missing id", cmd: "stop", wantCode: exitUsage, wantErr: "usage"},
 		{name: "bad id never reaches the VM", cmd: "pause", args: []string{"NOT-HEX"}, wantCode: exitUsage, wantErr: "session id"},
 		{name: "VM-side failure", cmd: "resume", args: []string{id},
@@ -374,30 +378,30 @@ func TestDevMain(t *testing.T) {
 	}}
 	var stdout, stderr bytes.Buffer
 	code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil})
-	if code != 3 || len(vm.calls) != 4 {
-		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and ps, start, attach, stop", code, vm.calls, stderr.String())
+	if code != 3 || len(withoutSummary(vm.calls)) != 4 {
+		t.Fatalf("exit %d, calls %q, stderr %q; want exit 3 and ps, start, attach, stop", code, withoutSummary(vm.calls), stderr.String())
 	}
-	id, project := vm.calls[1][1], mustProjectID(t, dir)
+	id, project := withoutSummary(vm.calls)[1][1], mustProjectID(t, dir)
 	want := [][]string{{"ps"}, {"start", id, project}, {"attach", id, "--", "claude"}, {"stop", id}}
-	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
-		t.Errorf("calls %q, want %q", vm.calls, want)
+	if !slices.EqualFunc(withoutSummary(vm.calls), want, slices.Equal) {
+		t.Errorf("calls %q, want %q", withoutSummary(vm.calls), want)
 	}
 
 	shell := fakeVM{answer: ready}
 	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, shell.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK ||
-		len(shell.calls) != 4 || !slices.Equal(shell.calls[2], []string{"attach", shell.calls[1][1]}) {
-		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, shell.calls)
+		len(withoutSummary(shell.calls)) != 4 || !slices.Equal(withoutSummary(shell.calls)[2], []string{"attach", withoutSummary(shell.calls)[1][1]}) {
+		t.Errorf("sbox dev <dir>: exit %d, calls %q; want a login shell attached", code, withoutSummary(shell.calls))
 	}
 
 	fresh := fakeVM{answer: ready}
 	if code := devMain(context.Background(), []string{"-fresh", dir}, strings.NewReader(""), &stdout, &stderr, fresh.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitOK ||
-		len(fresh.calls) != 5 || !slices.Equal(fresh.calls[1], []string{"forget", project}) || fresh.calls[2][0] != "start" {
-		t.Errorf("sbox dev -fresh: exit %d, calls %q; want ps, forget %s, then start, attach, stop", code, fresh.calls, project)
+		len(withoutSummary(fresh.calls)) != 5 || !slices.Equal(withoutSummary(fresh.calls)[1], []string{"forget", project}) || withoutSummary(fresh.calls)[2][0] != "start" {
+		t.Errorf("sbox dev -fresh: exit %d, calls %q; want ps, forget %s, then start, attach, stop", code, withoutSummary(fresh.calls), project)
 	}
 
 	failed := fakeVM{stdout: "no ready line\n"}
-	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitFail || len(failed.calls) != 2 {
-		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, failed.calls)
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, failed.run, devHost{stateDir: t.TempDir(), userConfig: "", keep: nil}); code != exitFail || len(withoutSummary(failed.calls)) != 2 {
+		t.Errorf("a session that didn't start: exit %d, calls %q; want exit 1 and no attach", code, withoutSummary(failed.calls))
 	}
 }
 
@@ -580,7 +584,7 @@ func TestDevMainReattaches(t *testing.T) {
 				t.Fatalf("exit %d: %s", code, stderr.String())
 			}
 			var newID string
-			for _, c := range vm.calls {
+			for _, c := range withoutSummary(vm.calls) {
 				if c[0] == "start" {
 					newID = c[1]
 				}
@@ -594,8 +598,8 @@ func TestDevMainReattaches(t *testing.T) {
 					}
 				}
 			}
-			if !slices.EqualFunc(vm.calls, want, slices.Equal) {
-				t.Errorf("calls %q, want %q", vm.calls, want)
+			if !slices.EqualFunc(withoutSummary(vm.calls), want, slices.Equal) {
+				t.Errorf("calls %q, want %q", withoutSummary(vm.calls), want)
 			}
 			if !strings.Contains(stderr.String(), tt.notes) {
 				t.Errorf("stderr %q, want %q", stderr.String(), tt.notes)
@@ -668,23 +672,23 @@ func TestDevMainRunsHooks(t *testing.T) {
 	}
 
 	vm, _ := run("", false)
-	id := vm.calls[1][1]
+	id := withoutSummary(vm.calls)[1][1]
 	want := [][]string{{"ps"}, {"start", id, project}, {"attach", id, "--", "sh", "-c", script}, {"attach", id, "--", "claude"}, {"stop", id}}
-	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
-		t.Errorf("fresh boot: calls %q, want the hooks before the terminal", vm.calls)
+	if !slices.EqualFunc(withoutSummary(vm.calls), want, slices.Equal) {
+		t.Errorf("fresh boot: calls %q, want the hooks before the terminal", withoutSummary(vm.calls))
 	}
 	if env := tarFiles(t, vm.stdins[1])["sbox/env"]; env != "A=1 2\nNODE_ENV=development\n" {
 		t.Errorf("sbox/env = %q, want the variables, sorted, one per line", env)
 	}
 
 	vm, notes := run("", true)
-	if len(vm.calls) != 5 || vm.calls[3][3] != "claude" || !strings.Contains(notes, "sbox setup-env") {
-		t.Errorf("failed hooks: calls %q, stderr %q; want the terminal opened anyway and how to rerun", vm.calls, notes)
+	if len(withoutSummary(vm.calls)) != 5 || withoutSummary(vm.calls)[3][3] != "claude" || !strings.Contains(notes, "sbox setup-env") {
+		t.Errorf("failed hooks: calls %q, stderr %q; want the terminal opened anyway and how to rerun", withoutSummary(vm.calls), notes)
 	}
 
 	vm, _ = run("0123abcd running 1700000000 "+project+"\n", false)
-	if slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, script) }) {
-		t.Errorf("reattach: calls %q, want no hooks", vm.calls)
+	if slices.ContainsFunc(withoutSummary(vm.calls), func(c []string) bool { return slices.Contains(c, script) }) {
+		t.Errorf("reattach: calls %q, want no hooks", withoutSummary(vm.calls))
 	}
 }
 
@@ -773,7 +777,7 @@ func TestDevMainSecrets(t *testing.T) {
 	if got := tarFiles(t, run)["sbox/secrets"]; got != "GITHUB_TOKEN=ghp_real\n" || tarMode(t, run, "sbox/secrets") != 0o400 {
 		t.Errorf("sbox/secrets = %q, mode %o; want the value, root-only", got, tarMode(t, run, "sbox/secrets"))
 	}
-	if !strings.Contains(stderr.String(), "secrets: GITHUB_TOKEN") || strings.Contains(stderr.String()+stdout.String(), "ghp_real") {
+	if !strings.Contains(stderr.String(), "secrets  GITHUB_TOKEN") || strings.Contains(stderr.String()+stdout.String(), "ghp_real") {
 		t.Errorf("stderr %q: want the secret's name and never its value", stderr.String())
 	}
 
@@ -810,5 +814,42 @@ func TestDevMainAgentSettings(t *testing.T) {
 	files := tarFiles(t, vm.stdins[1])
 	if files["sbox/claude.json"] != string(cfg.claudeSettings()) || files["sbox/claude.py"] != _claudeScript {
 		t.Errorf("run tar: claude.json %q, claude.py %d bytes; want the settings and the helper", files["sbox/claude.json"], len(files["sbox/claude.py"]))
+	}
+}
+
+func TestDevMainPreflightAndSummary(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("egress: [api.anthropic.com]\nports: [3000]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vm := fakeVM{answer: func(args []string) string {
+		switch {
+		case args[0] == "start":
+			return "READY " + args[1] + "\n"
+		case args[0] == "events":
+			return "RULE api.anthropic.com:443\nEGRESS ALLOW api.anthropic.com:443\nEGRESS DENY telemetry.example:443\n"
+		case args[0] == "attach" && slices.Contains(args, "ss"):
+			return "LISTEN 0 511 0.0.0.0:5173 0.0.0.0:*\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	id := vm.calls[1][1]
+	want := [][]string{{"ps"}, {"start", id, mustProjectID(t, dir)}, {"attach", id, "--", "claude"}, {"events", id}, {"attach", id, "--", "ss", "-Hltn"}, {"stop", id}}
+	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
+		t.Errorf("calls %q, want %q", vm.calls, want)
+	}
+	out := stderr.String()
+	for _, want := range []string{"egress   api.anthropic.com:443", "ports    3000", "session 0s", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "ports    3000") > strings.Index(out, "session 0s") {
+		t.Errorf("the preflight should come before the summary:\n%s", out)
 	}
 }

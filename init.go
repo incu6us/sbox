@@ -116,6 +116,10 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 			fmt.Fprintf(&b, "  %s: %s # %s\n", k, secrets[k], state)
 		}
 	}
+	b.WriteString("\n# what a session gets:\n")
+	for _, line := range devPreflight(cfg, secrets, readMCPJSON(dir)) {
+		b.WriteString("# " + line + "\n")
+	}
 	_, _ = io.WriteString(stdout, b.String())
 	return exitOK
 }

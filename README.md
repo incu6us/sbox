@@ -39,7 +39,9 @@ sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
 sbox sync [-apply] <dir>
 sbox ps
-sbox stop|pause|resume|log <session-id>
+sbox stop|pause|resume <session-id>
+sbox log [-f] [-blocked] <session-id>
+sbox watch [session-id]
 sbox clean
 ```
 
@@ -199,6 +201,30 @@ Nothing else crosses: the guest's network still has no route out, and
 each forwarded port is a pair of relays joined by a unix socket in the
 Lima VM. Ports must be 1024 or higher, and free in the VM (a second
 session forwarding the same port is refused).
+
+What a session may do is printed before it boots, and what it was kept
+from when you leave it. One line per blocked thing, with its cause and,
+for a host seen three times or more, the key that would allow it:
+
+```
+egress   api.anthropic.com:443
+ports    3000 → the Mac's localhost:3000
+secrets  CLAUDE_CODE_OAUTH_TOKEN
+...
+session 1h12m · sbox sync ./myapp shows what changed
+egress   api.anthropic.com:443 ×214, registry.npmjs.org:443 ×88
+BLOCKED egress  telemetry.example.com:443 ×12  not in egress → egress: [telemetry.example.com]
+BLOCKED dns     registry.yarnpkg.com (A, AAAA) ×3  not in egress → egress: [registry.yarnpkg.com]
+BLOCKED port    3000  listening on loopback only, the forward can't reach it → listen on 0.0.0.0 (e.g. --host 0.0.0.0)
+BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]
+BLOCKED mcp     docs  host mcp.example.com:443 not in egress → egress: [mcp.example.com]
+```
+
+`sbox watch [id]` shows these as they happen, in a second terminal;
+`sbox log -blocked <id>` lists them for a running session, and
+`sbox log -f <id>` follows its console. A remote MCP server whose host
+isn't in egress, in the config or the project's `.mcp.json`, is flagged
+before the session boots.
 
 `sbox sync <dir>` shows what changed in the guest and on the Mac since
 they last agreed, with diffs; `sbox sync -apply <dir>` brings each side's
