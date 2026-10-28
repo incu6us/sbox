@@ -13,7 +13,7 @@ Status: ✅ done · 🟡 partly done · ⬜ not started
 | 6 | Analysis and report: findings, verdict, JSON | ✅ |
 | 7 | Calibration on installed skills and plugins | ✅ |
 | v2 | Agent mode, snapshots, GitHub URLs | 🟡 |
-| Dev | Build projects with an agent inside a session microVM: sessions ✅, terminal ✅, kept state ✅, sync ✅, ports ✅, egress ✅ | 🟡 |
+| Dev | Build projects with an agent inside a session microVM: sessions, terminal, kept state, sync, ports, egress, hooks, secrets, the agent's config, diagnostics ✅; `-trace`, `sync -patch` ⬜ | ✅ |
 | Pre | `sbox setup` installs Lima, host preflight | ✅ |
 
 ## Architecture
@@ -501,6 +501,26 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   - Not done: `-trace` (strace with the scan rules at INFO), Claude Code's
     denied tool calls from its transcript, and EROFS/EACCES as events.
     The read-only root is said once, on a new home, instead.
+
+- ✅ Step 8: docs and timings. The README starts with dev mode and a
+  quick start; scan comes after. Measured on the M4 Pro, Lima 2.2.1,
+  Firecracker v1.17.0, a 1,000-file project (1.4 KB each):
+
+  | | |
+  |---|---|
+  | `sbox dev` on a new home (copies the project in) to the command running | 4.4 s |
+  | `sbox dev` on a kept home, a new boot | 3.2 to 4.0 s |
+  | back at the Mac's prompt, including the stop and its flush | 4.2 to 4.7 s |
+  | `sbox attach` to a running session | 0.5 s |
+  | `sbox sync`, 100 of the files changed in the guest (starts and stops a session) | 3.7 s |
+  | `sbox sync -apply`, the same 100 | 3.6 s |
+  | `sbox sync` with nothing to do | 3.5 s |
+
+  - Found while measuring: `isTerminal` took any character device for a
+    terminal, `/dev/null` included, so `sbox dev </dev/null` asked the
+    keep question, read end-of-file and kept the session. It asks the
+    terminal-attributes ioctl now, tested against `/dev/null`, a pipe, a
+    file and a real pseudo-terminal.
 
 ## Prerequisites ✅
 

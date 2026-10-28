@@ -1,8 +1,20 @@
 # sbox
 
-Runs AI agent skills inside a Firecracker microVM with fake secrets and a
-fake internet, and reports what they try to do. Work in progress: see
-[MILESTONE.md](MILESTONE.md) for what's done and what's next.
+Build projects with an AI agent inside a Firecracker microVM on your Mac:
+the agent gets a real terminal, your project, the tools it needs and the
+hosts you allow, and nothing else of your machine. `sbox dev` is the main
+command; `sbox scan` still runs a skill's code under strace and reports
+what it tries to do. Work in progress: see [MILESTONE.md](MILESTONE.md)
+for what's done and what's next.
+
+```sh
+sbox setup                          # once: Lima, Firecracker, the guest image
+cd myapp && sbox init               # a starter sbox.yaml: claude, its API host
+claude setup-token                  # once, on the Mac; export the token it prints:
+export CLAUDE_CODE_OAUTH_TOKEN=...  #   and add it under secrets: in sbox.yaml
+sbox dev .                          # Claude Code in a microVM on a copy of myapp
+sbox sync -apply .                  # bring its changes back to the Mac
+```
 
 ```
 macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no host mounts)
@@ -90,7 +102,7 @@ Checks the whole chain in about 7 seconds and prints one line per check:
 Each failure says what to do (usually `sbox setup`). Exit codes: `0` all
 checks pass, `1` a check failed, `2` bad usage.
 
-### Sessions
+### `sbox dev` and sessions
 
 `sbox dev <dir>` opens a shell in a microVM with the directory copied
 in, at `/home/runner/work`. Pass a command to run that instead:
