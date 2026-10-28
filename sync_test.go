@@ -718,3 +718,69 @@ func TestDevMainTerminalTitle(t *testing.T) {
 		t.Errorf("titles %q, want the count once, then cleared", titles)
 	}
 }
+
+// TestRunChanges: what sbox run's command changed comes back as sync's
+// plan: shown with diffs, written as a patch, or applied once confirmed.
+func TestRunChanges(t *testing.T) {
+	t.Parallel()
+	setup := func(t *testing.T) (dir string, base manifest, vm sboxRunFunc) {
+		dir = t.TempDir()
+		for p, body := range map[string]string{"a.txt": "v1\n", "b.txt": "gone\n", "keep.txt": "same\n", ".git/HEAD": "ref\n"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, filepath.Join(dir, p), body)
+		}
+		rules := syncRules(nil)
+		base, err := readManifest(dir, rules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, "keep.txt"), "edited on the Mac meanwhile\n")
+		vm = func(_ context.Context, _ io.Reader, out, _ io.Writer, args ...string) error {
+			if !slices.Equal(args, []string{"out", "0123abcd"}) {
+				return fmt.Errorf("unexpected %q", args)
+			}
+			tw := tar.NewWriter(out)
+			for p, body := range map[string]string{"./a.txt": "v2\n", "./c.txt": "new\n", "./keep.txt": "same\n"} {
+				_ = tw.WriteHeader(&tar.Header{Name: p, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+				_, _ = io.WriteString(tw, body)
+			}
+			return tw.Close()
+		}
+		return dir, base, vm
+	}
+	read := func(dir, p string) string { data, _ := os.ReadFile(filepath.Join(dir, p)); return string(data) }
+
+	dir, base, vm := setup(t)
+	var out, errOut bytes.Buffer
+	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, "", nil, &out, &errOut); code != exitOK {
+		t.Fatalf("show: exit %d: %s", code, errOut.String())
+	}
+	for _, want := range []string{"changed  a.txt", "added    c.txt", "deleted  b.txt", "+v2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("shown changes lack %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "keep.txt") || read(dir, "a.txt") != "v1\n" {
+		t.Errorf("show: %s\nwant the Mac's own edit left out and nothing written", out.String())
+	}
+
+	patch := filepath.Join(t.TempDir(), "run.patch")
+	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), false, patch, nil, &out, &errOut); code != exitOK || !strings.Contains(read("", patch), "+++ b/c.txt") || read(dir, "a.txt") != "v1\n" {
+		t.Errorf("-patch: exit %d, patch %q", code, read("", patch))
+	}
+
+	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return false }, &out, &errOut); code != exitOK || read(dir, "a.txt") != "v1\n" {
+		t.Errorf("-apply declined: exit %d, a.txt %q; want it untouched", code, read(dir, "a.txt"))
+	}
+	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", nil, &out, &errOut); code != exitFail || !strings.Contains(errOut.String(), "-patch") {
+		t.Errorf("-apply with no one to ask: exit %d, %q", code, errOut.String())
+	}
+	if code := runChanges(context.Background(), vm, "0123abcd", dir, base, syncRules(nil), true, "", func() bool { return true }, &out, &errOut); code != exitOK {
+		t.Fatalf("-apply: exit %d: %s", code, errOut.String())
+	}
+	if read(dir, "a.txt") != "v2\n" || read(dir, "c.txt") != "new\n" || read(dir, "b.txt") != "" || read(dir, "keep.txt") != "edited on the Mac meanwhile\n" || read(dir, ".git/HEAD") != "ref\n" {
+		t.Errorf("after -apply: a %q, c %q, b %q, keep %q, .git %q", read(dir, "a.txt"), read(dir, "c.txt"), read(dir, "b.txt"), read(dir, "keep.txt"), read(dir, ".git/HEAD"))
+	}
+}

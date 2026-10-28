@@ -47,6 +47,7 @@ type runResult struct {
 	markers  []string // other nonce-marked lines from the guest and VM side, prefix removed
 	nonce    string
 	canary   string // marker in the run's fake credentials
+	id       string // the run's, for sbox-run out
 }
 
 // dnsName is a hostname looked up during a run, with the record types asked for.
@@ -125,6 +126,7 @@ type guestJob struct {
 	prefetch   string            // optional: runs first, in a microVM with registry-only egress
 	preLimit   time.Duration     // the prefetch microVM's timeout
 	registries []string          // hosts the prefetch proxy allows besides the public registries
+	out        string            // optional: a script whose tar of the work folder comes back after the command
 	egress     []string          // optional: host:port the main microVM may reach through the proxy
 	ports      []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
 	services   []int             // Mac ports the guest reaches at host.sbox
@@ -152,15 +154,17 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	flags.SetOutput(stderr)
 	configFile := flags.String("config", "", "a config `file` read after ~/.config/sbox/config.yaml (egress, timeouts.run, vm)")
 	verbose := flags.Bool("v", false, "also show kernel and Firecracker output")
+	apply := flags.Bool("apply", false, "show what the command changed in the folder, then write it there once you confirm")
+	patchFile := flags.String("patch", "", "write what the command changed in the folder to this `file`, as a patch")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox run [flags] <dir | GitHub URL> -- <command> [args...]\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox run [-config <file>] [-v] [-apply | -patch <file>] <dir | GitHub URL> -- <command> [args...]\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
 		return exitInfra
 	}
 	rest := flags.Args()
-	if len(rest) < 3 || rest[1] != "--" {
+	if len(rest) < 3 || rest[1] != "--" || *apply && *patchFile != "" {
 		flags.Usage()
 		return exitInfra
 	}
@@ -182,6 +186,20 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 	}
 	if name != dir {
 		_, _ = fmt.Fprintln(stderr, "sbox: running on", name)
+	}
+	var rules ignoreRules
+	var base manifest
+	if *apply || *patchFile != "" {
+		if *apply && name != dir {
+			_, _ = fmt.Fprintln(stderr, "sbox: -apply writes into a folder of yours, not a GitHub download; -patch <file> works")
+			return exitInfra
+		}
+		rules = syncRules(gitignoreRules(dir))
+		if base, err = readManifest(dir, rules); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox:", err)
+			return exitInfra
+		}
+		job.out = pullScript(rules)
 	}
 	start := time.Now()
 	res, err := runVM(ctx, dir, job, timeout, *verbose, stdout, stderr)
@@ -209,6 +227,19 @@ func runMain(ctx context.Context, args []string, stdout, stderr io.Writer, userC
 		return exitInfra
 	}
 	_, _ = fmt.Fprintf(stderr, "sbox: exit %d in %s\n", res.exitCode, elapsed)
+	if job.out != "" {
+		var confirm func() bool
+		if isTerminal(os.Stdin) {
+			confirm = func() bool {
+				_, _ = fmt.Fprintf(stderr, "sbox: write these changes into %s? [y/N] ", dir)
+				answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				return strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y")
+			}
+		}
+		if code := runChanges(ctx, sboxRun, res.id, dir, base, rules, *apply, *patchFile, confirm, stdout, stderr); code != exitOK {
+			return exitInfra
+		}
+	}
 	return res.exitCode
 }
 
@@ -254,7 +285,7 @@ func runVM(ctx context.Context, dir string, job guestJob, timeout time.Duration,
 	}
 
 	res := streamConsole(console, out, verbose, nonce, redactor(job.secrets))
-	res.nonce, res.canary = nonce, canary
+	res.nonce, res.canary, res.id = nonce, canary, id
 	err = cmd.Wait()
 	var exitErr *exec.ExitError
 	switch {
@@ -480,6 +511,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if len(job.egress) > 0 {
 		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})
+	}
+	if job.out != "" {
+		files = append(files, file{"sbox/out.sh", job.out, 0o700})
 	}
 	if len(job.registries) > 0 {
 		files = append(files, file{"sbox/registries", strings.Join(job.registries, "\n") + "\n", 0o644})

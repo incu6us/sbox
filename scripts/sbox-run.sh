@@ -29,6 +29,7 @@
 #                  sbox-run pause|resume|log <session-id>
 #                  sbox-run attach <session-id> [-- <command...>]
 #                  sbox-run reconfigure <session-id>  (egress, ports, services on stdin)
+#                  sbox-run out <run-id>              (a run's work folder as a tar, once)
 #                  sbox-run forget <project-id>    (drop one project's work drive)
 #                  sbox-run clean                  (drop every project's)
 set -euo pipefail
@@ -403,6 +404,13 @@ clean)
 	;;
 attach) shift; session_attach "$@" ;;
 reconfigure) session_reconfigure "${2:-}"; exit 0 ;;
+out) # a run's work folder, kept after the run; printed once
+	valid_id "${2:-}"
+	[[ -f $state/out/$2.tar ]] || { echo "sbox-run: no changes kept for run $2" >&2; exit 1; }
+	cat "$state/out/$2.tar"
+	rm -f "$state/out/$2.tar"
+	exit 0
+	;;
 log) dir=$(session_dir "${2:-}"); redacted "$2" cat "$dir/console.log"; exit 0 ;;
 events) # the allowlist and forwarded ports, then what the proxy and DNS logger saw
 	session_dir "${2:-}" >/dev/null
@@ -531,6 +539,11 @@ boot() {
 		local ro=true
 		[[ $deps == rw ]] && ro=false
 		extra=", {\"drive_id\": \"deps\", \"path_on_host\": \"/deps.ext4\", \"is_root_device\": false, \"is_read_only\": $ro}"
+	fi
+	# A run's raw out drive, last, for the work folder's tar.
+	if [[ -f $run/out.img && $phase == main ]]; then
+		ln "$run/out.img" "$root/out.img"
+		extra+=", {\"drive_id\": \"out\", \"path_on_host\": \"/out.img\", \"is_root_device\": false, \"is_read_only\": false}"
 	fi
 	# A session's project work drive, writable; the guest finds it by label.
 	if [[ -n ${SBOX_WORK:-} && $phase == main ]]; then
@@ -670,7 +683,25 @@ fi
 # Exit 124 on timeout, 0 otherwise: the console (stdout) belongs to the
 # guest, so the timeout is reported out of its reach.
 status=0
+# With sbox/out.sh the guest tars its work folder onto a raw drive after
+# the command: its byte count in the first 512-byte block, the tar after.
+# No filesystem, so the VM's kernel never mounts what the guest wrote.
+out_cap=$((1024 * 1024 * 1024 - 512))
+if [[ -f $run/drive/sbox/out.sh ]]; then
+	truncate -s 1G "$run/out.img"
+	chown sbox-vm "$run/out.img"
+fi
 boot "$id" "$timeout" main "$deps" || status=$?
+if [[ -f $run/out.img ]]; then
+	install -d -m 0700 "$state/out"
+	find "$state/out" -name '*.tar' -mmin +1440 -delete 2>/dev/null || true # never fetched
+	n=$(head -c 512 "$run/out.img" | tr -d '\0\n')
+	if [[ $n =~ ^[0-9]{1,10}$ ]] && ((n <= out_cap)); then
+		# head first: tail drains it, so no SIGPIPE under pipefail.
+		head -c $((n + 512)) "$run/out.img" | tail -c +513 >"$state/out/$id.tar"
+		chmod 0600 "$state/out/$id.tar"
+	fi
+fi
 
 if ((${#egress[@]})); then
 	stop_egress

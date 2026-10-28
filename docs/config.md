@@ -312,7 +312,7 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
     them yet.)
 - [x] **4. Secrets.** (Dev mode: from the Mac's environment, root-only on the drive, tmpfs in the guest. `run` and `scan`: the same values as `env`'s last assignments, so a real one replaces the fake of its name; the Mac redacts every line from the guest (value, hex, base64) before printing or judging it, and a `[redacted:NAME]` in a lookup or a network tool's arguments is `canary-exfiltration`, which replaces the planned canary tails; the header and JSON `config.secrets` name the real ones.) Drive file, guest export, canary tails, header line. Tests
     on `analyze` with a secret tail.
-- [ ] **5. Read-write mounts.** (Not for dev mode: `sbox sync` covers it.) `out.ext4`, the bind mounts, the fetch call, the
+- [x] **5. Read-write mounts.** (Done for the folder `sbox run` is given, which is the case that came up: `-apply` and `-patch <file>`. The guest tars its work folder with sync's rules onto a raw drive, its byte count in the first block, so no filesystem the guest wrote is ever mounted; `sbox-run out` hands it over once; sync's plan, diffs and writes do the rest. `mode: rw` for other mounts is left until asked for. Not for dev mode: `sbox sync` covers it.) `out.ext4`, the bind mounts, the fetch call, the
     diff, `-out`, `-apply` with confirmation.
 - [ ] **6. Push.** (Not for dev mode: `.git` stays the Mac's and you push from there.) Remote check before the run; `-push` applies the returned diff
     to the host's own repository and pushes from there. `.git` from the VM is

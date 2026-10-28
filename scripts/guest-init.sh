@@ -199,6 +199,14 @@ else
 	setpriv --reuid=runner --regid=runner --init-groups --reset-env env $proxy_env "$@" sh /drive/sbox/cmd.sh </dev/null 2>&1
 fi
 status=$?
+# sbox run -apply or -patch: the work folder's tar onto the last drive (the
+# raw out drive sbox-run attached), after a block holding its byte count.
+if [ -f /drive/sbox/out.sh ]; then
+	out=$(ls /dev/vd? | tail -n 1)
+	n=$({ sh /drive/sbox/out.sh 2>/dev/null | dd of="$out" bs=512 seek=1 iflag=fullblock conv=notrunc; } 2>&1 | sed -n 's/^\([0-9][0-9]*\) bytes.*/\1/p')
+	printf '%s\n' "${n:-0}" | dd of="$out" bs=512 count=1 conv=notrunc,sync 2>/dev/null
+	sync
+fi
 echo # the command's output may not end with a newline
 echo "SBOX-$nonce EXIT $status"
 poweroff

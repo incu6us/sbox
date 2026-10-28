@@ -40,7 +40,7 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-config <file>] [-v] <dir | GitHub URL> -- <command> [args...]
+sbox run [-config <file>] [-v] [-apply | -patch <file>] <dir | GitHub URL> -- <command> [args...]
 sbox scan [-config <file>] [-v] [-json] <dir | GitHub URL>
 
 sbox init [dir]
@@ -360,6 +360,13 @@ command, passed through exactly (quotes, spaces and `$` arrive intact).
 |---|---|
 | `-config <file>` | A config file read after `~/.config/sbox/config.yaml`. A file inside the target is never read. |
 | `-v` | Also show kernel and Firecracker output, marked `·`. Useful when a run fails to start. |
+| `-apply` | After the command, show what it changed in the folder (sync's diffs) and write it there once you answer `y`. Needs a terminal, and a folder, not a GitHub URL. |
+| `-patch <file>` | Write what the command changed to `<file>` as a patch instead (`git apply`, `patch -p1`). |
+
+With either, the guest's copy of the folder comes back after the command,
+without `.git`, `node_modules` and the like or what the folder's
+`.gitignore` lists; files you changed on the Mac meanwhile are left alone.
+`.git` from the guest is never used.
 
 The rest comes from the config:
 
