@@ -106,7 +106,21 @@ func fetchTarget(ctx context.Context, client *http.Client, base string, t target
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return "", "", fmt.Errorf("%s@%s: no folder %q", name, ref, t.path)
 	}
+	now := time.Now()
+	_ = os.Chtimes(dest, now, now) // in use: pruneCache keeps it
+	pruneCache(cacheRoot, now.Add(-30*24*time.Hour))
 	return dir, string(commit), nil
+}
+
+// pruneCache removes the cached refs (cacheRoot/<owner>/<repo>/<ref>) not
+// used since before.
+func pruneCache(cacheRoot string, before time.Time) {
+	refs, _ := filepath.Glob(filepath.Join(cacheRoot, "*", "*", "*"))
+	for _, ref := range refs {
+		if info, err := os.Stat(ref); err == nil && info.IsDir() && info.ModTime().Before(before) {
+			_ = os.RemoveAll(ref)
+		}
+	}
 }
 
 // download fetches and unpacks one tarball into dest/tree, with the

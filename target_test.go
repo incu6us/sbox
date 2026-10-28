@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParseTarget(t *testing.T) {
@@ -119,6 +120,27 @@ func TestFetchTarget(t *testing.T) {
 	}
 	if hits.Load() != 1 {
 		t.Errorf("a commit ref was downloaded %d times, want once (it can't move)", hits.Load())
+	}
+
+	// Entries unused for 30 days go on the next fetch; one just used stays.
+	month := time.Now().Add(-31 * 24 * time.Hour)
+	stale := filepath.Join(cache, "old", "repo", sha)
+	if err := os.MkdirAll(filepath.Join(stale, "tree"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{stale, filepath.Join(cache, "o", "r", sha)} {
+		if err := os.Chtimes(p, month, month); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := fetch(cache, target{owner: "o", repo: "r", ref: sha}, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("an entry unused for a month is still cached (%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(cache, "o", "r", sha, "tree", "README.md")); err != nil {
+		t.Errorf("the entry just used went too: %v", err)
 	}
 
 	for _, tt := range []struct {
