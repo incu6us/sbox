@@ -40,23 +40,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprint(stderr, "usage: sbox <command>\n\n"+
 			"  setup    create and provision the sbox VM (Lima + Firecracker), then run doctor\n"+
 			"  doctor   check the VM, KVM, pinned artifacts, a microVM boot and its network boundary\n"+
-			"  run      run a command on a directory in a fresh microVM (egress, timeouts.run, vm from the config): sbox run [-config <file>] [-v] <dir> -- <command>\n"+
-			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan [-config <file>] [-v] [-json] <dir>\n"+
+			"  run      run a command on a directory in a fresh microVM (egress, timeouts.run, vm from the config): sbox run [-config <file>] [-workspace <name>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]\n"+
+			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan [-config <file>] [-v] [-json] [-refetch] <dir | GitHub URL>\n"+
 			"\nsessions (a microVM that keeps running):\n"+
-			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept); -restart applies config changes: sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir> [-- <command>]\n"+
-			"  setup-env run the project's dev.setup steps again: sbox setup-env <dir>\n"+
+			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept); -restart applies config changes: sbox dev [-fresh | -restart] [-config <file>] [-workspace <name>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]\n"+
+			"  setup-env run the project's dev.setup steps again: sbox setup-env [-config <file>] [-workspace <name>] <dir>\n"+
 			"  init     write a starter sbox.yaml: sbox init [dir]\n"+
-			"  config   print a project's effective config, and which secrets are set: sbox config [dir]\n"+
-			"  start    start a session on a directory and print its id: sbox start <dir> -- <command>\n"+
-			"  attach   a terminal in a running session: sbox attach <id> [-- <command>]\n"+
-			"  sync     show what the Mac and the guest each changed; -apply brings it across, -patch prints the guest's as a patch: sbox sync [-apply | -patch] <dir>\n"+
+			"  config   print a project's effective config, its workspace, and which secrets are set: sbox config [-config <file>] [-workspace <name>] [dir]\n"+
+			"  start    start a session on a directory and print its id: sbox start <dir> -- <command> [args...]\n"+
+			"  attach   a terminal in a running session: sbox attach <session-id> [-- <command> [args...]]\n"+
+			"  sync     show what the Mac and the guest each changed; -apply brings it across, -patch prints the guest's as a patch: sbox sync [-apply | -patch] [-config <file>] [-workspace <name>] <dir>\n"+
 			"  ps       list sessions and their state\n"+
-			"  stop     stop a session and remove everything it left: sbox stop <id>\n"+
-			"  pause    freeze a session in memory: sbox pause <id>\n"+
-			"  resume   continue a paused session: sbox resume <id>\n"+
-			"  log      print a session's console output; -f follows it, -blocked shows what was blocked, -start dev.start's background output: sbox log [-f] [-blocked | -start] <id>\n"+
-			"  watch    show what a session is blocked from, as it happens: sbox watch [id]\n"+
-			"  clean    remove every project's saved state (what sbox dev keeps)\n")
+			"  stop     stop a session and remove everything it left: sbox stop <session-id>\n"+
+			"  pause    freeze a session in memory: sbox pause <session-id>\n"+
+			"  resume   continue a paused session: sbox resume <session-id>\n"+
+			"  log      print a session's console output; -f follows it, -blocked shows what was blocked, -start dev.start's background output: sbox log [-f] [-blocked | -start] <session-id>\n"+
+			"  watch    show what a session is blocked from, as it happens: sbox watch [session-id]\n"+
+			"  clean    remove every project's saved state (what sbox dev keeps): sbox clean\n")
 		return exitUsage
 	}
 	if len(args) == 0 {

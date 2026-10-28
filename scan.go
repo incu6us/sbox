@@ -101,7 +101,7 @@ func scanMain(ctx context.Context, args []string, stdout, stderr io.Writer, user
 	asJSON := flags.Bool("json", false, "print the report as JSON")
 	refetch := flags.Bool("refetch", false, "download a GitHub target again, even a commit already cached")
 	flags.Usage = func() {
-		_, _ = fmt.Fprint(stderr, "usage: sbox scan [flags] <dir | GitHub URL>\n\n")
+		_, _ = fmt.Fprint(stderr, "usage: sbox scan [-config <file>] [-v] [-json] [-refetch] <dir | GitHub URL>\n\n")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {

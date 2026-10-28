@@ -45,3 +45,28 @@ func TestRunDispatchesSessionCommands(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageListsEveryFlag: each line of sbox's own help carries the same
+// synopsis the command prints, so a flag added to one shows in both.
+func TestUsageListsEveryFlag(t *testing.T) {
+	t.Parallel()
+
+	var help bytes.Buffer
+	run(nil, &bytes.Buffer{}, &help)
+	for _, args := range [][]string{
+		{"run"}, {"scan"}, {"dev"}, {"setup-env"}, {"init", "a", "b"}, {"config", "a", "b"},
+		{"start"}, {"attach"}, {"sync"}, {"log"}, {"watch", "a", "b"}, {"clean", "extra"},
+	} {
+		var stderr bytes.Buffer
+		run(args, &bytes.Buffer{}, &stderr)
+		first, _, _ := strings.Cut(stderr.String(), "\n")
+		synopsis, ok := strings.CutPrefix(first, "usage: ")
+		if !ok {
+			t.Errorf("sbox %v printed no usage: %q", args, stderr.String())
+			continue
+		}
+		if !strings.Contains(help.String(), ": "+synopsis+"\n") {
+			t.Errorf("sbox's help lacks %q", synopsis)
+		}
+	}
+}

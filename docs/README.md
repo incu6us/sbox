@@ -48,8 +48,8 @@ Conventions shared by every plan:
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
-  - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions, `-patch`, the Mac's edits pushed at boot (the live notice left)
-  - [x] 5 ports and services (doctor's forwarding check left)
+  - [x] 4 `sbox sync`: three-way merge, diff, apply, both directions, `-patch`, the Mac's edits pushed at boot, the live notice
+  - [x] 5 ports and services, doctor's forwarding check
   - [x] 5b egress from the config, wildcards, raw TCP (ssh, databases)
   - [x] 5c reattach and detach
   - [x] 5d toolchains via `image.packages`, a process cap in the guest
