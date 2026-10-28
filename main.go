@@ -42,7 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  run      run a command on a directory in a fresh microVM: sbox run <dir> -- <command>\n"+
 			"  scan     run a skill's hooks, MCP servers and install scripts under strace: sbox scan <dir>\n"+
 			"\nsessions (a microVM that keeps running):\n"+
-			"  dev      a terminal in a session on a directory, stopped on exit; its home is kept: sbox dev [-fresh] <dir> [-- <command>]\n"+
+			"  dev      a terminal in the project's session (kept or stopped at exit; its home is kept): sbox dev [-fresh] <dir> [-- <command>]\n"+
+			"  setup-env run the project's dev.setup steps again: sbox setup-env <dir>\n"+
 			"  start    start a session on a directory and print its id: sbox start <dir> -- <command>\n"+
 			"  attach   a terminal in a running session: sbox attach <id> [-- <command>]\n"+
 			"  sync     show what the Mac and the guest each changed; -apply brings it across: sbox sync [-apply] <dir>\n"+
@@ -78,6 +79,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			keep = askKeep(os.Stdin, stderr)
 		}
 		return devMain(ctx, args[1:], os.Stdin, stdout, stderr, sboxRun, hostStateDir(), userConfigFile(), keep)
+	case "setup-env":
+		return setupEnvMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir(), userConfigFile())
 	case "ps", "stop", "pause", "resume", "log", "clean":
 		return sessionMain(ctx, args[0], args[1:], stdout, stderr, sboxRun)
 	case "setup":

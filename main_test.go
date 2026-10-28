@@ -11,7 +11,7 @@ func TestRunDispatchesSessionCommands(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	run(nil, &stdout, &stderr)
-	for _, cmd := range []string{"dev", "start", "attach", "ps", "stop", "pause", "resume", "log", "clean", "sync"} {
+	for _, cmd := range []string{"dev", "start", "attach", "ps", "stop", "pause", "resume", "log", "clean", "sync", "setup-env"} {
 		if !strings.Contains(stderr.String(), "\n  "+cmd+" ") {
 			t.Errorf("usage lacks %s:\n%s", cmd, stderr.String())
 		}
@@ -32,6 +32,7 @@ func TestRunDispatchesSessionCommands(t *testing.T) {
 		{[]string{"dev"}, "usage: sbox dev"},
 		{[]string{"clean", "extra"}, "usage: sbox clean"},
 		{[]string{"sync"}, "usage: sbox sync"},
+		{[]string{"setup-env"}, "usage: sbox setup-env"},
 	}
 	for _, tt := range tests {
 		var stdout, stderr bytes.Buffer

@@ -307,7 +307,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 		_, _ = fmt.Fprintf(stderr, "sbox: no sync base for %s: sbox dev records one when it first copies the project in (sbox dev -fresh starts over)\n", dir)
 		return exitFail
 	}
-	id, stop, code := projectSession(ctx, dir, project, stderr, vm, stateDir)
+	id, stop, code := projectSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, stderr, vm, stateDir)
 	if code != exitOK {
 		return code
 	}
@@ -366,7 +366,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 // projectSession finds the live session on a project, resuming a paused
 // one until done, or starts one that done stops (which also flushes the
 // guest's writes).
-func projectSession(ctx context.Context, dir, project string, stderr io.Writer, vm sboxRunFunc, stateDir string) (id string, done func(), code int) {
+func projectSession(ctx context.Context, dir, project string, job guestJob, stderr io.Writer, vm sboxRunFunc, stateDir string) (id string, done func(), code int) {
 	live, found, code := liveSession(ctx, project, stderr, vm)
 	switch {
 	case code != exitOK:
@@ -379,7 +379,7 @@ func projectSession(ctx context.Context, dir, project string, stderr io.Writer, 
 	case found:
 		return live.ID, func() {}, exitOK
 	}
-	id, fresh, code := startSession(ctx, dir, project, guestJob{command: []string{"sleep", "infinity"}}, stderr, vm)
+	id, fresh, code := startSession(ctx, dir, project, job, stderr, vm)
 	if code != exitOK {
 		return "", nil, code
 	}

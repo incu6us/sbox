@@ -635,3 +635,103 @@ func TestDevMainSaysWhereToolsGo(t *testing.T) {
 		}
 	}
 }
+
+func TestDevMainRunsHooks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	yaml := "dev:\n  env: {NODE_ENV: development, A: \"1 2\"}\n  setup: [npm ci]\n  start: [\"npm run dev &\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project := mustProjectID(t, dir)
+	script := hookScript([]string{"npm ci"}, []string{"npm run dev &"}, 10*time.Minute, false)
+	run := func(ps string, hooksFail bool) (*fakeVM, string) {
+		vm := &fakeVM{answer: func(args []string) string {
+			switch args[0] {
+			case "ps":
+				return ps
+			case "start":
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}, errFor: func(args []string) error {
+			if hooksFail && args[0] == "attach" && slices.Contains(args, script) {
+				return exitStatus(t, 1)
+			}
+			return nil
+		}}
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{dir, "--", "claude"}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return vm, stderr.String()
+	}
+
+	vm, _ := run("", false)
+	id := vm.calls[1][1]
+	want := [][]string{{"ps"}, {"start", id, project}, {"attach", id, "--", "sh", "-c", script}, {"attach", id, "--", "claude"}, {"stop", id}}
+	if !slices.EqualFunc(vm.calls, want, slices.Equal) {
+		t.Errorf("fresh boot: calls %q, want the hooks before the terminal", vm.calls)
+	}
+	if env := tarFiles(t, vm.stdins[1])["sbox/env"]; env != "A=1 2\nNODE_ENV=development\n" {
+		t.Errorf("sbox/env = %q, want the variables, sorted, one per line", env)
+	}
+
+	vm, notes := run("", true)
+	if len(vm.calls) != 5 || vm.calls[3][3] != "claude" || !strings.Contains(notes, "sbox setup-env") {
+		t.Errorf("failed hooks: calls %q, stderr %q; want the terminal opened anyway and how to rerun", vm.calls, notes)
+	}
+
+	vm, _ = run("0123abcd running 1700000000 "+project+"\n", false)
+	if slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, script) }) {
+		t.Errorf("reattach: calls %q, want no hooks", vm.calls)
+	}
+}
+
+func TestSetupEnvMain(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev:\n  env: {A: b}\n  setup: [npm ci]\n  start: [\"npm run dev &\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project := mustProjectID(t, dir)
+	script := hookScript([]string{"npm ci"}, nil, 10*time.Minute, true)
+	vmWith := func(ps string) *fakeVM {
+		return &fakeVM{answer: func(args []string) string {
+			switch args[0] {
+			case "ps":
+				return ps
+			case "start":
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}, errFor: func(args []string) error {
+			if args[0] == "attach" {
+				return exitStatus(t, 2)
+			}
+			return nil
+		}}
+	}
+	var stdout, stderr bytes.Buffer
+
+	live := vmWith("0123abcd running 1700000000 " + project + "\n")
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, live.run, t.TempDir(), ""); code != 2 ||
+		!slices.EqualFunc(live.calls, [][]string{{"ps"}, {"attach", "0123abcd", "--", "sh", "-c", script}}, slices.Equal) {
+		t.Errorf("live session: exit %d, calls %q; want setup forced in it and its exit status", code, live.calls)
+	}
+
+	none := vmWith("")
+	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, none.run, t.TempDir(), ""); code != 2 || len(none.calls) != 4 ||
+		none.calls[1][0] != "start" || none.calls[3][0] != "stop" || tarFiles(t, none.stdins[1])["sbox/env"] != "A=b\n" {
+		t.Errorf("no session: exit %d, calls %q; want one started with the config, then stopped", code, none.calls)
+	}
+
+	empty := t.TempDir()
+	quiet := vmWith("")
+	if code := setupEnvMain(context.Background(), []string{empty}, &stdout, &stderr, quiet.run, t.TempDir(), ""); code != exitOK || len(quiet.calls) != 0 {
+		t.Errorf("no setup steps: exit %d, calls %q; want nothing done", code, quiet.calls)
+	}
+	if code := setupEnvMain(context.Background(), nil, &stdout, &stderr, quiet.run, t.TempDir(), ""); code != exitUsage {
+		t.Errorf("no folder: exit %d, want usage", code)
+	}
+}

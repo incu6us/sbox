@@ -123,6 +123,27 @@ in the command and in every terminal. An exact host on another port, like
 with the VM side of its network, where a relay carries the connection to
 that host alone, so one host per such port.
 
+The environment is prepared from the same file, inside the guest, as the
+runner, from the project folder, before the terminal opens:
+
+```yaml
+dev:
+  env:                    # in every login: the hooks, terminals, the agent
+    DATABASE_URL: postgres://app@host.sbox:5432/app
+  setup:                  # once per home, and again when this list changes
+    - npm ci
+    - npm run db:migrate
+  start:                  # at every fresh boot, not when attaching again
+    - npm run dev &       # a trailing & runs it in the background (output in ~/.sbox/start.log)
+timeouts:
+  setup: 10m              # each step; 10m when left out
+```
+
+A failed step stops the list and is shown, and the terminal opens anyway
+so you can fix it there; `sbox setup-env <dir>` runs the setup steps
+again. `dev.env` is written to the runner's `~/.ssh/environment` at each
+boot.
+
 Toolchains beyond Node, Python, uv and Claude Code go into the guest
 image from the Ubuntu archive, set in `~/.config/sbox/config.yaml` only
 (the image is shared by every project) and applied by `sbox setup`, which

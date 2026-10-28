@@ -498,12 +498,24 @@ writes a commented starter file and `sbox config` prints the effective one.
     - [x] tested with fakes, then on the real VM: `go version` and
       `go run` in the guest, `TestImagePackagesOnVM`,
       `TestGuestProcessLimitOnVM` (red before the cap: 3000 forked)
-- [ ] **5e. Setup and start hooks.** `dev.env`, `dev.setup`, `dev.start`,
+- [x] **5e. Setup and start hooks.** `dev.env`, `dev.setup`, `dev.start`,
     the hash stamp on the work drive, `sbox setup-env`, `timeouts.setup`,
     streamed and logged output, failure shown in preflight without
     blocking the session. Probe: a project with `setup: [npm ci]` has
     `node_modules` on the second session without rerunning; changing the
     list reruns it; a failing step is visible and the terminal still opens.
+    - [x] config: `dev.env` (maps merge, the project's wins; names checked,
+      values one line), `dev.setup` and `dev.start` (appended in order),
+      `timeouts.setup` (10m when unset)
+    - [x] the hook script, run over attach on a fresh boot only, with the
+      stamp in `~/.sbox/setup.sha`; tested by running it with `sh`
+    - [x] `sbox setup-env <dir>`
+    - [x] `dev.env` in every login through `~/.ssh/environment` and
+      `PermitUserEnvironment`
+    - [x] tested with fakes, then on the real VM (`TestDevHooksOnVM`)
+    - [ ] hook output prefixed and in `sbox log`: the runner can't write
+      the console, so steps are announced instead and background output
+      goes to `~/.sbox/start.log`
 - [ ] **6. Secrets and config.** The config plan's commits 1, 2 and 4, done
     here if not before, plus `ports`, `dev`, `mcp` and `permissions` keys,
     the generated guest `settings.json` and `.claude.json` MCP entries, the

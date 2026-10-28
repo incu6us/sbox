@@ -447,3 +447,70 @@ func runInSession(ctx context.Context, t *testing.T, cmd []string, out, errOut i
 	defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) }()
 	return attachMain(ctx, append([]string{id, "--"}, cmd...), strings.NewReader(""), out, errOut, sboxRun)
 }
+
+// TestDevHooksOnVM runs sbox dev with dev.env, dev.setup and dev.start:
+// setup once per list, start every fresh boot (one step in the
+// background), the variables in the terminal, a failing step that still
+// opens the terminal, and sbox setup-env.
+func TestDevHooksOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	config := func(setup string) {
+		t.Helper()
+		yaml := "dev:\n  env: {GREETING: hello world}\n  setup: [\"" + setup + "\"]\n" +
+			"  start: [\"echo \\\"$GREETING\\\" > ~/started\", \"sleep 1; echo bg-ran > ~/bg &\"]\n"
+		if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dev := func() (string, string) {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		script := `sleep 2; cat ~/setup-runs ~/started ~/bg; echo "terminal: $GREETING"`
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, state, "", nil); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return out.String(), errOut.String()
+	}
+
+	config("echo setup-a >> ~/setup-runs")
+	out, _ := dev()
+	for _, want := range []string{"setup-a\nhello world\nbg-ran\n", "terminal: hello world"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("first session: %q, want %q", out, want)
+		}
+	}
+	if out, _ := dev(); strings.Count(out, "setup-a") != 1 {
+		t.Errorf("second session: %q, want setup not run again", out)
+	}
+	config("echo setup-b >> ~/setup-runs")
+	if out, _ := dev(); !strings.Contains(out, "setup-a\nsetup-b\n") {
+		t.Errorf("after changing the list: %q, want setup run again", out)
+	}
+
+	config("exit 7")
+	out, notes := dev()
+	if !strings.Contains(notes, "setup failed (exit 7)") || !strings.Contains(out, "terminal: hello world") {
+		t.Errorf("a failing step: out %q, notes %q; want the failure shown and the terminal opened", out, notes)
+	}
+
+	config("echo setup-env >> ~/setup-runs")
+	var envOut, envErr bytes.Buffer
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, state, ""); code != exitOK {
+		t.Fatalf("sbox setup-env: exit %d: %s", code, envErr.String())
+	}
+	if code := setupEnvMain(ctx, []string{dir}, &envOut, &envErr, sboxRun, state, ""); code != exitOK {
+		t.Fatalf("sbox setup-env again: exit %d: %s", code, envErr.String())
+	}
+	if out, _ := dev(); strings.Count(out, "setup-env") != 2 {
+		t.Errorf("after two sbox setup-env: %q, want the steps run each time, and not again by sbox dev", out)
+	}
+}

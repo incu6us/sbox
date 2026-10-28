@@ -120,11 +120,12 @@ type guestJob struct {
 	command  []string
 	scan     string
 	files    map[string]string
-	prefetch string        // optional: runs first, in a microVM with registry-only egress
-	preLimit time.Duration // the prefetch microVM's timeout
-	egress   []string      // optional: host:port the main microVM may reach through the proxy
-	ports    []int         // guest ports forwarded to the VM's localhost (and so the Mac's)
-	services []int         // Mac ports the guest reaches at host.sbox
+	prefetch string            // optional: runs first, in a microVM with registry-only egress
+	preLimit time.Duration     // the prefetch microVM's timeout
+	egress   []string          // optional: host:port the main microVM may reach through the proxy
+	ports    []int             // guest ports forwarded to the VM's localhost (and so the Mac's)
+	services []int             // Mac ports the guest reaches at host.sbox
+	env      map[string]string // set in every ssh login to the guest
 }
 
 // runMain implements `sbox run [-timeout d] [-v] <dir> -- <command...>`.
@@ -365,6 +366,13 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if job.prefetch != "" {
 		files = append(files, file{"sbox/prefetch.sh", job.prefetch, 0o700})
+	}
+	if len(job.env) > 0 {
+		var b strings.Builder
+		for _, k := range slices.Sorted(maps.Keys(job.env)) {
+			fmt.Fprintf(&b, "%s=%s\n", k, job.env[k])
+		}
+		files = append(files, file{"sbox/env", b.String(), 0o644})
 	}
 	if len(job.egress) > 0 {
 		files = append(files, file{"sbox/egress", strings.Join(job.egress, "\n") + "\n", 0o644})

@@ -441,6 +441,28 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     bounded fork bomb got all 3000 processes, after it stops below 2048
     and the session answers.
 
+- ✅ Step 5e: setup and start hooks. `dev.env`, `dev.setup`, `dev.start`
+  and `timeouts.setup` in the config. On a fresh boot `sbox dev` runs one
+  generated `sh` script over attach: setup when the list's hash differs
+  from the stamp its last successful run left in `~/.sbox/setup.sha` (on
+  the kept home), then start; each step under `timeout`, a step ending in
+  `&` detached with its output in `~/.sbox/start.log`. A failed step
+  stops the script, leaves no stamp, and the terminal still opens.
+  `sbox setup-env <dir>` reruns setup in the live session, or in one
+  started for it. `dev.env` travels as `sbox/env` and the guest init
+  writes it to `~/.ssh/environment`, read by sshd
+  (`PermitUserEnvironment`), so hooks, terminals and the agent all get it.
+  - The hook script is tested by running it with `sh` on the Mac (a fake
+    `timeout`, a temporary home): once per list, rerun on change and when
+    forced, a failure that stops the list, a timeout, a detached step.
+  - Verified on the real VM: setup once, again after a change, a failing
+    step shown with the terminal opened, `setup-env` twice, `dev.env` and a
+    background step's result in the terminal.
+  - Not as planned: hook output isn't prefixed or copied into `sbox log`
+    (the runner can't write the console); each step is announced
+    (`sbox: setup: npm ci`), and background output is in
+    `~/.sbox/start.log`.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,
