@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -99,9 +100,21 @@ func pinnedSHA(env string) string {
 	return ""
 }
 
-// setup creates and starts the VM if needed, provisions it, and runs the
-// doctor to prove the result works.
-func setup(ctx context.Context, out io.Writer) error {
+// provisionEnv is provision.sh's input: the pinned artifacts and the
+// packages the user's config adds to the guest image.
+func provisionEnv(cfg config) map[string]string {
+	env := map[string]string{"GUEST_EXTRA_PACKAGES": strings.Join(cfg.Image.Packages, ",")}
+	for _, a := range _artifacts {
+		env[a.env+"_URL"] = a.url
+		env[a.env+"_SHA256"] = a.sha256
+	}
+	return env
+}
+
+// setup creates and starts the VM if needed, provisions it with the
+// image packages from userConfig, and runs the doctor to prove the result
+// works.
+func setup(ctx context.Context, out io.Writer, userConfig string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -138,12 +151,11 @@ func setup(ctx context.Context, out io.Writer) error {
 		return fmt.Errorf("VM %q exists without nested virtualization; delete it (limactl delete %s) and rerun setup", _vmName, _vmName)
 	}
 
-	env := make(map[string]string, 2*len(_artifacts))
-	for _, a := range _artifacts {
-		env[a.env+"_URL"] = a.url
-		env[a.env+"_SHA256"] = a.sha256
+	cfg, err := loadConfig(userConfig, "")
+	if err != nil {
+		return err
 	}
-	if err := vmScript(ctx, out, _provisionScript, true, env); err != nil {
+	if err := vmScript(ctx, out, _provisionScript, true, provisionEnv(cfg)); err != nil {
 		return fmt.Errorf("provision: %w", err)
 	}
 	for _, tool := range _vmTools {

@@ -425,6 +425,22 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     `sbox dev` again reaches the first guest's background process, and
     stopping at the second detach leaves nothing running.
 
+- ✅ Step 5d: toolchains. `image.packages` in the user's config (Ubuntu
+  package names only: no commas, options or files; refused in a project's
+  `sbox.yaml`, since the image is shared) goes to `provision.sh` through
+  `sbox setup`, and a hash of the list joins the rootfs stamp, so a change
+  rebuilds the image and no list keeps the old stamp. The runner is capped
+  at 2048 processes inside the guest (`prlimit` in the guest init; root,
+  so sshd, is exempt). `sbox dev` says on a new home that the root is
+  read-only and the home is where tools go.
+  - Changed from the plan: `pids.max` on the jailer's cgroup would cap
+    Firecracker's threads, not the guest's processes, which belong to the
+    guest kernel; the limit had to go inside.
+  - Verified on the real VM: with `golang-go` the image is 1485 MB (from
+    1151), `go version` and `go run` work in the guest; before the cap a
+    bounded fork bomb got all 3000 processes, after it stops below 2048
+    and the session answers.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

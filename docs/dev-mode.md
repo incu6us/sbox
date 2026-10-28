@@ -175,8 +175,10 @@ the terminal detaches without stopping; `sbox stop` ends the session, and
 `sbox dev` asks once at detach whether to stop or keep it, with keep as
 the default for a session that has unsynced changes.
 
-**Resource limits.** The jailer's cgroup gets `pids.max` (2048) so a
-runaway build fails inside the guest instead of taking the microVM down;
+**Resource limits.** The runner gets `RLIMIT_NPROC` 2048 inside the guest
+so a runaway build fails there instead of taking the microVM down (a
+`pids.max` on the jailer's cgroup would count Firecracker's threads, not
+the guest's processes);
 `vm.vcpus` and `vm.memory_mib` size the session; `lima` in the user config
 sizes the Lima VM (see [config.md](config.md)). The first copy-in of a
 large project is slow and capped at 1 GiB; the preflight prints the size
@@ -481,10 +483,21 @@ writes a commented starter file and `sbox config` prints the effective one.
       to the same guest's process, stopped)
     - [ ] keep as the default only when the guest has unsynced changes:
       the question always defaults to keep for now
-- [ ] **5d. Toolchains.** `image.packages` through setup and the stamp,
+- [x] **5d. Toolchains.** `image.packages` through setup and the stamp,
     `pids.max` in the jailer cgroup, the read-only-root line in preflight.
     Probe: `go version` after adding `golang-go`; a fork bomb in the guest
     ends with the session still attached.
+    - [x] `image.packages`: Debian names only, user config only, sorted;
+      `provision.sh` adds them to mmdebstrap's list and a hash of them to
+      the stamp (no list, old stamp: nothing rebuilds)
+    - [x] process cap: not `pids.max`, which on the jailer's cgroup counts
+      Firecracker's threads, not the guest kernel's processes. The guest
+      init sets `RLIMIT_NPROC` 2048 with `prlimit`; root is exempt
+    - [x] the read-only-root line, printed by `sbox dev` on a new home
+      (the full preflight is step 7)
+    - [x] tested with fakes, then on the real VM: `go version` and
+      `go run` in the guest, `TestImagePackagesOnVM`,
+      `TestGuestProcessLimitOnVM` (red before the cap: 3000 forked)
 - [ ] **5e. Setup and start hooks.** `dev.env`, `dev.setup`, `dev.start`,
     the hash stamp on the work drive, `sbox setup-env`, `timeouts.setup`,
     streamed and logged output, failure shown in preflight without

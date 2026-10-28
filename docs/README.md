@@ -51,7 +51,7 @@ Conventions shared by every plan:
   - [x] 5 ports and services (doctor's forwarding check left)
   - [x] 5b egress from the config, wildcards, raw TCP (ssh, databases)
   - [x] 5c reattach and detach
-  - [ ] 5d toolchains via `image.packages`, `pids.max`
+  - [x] 5d toolchains via `image.packages`, a process cap in the guest
   - [ ] 5e setup and start hooks, `dev.env`
   - [ ] 6 secrets and config keys
   - [ ] 7 session summary, `sbox log`, `-trace`

@@ -613,3 +613,25 @@ func TestAskKeep(t *testing.T) {
 		}
 	}
 }
+
+func TestDevMainSaysWhereToolsGo(t *testing.T) {
+	t.Parallel()
+	for _, newDrive := range []bool{true, false} {
+		vm := fakeVM{answer: func(args []string) string {
+			switch {
+			case args[0] == "start" && newDrive:
+				return "NEW " + args[1] + "\nREADY " + args[1] + "\n"
+			case args[0] == "start":
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{t.TempDir()}, strings.NewReader(""), &stdout, &stderr, vm.run, t.TempDir(), "", nil); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		if said := strings.Contains(stderr.String(), "the root is read-only"); said != newDrive {
+			t.Errorf("new drive %v: stderr %q; want the note only on a new home", newDrive, stderr.String())
+		}
+	}
+}

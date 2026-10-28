@@ -358,3 +358,92 @@ func TestDevReattachOnVM(t *testing.T) {
 		t.Errorf("sbox ps after stopping at detach:\n%s", ps)
 	}
 }
+
+// _forkBomb forks children that each exec sleep, until fork fails or 3000
+// are running, and prints how many it got.
+const _forkBomb = `
+import os
+n = 0
+try:
+    while n < 3000:
+        if os.fork() == 0:
+            os.execv("/bin/sleep", ["sleep", "8"])
+        n += 1
+except OSError:
+    pass
+print("forked", n)
+`
+
+// TestGuestProcessLimitOnVM checks that the runner's processes are capped
+// inside the guest, so a fork bomb fails there and the session lives on.
+func TestGuestProcessLimitOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+	attach := func(script string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := attachMain(ctx, []string{id, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun); code != exitOK {
+			t.Fatalf("attach %q: exit %d: %s%s", script, code, out.String(), errOut.String())
+		}
+		return out.String()
+	}
+
+	if out := attach("grep 'Max processes' /proc/self/limits"); !strings.Contains(out, "2048") {
+		t.Errorf("runner's limits: %q, want max processes 2048", out)
+	}
+	out := attach("python3 -c '" + _forkBomb + "'")
+	var n int
+	if _, err := fmt.Sscanf(strings.TrimSpace(out), "forked %d", &n); err != nil || n >= 2048 || n < 1000 {
+		t.Errorf("fork bomb: %q, want it stopped below 2048 processes", out)
+	}
+	time.Sleep(10 * time.Second) // the children exit
+	if out := attach("echo alive"); !strings.Contains(out, "alive") {
+		t.Errorf("after the fork bomb: %q, want the session still answering", out)
+	}
+}
+
+// TestImagePackagesOnVM checks that the image packages in the user's
+// config are installed in the guest; it skips when there are none. Run
+// sbox setup after changing them.
+func TestImagePackagesOnVM(t *testing.T) {
+	ctx := context.Background()
+	cfg, err := loadConfig(userConfigFile(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Image.Packages) == 0 {
+		t.Skip("no image.packages in ~/.config/sbox/config.yaml")
+	}
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	var out, errOut bytes.Buffer
+	cmd := append([]string{"dpkg-query", "-W", "-f=${Package} ${Status}\n"}, cfg.Image.Packages...)
+	if code := runInSession(ctx, t, cmd, &out, &errOut); code != exitOK {
+		t.Fatalf("dpkg-query: exit %d: %s%s", code, out.String(), errOut.String())
+	}
+	for _, p := range cfg.Image.Packages {
+		if !strings.Contains(out.String(), p+" install ok installed") {
+			t.Errorf("%s is not installed in the guest:\n%s", p, out.String())
+		}
+	}
+}
+
+// runInSession runs cmd in a new session and stops it.
+func runInSession(ctx context.Context, t *testing.T, cmd []string, out, errOut io.Writer) int {
+	t.Helper()
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, errOut, sboxRun)
+	if code != exitOK {
+		return code
+	}
+	defer func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) }()
+	return attachMain(ctx, append([]string{id, "--"}, cmd...), strings.NewReader(""), out, errOut, sboxRun)
+}

@@ -123,6 +123,21 @@ in the command and in every terminal. An exact host on another port, like
 with the VM side of its network, where a relay carries the connection to
 that host alone, so one host per such port.
 
+Toolchains beyond Node, Python, uv and Claude Code go into the guest
+image from the Ubuntu archive, set in `~/.config/sbox/config.yaml` only
+(the image is shared by every project) and applied by `sbox setup`, which
+rebuilds the image when the list changes:
+
+```yaml
+image:
+  packages: [golang-go, rustc]
+```
+
+The guest's root is read-only; anything installed into the home
+(`~/.local`, rustup, `uv python install`) lands on the project's kept
+drive and is there next session. The runner can have 2048 processes and
+threads, so a fork bomb or a runaway build fails inside the guest.
+
 Nothing else crosses: the guest's network still has no route out, and
 each forwarded port is a pair of relays joined by a unix socket in the
 Lima VM. Ports must be 1024 or higher, and free in the VM (a second
