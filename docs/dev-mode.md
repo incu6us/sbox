@@ -561,11 +561,19 @@ writes a commented starter file and `sbox config` prints the effective one.
       EROFS/EACCES as events
     - [ ] Claude Code's denied tool calls from the session transcript
       (marked experimental in the design)
-- [ ] **8. Docs.** README gets a `sbox dev` section first, scan second.
+- [x] **8. Docs.** README gets a `sbox dev` section first, scan second.
     `MILESTONE.md` gets a dev-mode milestone with timings: boot to prompt,
     sync of a 1,000-file project.
+    - [x] README: dev mode and a quick start first; timings in
+      `MILESTONE.md` (4.4 s to the command on a new home, 3.2 to 4.0 s on
+      a kept one, 3.5 to 3.7 s for a sync that starts its own session)
 
 ## Verification
+
+The `vm`-tagged tests cover parts of these (a kept, paused and reattached
+session; refused hosts in the summary; forwarded ports and Mac services;
+secrets kept off the home); the end-to-end runs below with a real app,
+Postgres and a real token are still to do.
 
 - [ ] A Next.js app: `sbox dev`, ask the agent to add a page, `npm run dev`
     in the guest, the page opens on `localhost:3000` on the host, `sbox

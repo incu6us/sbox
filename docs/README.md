@@ -43,7 +43,7 @@ Conventions shared by every plan:
 
 ## Status
 
-- [ ] 1. Dev mode ([dev-mode.md](dev-mode.md))
+- [x] 1. Dev mode ([dev-mode.md](dev-mode.md)) (left: `-trace`, `sync -patch`, auto-push, the verification list)
   - [x] 1 `sbox-run start|stop|ps|pause|resume`, sessions, API socket
   - [x] 2 SSH into the guest, `sbox dev` terminal
   - [x] 3 writable work drive, persistence, `-fresh`, `sbox clean`
@@ -55,7 +55,7 @@ Conventions shared by every plan:
   - [x] 5e setup and start hooks, `dev.env`
   - [x] 6 secrets and config keys
   - [x] 7 diagnostics: preflight, BLOCKED lines, summary, `sbox watch`, `sbox log -f|-blocked` (`-trace` left)
-  - [ ] 8 docs and timings
+  - [x] 8 docs and timings
 - [x] 1b. Prerequisites ([prerequisites.md](prerequisites.md))
   - [x] 1 host preflight
   - [x] 2 `limactlPath()`
