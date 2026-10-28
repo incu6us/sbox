@@ -1019,3 +1019,59 @@ func TestSetupEnvMainWarnsAboutAnOlderConfig(t *testing.T) {
 		t.Errorf("stderr %q, want the warning before the steps run with the old network", stderr.String())
 	}
 }
+
+func TestDevFlagsConfigAndCommand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "egress: [project.example]\ndev: {command: claude}\n")
+	other := filepath.Join(t.TempDir(), "ci.yaml")
+	writeTestFile(t, other, "egress: [other.example]\n")
+	run := func(args ...string) (*fakeVM, string, int) {
+		vm := &fakeVM{answer: func(a []string) string {
+			if a[0] == "start" {
+				return "READY " + a[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		code := devMain(context.Background(), args, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()})
+		return vm, stderr.String(), code
+	}
+
+	vm, notes, code := run("-config", other, dir)
+	if code != exitOK || tarFiles(t, vm.stdins[1])["sbox/egress"] != "other.example:443\n" {
+		t.Errorf("-config: exit %d, %s; want the other file's egress", code, notes)
+	}
+	if !slices.Equal(withoutSummary(vm.calls)[2], []string{"attach", vm.calls[1][1]}) {
+		t.Errorf("-config: attach %q, want a shell: the other file has no dev.command", withoutSummary(vm.calls)[2])
+	}
+	vm, _, code = run("-command", "npm test", dir)
+	if code != exitOK || !slices.Equal(withoutSummary(vm.calls)[2], []string{"attach", vm.calls[1][1], "--", "bash", "-lc", "npm test"}) {
+		t.Errorf("-command: exit %d, attach %q", code, withoutSummary(vm.calls)[2])
+	}
+	if _, _, code := run("-command", "x", dir, "--", "y"); code != exitUsage {
+		t.Errorf("-command with -- cmd: exit %d, want usage", code)
+	}
+	if _, notes, code := run("-config", filepath.Join(dir, "missing.yaml"), dir); code != exitUsage || !strings.Contains(notes, "missing.yaml") {
+		t.Errorf("-config of a missing file: exit %d, %q; want usage naming it", code, notes)
+	}
+}
+
+func TestSyncSetupEnvConfigTakeConfigFlag(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	other := filepath.Join(t.TempDir(), "ci.yaml")
+	writeTestFile(t, other, "ports: [4000]\n")
+	var stdout, stderr bytes.Buffer
+	if code := configMain([]string{"-config", other, dir}, &stdout, &stderr, devHost{}); code != exitOK || !strings.Contains(stdout.String(), "4000") {
+		t.Errorf("sbox config -config: exit %d:\n%s%s", code, stdout.String(), stderr.String())
+	}
+	vm := fakeVM{}
+	if code := setupEnvMain(context.Background(), []string{"-config", other, dir}, &stdout, &stderr, vm.run, devHost{}); code != exitOK || len(vm.calls) != 0 {
+		t.Errorf("sbox setup-env -config (no steps there): exit %d, calls %q", code, vm.calls)
+	}
+	stderr.Reset()
+	if code := syncMain(context.Background(), []string{"-config", filepath.Join(dir, "none.yaml"), dir}, &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir()}); code != exitUsage || !strings.Contains(stderr.String(), "none.yaml") {
+		t.Errorf("sbox sync -config of a missing file: exit %d, %q", code, stderr.String())
+	}
+}

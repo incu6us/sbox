@@ -44,12 +44,12 @@ sbox run [-timeout <duration>] [-v] [-egress <host:port,...>] <dir | GitHub URL>
 sbox scan [-timeout <duration>] [-v] [-json] [-no-prefetch] [-prefetch-timeout <duration>] <dir | GitHub URL>
 
 sbox init [dir]
-sbox config [dir]
-sbox dev [-fresh | -restart] <dir | GitHub URL> [-- <command> [args...]]
-sbox setup-env <dir>
+sbox config [-config <file>] [dir]
+sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] <dir | GitHub URL> [-- <command> [args...]]
+sbox setup-env [-config <file>] <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
-sbox sync [-apply | -patch] <dir>
+sbox sync [-apply | -patch] [-config <file>] <dir>
 sbox ps
 sbox stop|pause|resume <session-id>
 sbox log [-f] [-blocked] <session-id>

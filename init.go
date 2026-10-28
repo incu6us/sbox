@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -83,12 +84,16 @@ func initMain(args []string, stdout, stderr io.Writer) int {
 // project, with each secret's source and whether it is set on this Mac,
 // never its value.
 func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
-	dir, ok := oneDir(args)
-	if !ok {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox config [dir]")
+	flags := flag.NewFlagSet("sbox config", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&host.projectConfig, "config", "", "")
+	err := flags.Parse(args)
+	dir, ok := oneDir(flags.Args())
+	if err != nil || !ok {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox config [-config <file>] [dir]")
 		return exitUsage
 	}
-	cfg, err := loadConfig(host.userConfig, filepath.Join(dir, "sbox.yaml"))
+	cfg, err := host.loadConfig(dir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox:", err)
 		return exitUsage
