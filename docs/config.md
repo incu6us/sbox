@@ -321,18 +321,31 @@ Every override that weakens a verdict (`severity`, `expected_hosts`,
 
 ## Verification
 
-- [ ] `sbox run -config sbox.yaml . -- git status` on an rw-mounted repo shows
+Checked on the real VM, 2026-10-28.
+
+- [x] `sbox run -config sbox.yaml . -- git status` on an rw-mounted repo shows
   the repo in the guest; a run that edits a file returns it under `-out`
   with the diff printed; the host file is unchanged until `-apply`.
-- [ ] Egress: `*.github.com` lets `api.github.com:443` through and refuses
-  `github.com:443`; `github.com:*` allows 22.
-- [ ] A probe hook that echoes `$GITHUB_TOKEN` into a DNS name: BLOCK via the
-  secret-tail canary; ponytail PASS unchanged with an empty config.
-- [ ] A `push` entry that doesn't match the mounted repo's remote stops the
-  run before the VM starts.
-- [ ] Nothing left on the VM side: the out tar is removed once fetched, also on
+  (As built: the folder given is the rw one; `-apply` prints sync's diffs
+  and writes once confirmed, `-patch <file>` stands for `-out`.
+  `TestRunApplyOnVM`, and by hand in a git repository.)
+- [x] Egress: `*.github.com` lets `api.github.com:443` through and refuses
+  `github.com:443`; `github.com:*` allows 22. (`TestEgressOnVM`;
+  `TestEgressAnyPortOnVM`, a CONNECT to github.com:22 through the proxy
+  answered with GitHub's SSH banner.)
+- [x] A probe hook that echoes `$GITHUB_TOKEN` into a DNS name: BLOCK via the
+  secret-tail canary; ponytail PASS unchanged with an empty config. (Via
+  redaction instead of tails: `TestScanSecretOnVM`, `CRITICAL sends a
+  secret from the config out in a DNS lookup`, the token nowhere in the
+  report; ponytail PASS with its one LOW.)
+- [x] A `push` entry that doesn't match the mounted repo's remote stops the
+  run before the VM starts. (By hand: refused in 0.4 s; `TestPushTarget`.)
+- [x] Nothing left on the VM side: the out tar is removed once fetched, also on
   a host-side error (cleanup in `sbox-run` deletes `/var/lib/sbox/out/<id>`
-  older than one hour on the next run).
+  older than one hour on the next run). (`sbox-run out` removes it as it
+  sends it; `TestRunApplyOnVM` checks nothing of an applied run, of one
+  whose patch couldn't be written on the Mac, or of a timed-out one is
+  left under `out/` or `runs/`. Tars never fetched go after a day.)
 
 ## Out of scope
 
