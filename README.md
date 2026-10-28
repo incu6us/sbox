@@ -40,19 +40,19 @@ sbox setup
 ```
 sbox setup
 sbox doctor
-sbox run [-config <file>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]
+sbox run [-config <file>] [-workspace <name>] [-v] [-refetch] [-apply | -patch <file> | -push -m <message>] <dir | GitHub URL> -- <command> [args...]
 sbox scan [-config <file>] [-v] [-json] [-refetch] <dir | GitHub URL>
 
 sbox init [dir]
-sbox config [-config <file>] [dir]
-sbox dev [-fresh | -restart] [-config <file>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]
-sbox setup-env [-config <file>] <dir>
+sbox config [-config <file>] [-workspace <name>] [dir]
+sbox dev [-fresh | -restart] [-config <file>] [-workspace <name>] [-command <cmd>] [-trace] <dir | GitHub URL> [-- <command> [args...]]
+sbox setup-env [-config <file>] [-workspace <name>] <dir>
 sbox start <dir> -- <command> [args...]
 sbox attach <session-id> [-- <command> [args...]]
-sbox sync [-apply | -patch] [-config <file>] <dir>
+sbox sync [-apply | -patch] [-config <file>] [-workspace <name>] <dir>
 sbox ps
 sbox stop|pause|resume <session-id>
-sbox log [-f] [-blocked] <session-id>
+sbox log [-f] [-blocked | -start] <session-id>
 sbox watch [session-id]
 sbox clean
 ```
@@ -233,7 +233,8 @@ session that started without any, and the rest say so
 `sbox dev -restart <dir>` stops the session and boots a new one with the config as
 it is now, on the same home: files, installed tools and Claude Code's
 history stay, running processes don't. `dev.command` applies at every
-attach; `image.packages` needs `sbox setup`.
+attach (`-command <cmd>` runs another for one attach, as a `bash -lc`
+line); `image.packages` needs `sbox setup`.
 
 Running Claude Code in the guest takes a token from your Mac and its API
 host in egress, both in your own file (`sbox init` writes a starter
