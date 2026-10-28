@@ -98,6 +98,7 @@ Checks the whole chain in about 7 seconds and prints one line per check:
 | `run: cut off from internet` | the guest can't reach the internet |
 | `run: DNS lookups logged` | a lookup in the guest reaches the DNS log |
 | `session: guest runs`, `pause freezes the guest`, `resume continues it`, `stop leaves nothing` | a session whose guest counts once a second keeps counting, stops counting while paused, continues after resume, and is gone from `sbox ps` after stop |
+| `session: a guest port reaches the Mac` | the same guest serves a page on a forwarded port, and the Mac fetches it from `localhost` |
 
 Each failure says what to do (usually `sbox setup`). Exit codes: `0` all
 checks pass, `1` a check failed, `2` bad usage.

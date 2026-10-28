@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -71,7 +73,7 @@ func doctor(ctx context.Context, out io.Writer) (bool, error) {
 	if failed(checks) {
 		return false, nil
 	}
-	checks = append(checks, sessionProbe(ctx, sboxRun, time.Sleep)...)
+	checks = append(checks, sessionProbe(ctx, sboxRun, time.Sleep, fetchLocalhost)...)
 	return !failed(checks), nil
 }
 
@@ -110,20 +112,54 @@ const _counter = "i=0; while true; do i=$((i+1)); echo tick $i; sleep 1; done"
 
 var _counterTick = regexp.MustCompile(`(?m)^tick (\d+)$`)
 
+// freeLocalPort is a TCP port nothing on the Mac listens on now.
+func freeLocalPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// fetchLocalhost reports whether the guest's web server answers on the
+// Mac's localhost:port within 15 s (Lima notices a new port within a few).
+func fetchLocalhost(port int) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if strings.Contains(string(body), "Directory listing") {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionProbe starts a session whose guest counts once a second, and
 // checks that it runs, that pause freezes it, that resume continues it,
 // and that stop leaves nothing in sbox ps. wait is time.Sleep outside tests.
-func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration)) []check {
+func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration), reaches func(port int) bool) []check {
 	dir, err := os.MkdirTemp("", "sbox-session-")
 	if err != nil {
 		return []check{{name: "session: start", detail: err.Error()}}
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	var out, errOut bytes.Buffer
-	if startMain(ctx, []string{dir, "--", "sh", "-c", _counter}, &out, &errOut, vm) != exitOK {
+	port, err := freeLocalPort()
+	if err != nil {
+		return []check{{name: "session: start", detail: err.Error()}}
+	}
+	// The counter, and a web server on a forwarded port for the Mac to fetch.
+	serve := fmt.Sprintf("python3 -m http.server %d >/dev/null 2>&1 & ", port)
+	var errOut bytes.Buffer
+	id, _, code := startSession(ctx, dir, "", guestJob{command: []string{"sh", "-c", serve + _counter}, ports: []int{port}}, &errOut, vm)
+	if code != exitOK {
 		return []check{{name: "session: start", detail: "sbox start failed: " + truncate(errOut.String(), 300)}}
 	}
-	id := strings.TrimSpace(out.String())
 	stopped := false
 	defer func() {
 		if !stopped {
@@ -151,6 +187,7 @@ func sessionProbe(ctx context.Context, vm sboxRunFunc, wait func(time.Duration))
 	wait(2 * time.Second)
 	b := tick()
 	checks := []check{counted("session: guest runs", a, b, b >= 0 && b > a)} // a is -1 before the first tick
+	checks = append(checks, check{name: "session: a guest port reaches the Mac", ok: reaches(port), detail: fmt.Sprintf("localhost:%d", port)})
 
 	paused := do("pause")
 	c := tick()
