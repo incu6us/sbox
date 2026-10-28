@@ -860,18 +860,18 @@ func TestIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer null.Close()
+	defer func() { _ = null.Close() }()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
-	defer w.Close()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
 	file, err := os.CreateTemp(t.TempDir(), "f")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	for name, f := range map[string]*os.File{"/dev/null": null, "a pipe": r, "a file": file} {
 		if isTerminal(f) {
 			t.Errorf("isTerminal(%s) = true, want false", name)
