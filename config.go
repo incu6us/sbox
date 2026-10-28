@@ -258,89 +258,111 @@ var _egressPattern = regexp.MustCompile(`^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:([0-
 func loadConfig(userFile, projectFile string) (config, error) {
 	var cfg config
 	for i, p := range []string{userFile, projectFile} {
-		var c config
-		data, err := os.ReadFile(p)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			continue
-		case err != nil:
+		c, err := readConfigFile(p, i == 0)
+		if err != nil {
 			return config{}, err
 		}
-		dec := yaml.NewDecoder(bytes.NewReader(data))
-		dec.KnownFields(true)
-		if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
-			return config{}, fmt.Errorf("%s: %w", p, err)
-		}
-		if err := c.check(); err != nil {
-			return config{}, fmt.Errorf("%s: %w", p, err)
-		}
-		if i == 1 && len(c.Image.Packages) > 0 {
-			return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
-		}
-		cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
-		cfg.Mounts = append(cfg.Mounts, c.Mounts...)
-		cfg.Dev.Ignore = append(cfg.Dev.Ignore, c.Dev.Ignore...)
-		cfg.Dev.Setup = append(cfg.Dev.Setup, c.Dev.Setup...)
-		cfg.Dev.Start = append(cfg.Dev.Start, c.Dev.Start...)
-		if len(c.Dev.Env) > 0 && cfg.Dev.Env == nil {
-			cfg.Dev.Env = make(map[string]string)
-		}
-		maps.Copy(cfg.Dev.Env, c.Dev.Env)
-		if len(c.Secrets) > 0 && cfg.Secrets == nil {
-			cfg.Secrets = make(map[string]string)
-		}
-		maps.Copy(cfg.Secrets, c.Secrets)
-		if len(c.MCP.Servers) > 0 && cfg.MCP.Servers == nil {
-			cfg.MCP.Servers = make(map[string]mcpServer)
-		}
-		maps.Copy(cfg.MCP.Servers, c.MCP.Servers)
-		cfg.Permissions.Allow = append(cfg.Permissions.Allow, c.Permissions.Allow...)
-		cfg.Permissions.Deny = append(cfg.Permissions.Deny, c.Permissions.Deny...)
-		cfg.MCP.Allow = append(cfg.MCP.Allow, c.MCP.Allow...)
-		cfg.MCP.Deny = append(cfg.MCP.Deny, c.MCP.Deny...)
-		if c.Dev.Command != "" {
-			cfg.Dev.Command = c.Dev.Command
-		}
-		if c.Dev.Permissions != "" {
-			cfg.Dev.Permissions = c.Dev.Permissions
-		}
-		if c.Dev.PauseAfter != 0 {
-			cfg.Dev.PauseAfter = c.Dev.PauseAfter
-		}
-		cfg.VM.VCPUs = cmp.Or(c.VM.VCPUs, cfg.VM.VCPUs)
-		cfg.VM.MemoryMiB = cmp.Or(c.VM.MemoryMiB, cfg.VM.MemoryMiB)
-		cfg.Timeouts.Run = cmp.Or(c.Timeouts.Run, cfg.Timeouts.Run)
-		cfg.Timeouts.Entry = cmp.Or(c.Timeouts.Entry, cfg.Timeouts.Entry)
-		cfg.Timeouts.Prefetch = cmp.Or(c.Timeouts.Prefetch, cfg.Timeouts.Prefetch)
-		if c.Prefetch.Enabled != nil {
-			cfg.Prefetch.Enabled = c.Prefetch.Enabled
-		}
-		cfg.Prefetch.Registries = append(cfg.Prefetch.Registries, c.Prefetch.Registries...)
-		cfg.Rules.ExpectedHosts = append(cfg.Rules.ExpectedHosts, c.Rules.ExpectedHosts...)
-		cfg.Rules.CredentialPaths = append(cfg.Rules.CredentialPaths, c.Rules.CredentialPaths...)
-		if len(c.Rules.Severity) > 0 && cfg.Rules.Severity == nil {
-			cfg.Rules.Severity = map[string]string{}
-		}
-		maps.Copy(cfg.Rules.Severity, c.Rules.Severity)
-		cfg.Rules.BlockOn = cmp.Or(c.Rules.BlockOn, cfg.Rules.BlockOn)
-		cfg.Rules.ReviewOn = cmp.Or(c.Rules.ReviewOn, cfg.Rules.ReviewOn)
-		cfg.Report.Format = cmp.Or(c.Report.Format, cfg.Report.Format)
-		cfg.Report.MaxListed = cmp.Or(c.Report.MaxListed, cfg.Report.MaxListed)
-		cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
-		cfg.Push = append(cfg.Push, c.Push...)
-		if c.Dev.VCPUs != 0 {
-			cfg.Dev.VCPUs = c.Dev.VCPUs
-		}
-		if c.Dev.MemoryMiB != 0 {
-			cfg.Dev.MemoryMiB = c.Dev.MemoryMiB
-		}
-		if c.Timeouts.Setup != 0 {
-			cfg.Timeouts.Setup = c.Timeouts.Setup
-		}
-		cfg.Ports = append(cfg.Ports, c.Ports...)
-		cfg.Services = append(cfg.Services, c.Services...)
-		cfg.Egress = append(cfg.Egress, c.Egress...)
+		cfg.merge(c)
 	}
+	return cfg.finish()
+}
+
+// readConfigFile decodes and checks one config file; a missing one is
+// empty. Some keys belong to the user's own file alone.
+func readConfigFile(p string, user bool) (config, error) {
+	var c config
+	data, err := os.ReadFile(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return config{}, nil
+	case err != nil:
+		return config{}, err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
+		return config{}, fmt.Errorf("%s: %w", p, err)
+	}
+	if err := c.check(); err != nil {
+		return config{}, fmt.Errorf("%s: %w", p, err)
+	}
+	if !user && len(c.Image.Packages) > 0 {
+		return config{}, fmt.Errorf("%s: image: the guest image is shared by every project; set it in ~/.config/sbox/config.yaml", p)
+	}
+	return c, nil
+}
+
+// merge adds one file's config on top: lists append, maps merge with c
+// winning, scalars replace.
+func (cfg *config) merge(c config) {
+	cfg.Image.Packages = append(cfg.Image.Packages, c.Image.Packages...)
+	cfg.Mounts = append(cfg.Mounts, c.Mounts...)
+	cfg.Dev.Ignore = append(cfg.Dev.Ignore, c.Dev.Ignore...)
+	cfg.Dev.Setup = append(cfg.Dev.Setup, c.Dev.Setup...)
+	cfg.Dev.Start = append(cfg.Dev.Start, c.Dev.Start...)
+	if len(c.Dev.Env) > 0 && cfg.Dev.Env == nil {
+		cfg.Dev.Env = make(map[string]string)
+	}
+	maps.Copy(cfg.Dev.Env, c.Dev.Env)
+	if len(c.Secrets) > 0 && cfg.Secrets == nil {
+		cfg.Secrets = make(map[string]string)
+	}
+	maps.Copy(cfg.Secrets, c.Secrets)
+	if len(c.MCP.Servers) > 0 && cfg.MCP.Servers == nil {
+		cfg.MCP.Servers = make(map[string]mcpServer)
+	}
+	maps.Copy(cfg.MCP.Servers, c.MCP.Servers)
+	cfg.Permissions.Allow = append(cfg.Permissions.Allow, c.Permissions.Allow...)
+	cfg.Permissions.Deny = append(cfg.Permissions.Deny, c.Permissions.Deny...)
+	cfg.MCP.Allow = append(cfg.MCP.Allow, c.MCP.Allow...)
+	cfg.MCP.Deny = append(cfg.MCP.Deny, c.MCP.Deny...)
+	if c.Dev.Command != "" {
+		cfg.Dev.Command = c.Dev.Command
+	}
+	if c.Dev.Permissions != "" {
+		cfg.Dev.Permissions = c.Dev.Permissions
+	}
+	if c.Dev.PauseAfter != 0 {
+		cfg.Dev.PauseAfter = c.Dev.PauseAfter
+	}
+	cfg.VM.VCPUs = cmp.Or(c.VM.VCPUs, cfg.VM.VCPUs)
+	cfg.VM.MemoryMiB = cmp.Or(c.VM.MemoryMiB, cfg.VM.MemoryMiB)
+	cfg.Timeouts.Run = cmp.Or(c.Timeouts.Run, cfg.Timeouts.Run)
+	cfg.Timeouts.Entry = cmp.Or(c.Timeouts.Entry, cfg.Timeouts.Entry)
+	cfg.Timeouts.Prefetch = cmp.Or(c.Timeouts.Prefetch, cfg.Timeouts.Prefetch)
+	if c.Prefetch.Enabled != nil {
+		cfg.Prefetch.Enabled = c.Prefetch.Enabled
+	}
+	cfg.Prefetch.Registries = append(cfg.Prefetch.Registries, c.Prefetch.Registries...)
+	cfg.Rules.ExpectedHosts = append(cfg.Rules.ExpectedHosts, c.Rules.ExpectedHosts...)
+	cfg.Rules.CredentialPaths = append(cfg.Rules.CredentialPaths, c.Rules.CredentialPaths...)
+	if len(c.Rules.Severity) > 0 && cfg.Rules.Severity == nil {
+		cfg.Rules.Severity = map[string]string{}
+	}
+	maps.Copy(cfg.Rules.Severity, c.Rules.Severity)
+	cfg.Rules.BlockOn = cmp.Or(c.Rules.BlockOn, cfg.Rules.BlockOn)
+	cfg.Rules.ReviewOn = cmp.Or(c.Rules.ReviewOn, cfg.Rules.ReviewOn)
+	cfg.Report.Format = cmp.Or(c.Report.Format, cfg.Report.Format)
+	cfg.Report.MaxListed = cmp.Or(c.Report.MaxListed, cfg.Report.MaxListed)
+	cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
+	cfg.Push = append(cfg.Push, c.Push...)
+	if c.Dev.VCPUs != 0 {
+		cfg.Dev.VCPUs = c.Dev.VCPUs
+	}
+	if c.Dev.MemoryMiB != 0 {
+		cfg.Dev.MemoryMiB = c.Dev.MemoryMiB
+	}
+	if c.Timeouts.Setup != 0 {
+		cfg.Timeouts.Setup = c.Timeouts.Setup
+	}
+	cfg.Ports = append(cfg.Ports, c.Ports...)
+	cfg.Services = append(cfg.Services, c.Services...)
+	cfg.Egress = append(cfg.Egress, c.Egress...)
+}
+
+// finish sorts and compacts the merged lists and checks what only the
+// whole can show.
+func (cfg config) finish() (config, error) {
 	slices.Sort(cfg.Ports)
 	slices.Sort(cfg.Services)
 	slices.Sort(cfg.Egress)
