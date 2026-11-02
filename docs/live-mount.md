@@ -178,7 +178,8 @@ in the guest is left for later.
   `BLOCKED mount   live  not allowed in workspace default → workspaces.default.allow.live: true`.
 - `protect` from the project only adds paths. `dev.local` is the project's
   to set.
-- GitHub targets stay copies (the cache folder isn't yours to edit live).
+- `sbox dev github.com/o/r` makes a folder of yours in the current
+  directory; workspace rules apply to it by its path, like any project.
   `sbox run` and `sbox scan` stay copies.
 
 ### Sessions and the other commands
@@ -283,7 +284,7 @@ branch isn't merged before the workspace gating lands.
   `COMMIT`, `CREATE`, `REMOVE`, `RENAME`, `LINK`, `SETATTR`, the locks;
   every protected-path rule above, case-insensitive. Table tests per rule;
   the VM test writes, and fails on each protected path as runner and root.
-- [ ] **4. Workspace gating and the other keys.** `mount` grant,
+- [x] **4. Workspace gating and the other keys.** `mount` grant,
   `allow.live`, BLOCKED and approve-once, `dev.local`, `protect`,
   `sbox config` output.
 - [ ] **5. Host side.** No copy or push at boot, `sync` and the summary,
@@ -341,5 +342,5 @@ branch isn't merged before the workspace gating lands.
 
 ## Out of scope
 
-- Live mounts for `sbox run`, `sbox scan` and GitHub targets.
+- Live mounts for `sbox run` and `sbox scan`.
 - Keeping the agent's commits in a guest-side overlay over `.git`.

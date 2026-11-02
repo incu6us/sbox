@@ -25,7 +25,9 @@ type workspace struct {
 	Mounts   []mount           `yaml:"mounts,omitempty"`   // granted
 	Secrets  map[string]string `yaml:"secrets,omitempty"`  // granted
 	Services []int             `yaml:"services,omitempty"` // granted
+	Mount    string            `yaml:"mount,omitempty"`    // live: every project here is mounted live (docs/live-mount.md)
 	Allow    struct {
+		Live     bool     `yaml:"live,omitempty"`     // a project may ask for dev.mount: live
 		Egress   []string `yaml:"egress,omitempty"`   // patterns a project may ask for, or *
 		Services []string `yaml:"services,omitempty"` // ports, or *
 		Mounts   []string `yaml:"mounts,omitempty"`   // Mac folders or files a project may mount read-only
@@ -57,6 +59,9 @@ func (w *workspace) check(name string) error {
 	grants := config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
 	if err := grants.check(); err != nil {
 		return fmt.Errorf("%s: %w", where, err)
+	}
+	if w.Mount != "" && w.Mount != "live" {
+		return fmt.Errorf("%s.mount: %q: want live (copy is the default)", where, w.Mount)
 	}
 	for i, e := range w.Allow.Egress {
 		if e == "*" {
@@ -149,7 +154,9 @@ func (c config) workspaceMatch(dir, home string) (name, path string) {
 
 // grants is a workspace's grants as a config layer.
 func (w workspace) grants() config {
-	return config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
+	c := config{Egress: w.Egress, Mounts: w.Mounts, Secrets: w.Secrets, Services: w.Services}
+	c.Dev.Mount = w.Mount
+	return c
 }
 
 // runConfig is sbox run's config: the user's file and -config, as
@@ -234,7 +241,11 @@ func (r request) id() string { return r.key + " " + r.entry }
 // blocked is the request's BLOCKED line in workspace ws, with the key to
 // add.
 func (r request) blocked(ws string) string {
-	return fmt.Sprintf("BLOCKED %-7s %s  not allowed in workspace %s → workspaces.%s.allow.%s: [%s]", r.key, r.entry, ws, ws, r.list, r.value)
+	value := "[" + r.value + "]"
+	if r.list == "live" {
+		value = r.value
+	}
+	return fmt.Sprintf("BLOCKED %-7s %s  not allowed in workspace %s → workspaces.%s.allow.%s: %s", r.key, r.entry, ws, ws, r.list, value)
 }
 
 // blockedError is a project asking for more than its workspace allows:
@@ -323,6 +334,10 @@ func layered(userFile, projectFile, dir, override, home string, approved map[str
 		}
 		return !keep(r, allowsMount(ro, rw, m.Host, m.Mode == "rw", home))
 	})
+	// A live mount puts the Mac's folder in reach of the guest's writes.
+	if project.Dev.Mount == "live" && !keep(request{"mount", "live", "live", "true"}, w.Allow.Live || w.Mount == "live" || user.Dev.Mount == "live") {
+		project.Dev.Mount = ""
+	}
 	for _, name := range slices.Sorted(maps.Keys(project.Secrets)) {
 		ref := project.Secrets[name]
 		if !keep(request{"secret", name + " ← " + ref, "secrets", strings.TrimPrefix(ref, "env:")}, allowsSecret(vars, ref)) {

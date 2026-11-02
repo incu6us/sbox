@@ -261,7 +261,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
 		if cfg.live() { // the guest's mount needs its server: started again if it stopped
-			if _, err := host.liveServer(project, args[0]); err != nil {
+			if _, err := host.liveServer(project, args[0], cfg); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
 			}
 		}
@@ -289,7 +289,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return exitFail
 		}
 		if cfg.live() {
-			if job.live, err = host.liveServer(project, args[0]); err != nil {
+			if job.live, err = host.liveServer(project, args[0], cfg); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
 				return exitFail
 			}
@@ -428,12 +428,35 @@ type devHost struct {
 	startLive func(project, dir string) (*liveRelay, error)
 }
 
-// liveServer starts or finds project's live server.
-func (h devHost) liveServer(project, dir string) (*liveRelay, error) {
-	if h.startLive != nil {
-		return h.startLive(project, dir)
+// liveServer writes project's protect list for its live server, starts or
+// finds the server, and returns where the guest's relay goes.
+func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error) {
+	var list strings.Builder
+	for _, p := range cfg.Protect {
+		list.WriteString(p + "\n")
 	}
-	return startLiveServer(h.stateDir, project, dir)
+	p := liveProtectFile(h.stateDir, project)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(p, []byte(list.String()), 0o600); err != nil {
+		return nil, err
+	}
+	start := h.startLive
+	if start == nil {
+		start = func(project, dir string) (*liveRelay, error) { return startLiveServer(h.stateDir, project, dir) }
+	}
+	relay, err := start(project, dir)
+	if err == nil {
+		relay.local = cfg.liveLocal()
+	}
+	return relay, err
+}
+
+// liveProtectFile is the protect list a project's live server reads, again
+// whenever it changes.
+func liveProtectFile(stateDir, project string) string {
+	return filepath.Join(stateDir, "live", project, "protect")
 }
 
 // watchChanges puts the count of the guest's unsynced changes in the

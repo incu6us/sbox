@@ -1544,7 +1544,8 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 		"echo appended >> new.txt && echo writes-ok; " +
 		try("touch .git/x", "touch .git/x") + try("append .git/config", "echo x >> .git/config") +
 		try("hook", "printf '#!/bin/sh\\n' > .git/hooks/pre-commit") + try(".envrc", "echo x > .envrc") +
-		try("mv .git", "mv .git git-old") + try("absolute symlink", "ln -s /etc/passwd pw") + try("relative symlink", "ln -s new.txt rel")
+		try("mv .git", "mv .git git-old") + try("absolute symlink", "ln -s /etc/passwd pw") + try("relative symlink", "ln -s new.txt rel") +
+		"mkdir -p node_modules/pkg && echo dep > node_modules/pkg/index.js && cat node_modules/pkg/index.js; mount | grep -c ' /home/runner/work/node_modules '"
 	var stdout, stderr bytes.Buffer
 	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &stderr, sboxRun, host); code != exitOK {
 		t.Fatalf("devMain: exit %d\n%s\n%s", code, stdout.String(), stderr.String())
@@ -1573,6 +1574,13 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
 			t.Errorf("%s exists on the Mac: %v", p, err)
 		}
+	}
+	// dev.local's default: node_modules is the guest's own, kept on its disk.
+	if !strings.Contains(out, "dep\n1\n") {
+		t.Errorf("the guest's node_modules isn't its own bound folder:\n%s", out)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "node_modules")); err != nil || len(entries) != 0 {
+		t.Errorf("the Mac's node_modules: %v, %v; want an empty mount point", entries, err)
 	}
 }
 

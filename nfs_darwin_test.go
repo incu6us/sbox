@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // compoundArgs builds a COMPOUND's operations: add writes the op number and
@@ -1161,5 +1162,42 @@ func TestNFSLocks(t *testing.T) {
 	}
 	if status, _ := lock("b", 2, 0, 10); status != _nfsOK {
 		t.Errorf("b locks 0..10 after a let go: %d", status)
+	}
+}
+
+// TestNFSProtectFile: a server given a protect file reads it again when it
+// changes, so sbox.yaml's protect applies to a running server.
+func TestNFSProtectFile(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	for _, f := range []string{"a.env", "b.env"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := filepath.Join(t.TempDir(), "protect")
+	if err := os.WriteFile(list, []byte("a.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.protectFile = list
+	open := func(name string) uint32 {
+		var c compoundArgs
+		c.add(_opPutRootFH)
+		openWrite(&c, name, -1, "")
+		status, _ := compound(t, s, 0, &c)
+		return status
+	}
+	if a, b := open("a.env"), open("b.env"); a != _nfs4errAccess || b != _nfsOK {
+		t.Errorf("a.env %d, b.env %d; want a.env refused", a, b)
+	}
+	if err := os.WriteFile(list, []byte("b.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(list, time.Now().Add(time.Second), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := open("a.env"), open("b.env"); a != _nfsOK || b != _nfs4errAccess {
+		t.Errorf("after the change: a.env %d, b.env %d; want b.env refused", a, b)
 	}
 }

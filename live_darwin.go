@@ -174,7 +174,9 @@ func serveLive(stateDir, project, dir string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	go func() { _ = liveAccept(ln, newNFSServer(root, st.key), st.token) }()
+	srv := newNFSServer(root, st.key)
+	srv.protectFile = liveProtectFile(stateDir, project)
+	go func() { _ = liveAccept(ln, srv, st.token) }()
 	return ln, nil
 }
 

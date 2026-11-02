@@ -260,8 +260,11 @@ type nfsServer struct {
 	stateids uint64
 
 	// protect are paths from the root the guest may not change, besides
-	// _protectedNames at any depth.
-	protect []string
+	// _protectedNames at any depth; read from protectFile, when set, again
+	// whenever it changes.
+	protect      []string
+	protectFile  string
+	protectStamp time.Time
 	// refused, when set, hears each refused change: the operation and the
 	// path from the root.
 	refused func(op, rel string)
@@ -270,11 +273,6 @@ type nfsServer struct {
 	locks      map[[2]uint64][]lockRange // by device and inode
 	lockOwners map[uint64]lockOwner      // by the lock stateid's id
 }
-
-// _protectedNames may not be changed at any depth: git's hooks and config
-// run code at the Mac's next git command, direnv runs .envrc, editors run
-// their folders' tasks, husky its hooks.
-var _protectedNames = []string{".git", ".envrc", ".vscode", ".idea", ".husky"}
 
 type lockOwner struct {
 	client uint64
@@ -292,6 +290,23 @@ func newNFSServer(root string, key []byte) *nfsServer {
 		locks: map[[2]uint64][]lockRange{}, lockOwners: map[uint64]lockOwner{}}
 	_, _ = rand.Read(s.verf[:])
 	return s
+}
+
+// reloadProtect reads protectFile again when it changed. A file that
+// can't be read keeps the last list.
+func (s *nfsServer) reloadProtect() {
+	if s.protectFile == "" {
+		return
+	}
+	fi, err := os.Stat(s.protectFile)
+	if err != nil || fi.ModTime().Equal(s.protectStamp) {
+		return
+	}
+	data, err := os.ReadFile(s.protectFile)
+	if err != nil {
+		return
+	}
+	s.protect, s.protectStamp = strings.Fields(string(data)), fi.ModTime()
 }
 
 // rel is p from the root, "" for the root itself.
@@ -582,6 +597,7 @@ func (s *nfsServer) compound(r *xdrReader, w *xdrWriter) {
 
 	s.mu.Lock() // ponytail: one lock for every call; per-file locks if one client's parallel calls ever queue
 	defer s.mu.Unlock()
+	s.reloadProtect()
 	var res xdrWriter
 	var st compoundState
 	status, count := uint32(_nfsOK), uint32(0)

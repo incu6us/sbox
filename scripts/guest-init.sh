@@ -104,6 +104,15 @@ if [ -s /drive/sbox/live ]; then
 		fi
 		sleep 1
 	done
+	# dev.local: folders kept on the kept home's disk, bound over the
+	# mount, so dependency trees stay fast and off the Mac.
+	[ -f /drive/sbox/local ] && while IFS= read -r p; do
+		case "$p" in "" | /* | ..* | */..*) continue ;; esac
+		n=$(echo "$p" | tr / _)
+		mkdir -p "/home/runner/.sbox/local/$n" "/home/runner/work/$p"
+		chown runner:runner /home/runner/.sbox /home/runner/.sbox/local "/home/runner/.sbox/local/$n"
+		mount --bind "/home/runner/.sbox/local/$n" "/home/runner/work/$p"
+	done </drive/sbox/local
 elif [ ! -e /home/runner/work ]; then
 	cp -a /drive/skill /home/runner/work
 	chown -R runner:runner /home/runner/work

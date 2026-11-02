@@ -39,6 +39,7 @@ type config struct {
 		Command     string            `yaml:"command,omitempty"`     // run by sbox dev when no command is given; a login shell when unset
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
 		Mount       string            `yaml:"mount,omitempty"`       // copy (the default) or live: the Mac's folder itself (docs/live-mount.md)
+		Local       []string          `yaml:"local,omitempty"`       // live: paths from the root kept on the guest's disk; liveLocal's default
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
 		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules, .gitignore and the like; ! takes one back
@@ -80,6 +81,7 @@ type config struct {
 		ReviewOn        string            `yaml:"review_on,omitempty"`        // REVIEW from this severity; MEDIUM when unset
 	} `yaml:"rules,omitempty"`
 	Push       []string             `yaml:"push,omitempty"`       // host/owner/repo sbox run -push may push the folder's branch to
+	Protect    []string             `yaml:"protect,omitempty"`    // live: paths from the root the guest may not change, besides the defaults
 	Workspaces map[string]workspace `yaml:"workspaces,omitempty"` // the user's own file only: see workspace
 	Report     struct {
 		Format    string `yaml:"format,omitempty"`     // text or json; -json wins
@@ -168,6 +170,20 @@ func changedKeys(was, now map[string]string) []string {
 
 // live reports whether sbox dev mounts the Mac's folder instead of a copy.
 func (c config) live() bool { return c.Dev.Mount == "live" }
+
+// _protectedNames may not be changed by a live session's guest, at any
+// depth: git's hooks and config run code at the Mac's next git command,
+// direnv runs .envrc, editors run their folders' tasks, husky its hooks.
+var _protectedNames = []string{".git", ".envrc", ".vscode", ".idea", ".husky"}
+
+// liveLocal is what a live session keeps on the guest's disk: dev.local,
+// or the dependency folders copy mode leaves out.
+func (c config) liveLocal() []string {
+	if len(c.Dev.Local) > 0 {
+		return c.Dev.Local
+	}
+	return []string{"node_modules", ".venv"}
+}
 
 // devCommand is what sbox dev runs when given no command: "" for a login
 // shell.
@@ -360,6 +376,8 @@ func (cfg *config) merge(c config) {
 	cfg.Report.MaxListed = cmp.Or(c.Report.MaxListed, cfg.Report.MaxListed)
 	cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
 	cfg.Push = append(cfg.Push, c.Push...)
+	cfg.Protect = append(cfg.Protect, c.Protect...)
+	cfg.Dev.Local = append(cfg.Dev.Local, c.Dev.Local...)
 	if c.Dev.VCPUs != 0 {
 		cfg.Dev.VCPUs = c.Dev.VCPUs
 	}
@@ -466,6 +484,16 @@ func (c *config) check() error {
 		}
 		if guest == "/home/runner/work" || strings.HasPrefix(guest, "/home/runner/work/") {
 			return fmt.Errorf("mounts: guest %q: that's the project; sbox sync carries files there", m.Guest)
+		}
+	}
+	for _, list := range []struct {
+		key   string
+		paths []string
+	}{{"dev.local", c.Dev.Local}, {"protect", c.Protect}} {
+		for _, p := range list.paths {
+			if p == "" || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "../") || p == ".." || p == "." {
+				return fmt.Errorf("%s: %q: want a clean path from the project root (node_modules, config/prod.env)", list.key, p)
+			}
 		}
 	}
 	for _, rule := range c.Dev.Ignore {

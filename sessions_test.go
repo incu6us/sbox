@@ -533,11 +533,11 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 func TestDevMainLive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {mount: live}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {mount: live, local: [node_modules]}\nprotect: [config/prod.env]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var started []string
-	host := devHost{stateDir: t.TempDir(), startLive: func(project, folder string) (*liveRelay, error) {
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
 		started = append(started, project+" "+folder)
 		return &liveRelay{port: 4242, token: []byte("token")}, nil
 	}}
@@ -555,8 +555,11 @@ func TestDevMainLive(t *testing.T) {
 		t.Errorf("startLive calls %q, want %q", started, want)
 	}
 	files := tarFiles(t, vm.stdins[1])
-	if files["sbox/live"] != "4242\n" || files["live.token"] != "token" || files["skill/sbox.yaml"] != "" {
-		t.Errorf("run tar: sbox/live %q, live.token %q, skill/sbox.yaml %q", files["sbox/live"], files["live.token"], files["skill/sbox.yaml"])
+	if files["sbox/live"] != "4242\n" || files["live.token"] != "token" || files["skill/sbox.yaml"] != "" || files["sbox/local"] != "node_modules\n" {
+		t.Errorf("run tar: sbox/live %q, live.token %q, skill/sbox.yaml %q, sbox/local %q", files["sbox/live"], files["live.token"], files["skill/sbox.yaml"], files["sbox/local"])
+	}
+	if got, err := os.ReadFile(liveProtectFile(host.stateDir, mustProjectID(t, dir))); string(got) != "config/prod.env\n" {
+		t.Errorf("the server's protect file: %q, %v", got, err)
 	}
 	for _, c := range vm.calls {
 		if c[0] == "attach" && len(c) > 2 && strings.Contains(strings.Join(c, " "), "tar") {

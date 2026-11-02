@@ -237,6 +237,10 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 	} else {
 		lines = append(lines, "egress   "+strings.Join(cfg.Egress, ", "))
 	}
+	if cfg.live() {
+		lines = append(lines, fmt.Sprintf("live     ~/work is the Mac's folder itself; read-only: %s; on the guest's disk: %s",
+			strings.Join(append(slices.Clone(_protectedNames), cfg.Protect...), ", "), strings.Join(cfg.liveLocal(), ", ")))
+	}
 	if len(cfg.Ports) > 0 {
 		var ps []string
 		for _, p := range cfg.Ports {

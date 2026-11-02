@@ -123,6 +123,16 @@ func TestDevPreflight(t *testing.T) {
 	if got := devPreflight(config{}, nil, nil); !slices.Equal(got, []string{"egress   none: the guest reaches nothing outside"}) {
 		t.Errorf("empty config: %q", got)
 	}
+
+	var live config
+	live.Dev.Mount, live.Protect = "live", []string{"config/prod.env"}
+	want = []string{
+		"egress   none: the guest reaches nothing outside",
+		"live     ~/work is the Mac's folder itself; read-only: .git, .envrc, .vscode, .idea, .husky, config/prod.env; on the guest's disk: node_modules, .venv",
+	}
+	if got := devPreflight(live, nil, nil); !slices.Equal(got, want) {
+		t.Errorf("live =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
 }
 
 func TestReadMCPJSON(t *testing.T) {

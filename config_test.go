@@ -277,6 +277,36 @@ func TestLoadConfigDevMount(t *testing.T) {
 	}
 }
 
+func TestLoadConfigLiveKeys(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(write(t, "protect: [secrets/prod.env]\n"), write(t, "dev: {mount: live, local: [node_modules, .next]}\nprotect: [config/prod.env]\n"))
+	if err != nil || !slices.Equal(cfg.liveLocal(), []string{"node_modules", ".next"}) || !slices.Equal(cfg.Protect, []string{"secrets/prod.env", "config/prod.env"}) {
+		t.Errorf("local %v, protect %v, %v", cfg.liveLocal(), cfg.Protect, err)
+	}
+	none := filepath.Join(t.TempDir(), "none")
+	if cfg, err := loadConfig(none, write(t, "dev: {mount: live}\n")); err != nil || !slices.Equal(cfg.liveLocal(), []string{"node_modules", ".venv"}) {
+		t.Errorf("default local %v, %v; want what copy mode leaves out", cfg.liveLocal(), err)
+	}
+	for _, tt := range []struct{ body, key string }{
+		{"dev: {local: [../x]}\n", "dev.local"},
+		{"dev: {local: [/abs]}\n", "dev.local"},
+		{"dev: {local: [\"\"]}\n", "dev.local"},
+		{"protect: [../x]\n", "protect"},
+		{"protect: [a//b]\n", "protect"},
+	} {
+		if _, err := loadConfig(none, write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.key) {
+			t.Errorf("%q: %v, want a refusal naming %s", tt.body, err, tt.key)
+		}
+	}
+}
+
 func TestLoadConfigAgent(t *testing.T) {
 	t.Parallel()
 	write := func(t *testing.T, body string) string {

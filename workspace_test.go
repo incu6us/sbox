@@ -56,6 +56,7 @@ func TestWorkspacesKey(t *testing.T) {
 		"workspaces: {a: {allow: {rw: [relative]}}}",
 		"workspaces: {a: {allow: {secrets: [\"1BAD\"]}}}",
 		"workspaces: {a: {mounts: [{host: /tmp/x, guest: /etc/x}]}}",
+		"workspaces: {a: {mount: nfs}}",
 	} {
 		writeTestFile(t, user, bad+"\n")
 		if _, err := loadConfig(user, ""); err == nil {
@@ -249,7 +250,7 @@ workspaces:
 
 // _allowAll is a user config whose default workspace lets a project ask
 // for anything: for tests about other things than workspaces.
-const _allowAll = "workspaces: {default: {allow: {egress: [\"*\"], services: [\"*\"], mounts: [/], rw: [/], secrets: [GH, GH_SBOX, GH_SBOX_TEST, CLAUDE_CODE_OAUTH_TOKEN]}}}\n"
+const _allowAll = "workspaces: {default: {allow: {live: true, egress: [\"*\"], services: [\"*\"], mounts: [/], rw: [/], secrets: [GH, GH_SBOX, GH_SBOX_TEST, CLAUDE_CODE_OAUTH_TOKEN]}}}\n"
 
 // allowAll writes _allowAll to a file and returns its path.
 func allowAll(t *testing.T) string {
@@ -391,5 +392,67 @@ workspaces:
 		!strings.Contains(stdout.String(), "# workspace client-a ("+macPath("~/work/client-a", home)+" contains this folder)") ||
 		!strings.Contains(stdout.String(), "egress: # user, workspace client-a") {
 		t.Errorf("sbox config in client-a: exit %d\n%s", code, stdout.String())
+	}
+}
+
+// TestDevMainLiveGating: a project's dev.mount: live is a request like
+// egress: refused in a workspace that neither allows nor grants it; a
+// grant makes every project there live unless it asks for a copy.
+func TestDevMainLiveGating(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	work := filepath.Join(home, "work")
+	dev := func(t *testing.T, dir string) (*fakeVM, []string, string, int) {
+		var started []string
+		vm := &fakeVM{answer: func(args []string) string {
+			if args[0] == "start" {
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		host := devHost{stateDir: t.TempDir(), userConfig: user, home: home, startLive: func(project, folder string) (*liveRelay, error) {
+			started = append(started, folder)
+			return &liveRelay{port: 4242, token: []byte("t")}, nil
+		}}
+		var stdout, stderr bytes.Buffer
+		code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host)
+		return vm, started, stderr.String(), code
+	}
+	project := func(name, body string) string {
+		dir := filepath.Join(work, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if body != "" {
+			writeTestFile(t, filepath.Join(dir, "sbox.yaml"), body)
+		}
+		return dir
+	}
+
+	stranger := t.TempDir()
+	writeTestFile(t, filepath.Join(stranger, "sbox.yaml"), "dev: {mount: live}\n")
+	writeTestFile(t, user, "egress: [api.anthropic.com]\n")
+	vm, started, notes, code := dev(t, stranger)
+	if want := "BLOCKED mount   live  not allowed in workspace default → workspaces.default.allow.live: true"; !strings.Contains(notes, want) || code != exitFail || len(started) != 0 ||
+		!slices.EqualFunc(vm.calls, [][]string{{"ps"}}, slices.Equal) {
+		t.Errorf("live in default: exit %d, started %q, calls %q, stderr:\n%s\nwant %q and nothing started", code, started, vm.calls, notes, want)
+	}
+
+	writeTestFile(t, user, "workspaces: {mine: {paths: [~/work], allow: {live: true}}}\n")
+	if _, started, notes, code := dev(t, project("asks", "dev: {mount: live}\n")); code != exitOK || len(started) != 1 {
+		t.Errorf("allowed: exit %d, started %q\n%s", code, started, notes)
+	}
+	if _, started, _, code := dev(t, project("quiet", "")); code != exitOK || len(started) != 0 {
+		t.Errorf("allowed but not asked: exit %d, started %q; want a copy", code, started)
+	}
+
+	writeTestFile(t, user, "workspaces: {mine: {paths: [~/work], mount: live}}\n")
+	if _, started, notes, code := dev(t, project("granted", "")); code != exitOK || len(started) != 1 {
+		t.Errorf("granted: exit %d, started %q\n%s", code, started, notes)
+	}
+	if vm, started, _, code := dev(t, project("copy", "dev: {mount: copy}\n")); code != exitOK || len(started) != 0 ||
+		tarFiles(t, vm.stdins[slices.IndexFunc(vm.calls, func(c []string) bool { return c[0] == "start" })])["skill/sbox.yaml"] == "" {
+		t.Errorf("granted, the project asks for a copy: exit %d, started %q", code, started)
 	}
 }

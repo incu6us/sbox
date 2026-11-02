@@ -145,10 +145,11 @@ type guestJob struct {
 }
 
 // liveRelay is where a live session's NFS goes: the Mac's server port, and
-// the token it answers to.
+// the token it answers to; local is what the guest keeps on its own disk.
 type liveRelay struct {
 	port  int
 	token []byte
+	local []string
 }
 
 // mountCopy is one mount: a resolved Mac path and where it goes.
@@ -592,6 +593,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	if job.live != nil {
 		// live.token is outside sbox/: sbox-run keeps it off the guest's drive.
 		files = append(files, file{"sbox/live", fmt.Sprintf("%d\n", job.live.port), 0o644}, file{"live.token", string(job.live.token), 0o400})
+		if len(job.live.local) > 0 {
+			files = append(files, file{"sbox/local", strings.Join(job.live.local, "\n") + "\n", 0o644})
+		}
 	}
 	if job.scan != "" {
 		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})
