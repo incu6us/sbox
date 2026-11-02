@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -74,6 +75,10 @@ func TestWriteSessions(t *testing.T) {
 
 // fakeVM stands in for sbox-run in the VM: it records each call and
 // answers with canned output.
+// _fakeVMMu guards every fakeVM's records: sbox dev's exit summary calls in
+// parallel, and table tests copy the struct, so it can't hold a lock.
+var _fakeVMMu sync.Mutex
+
 type fakeVM struct {
 	calls          [][]string
 	stdin          []byte   // the last stdin read
@@ -95,16 +100,20 @@ func withoutSummary(calls [][]string) [][]string {
 }
 
 func (f *fakeVM) run(_ context.Context, in io.Reader, out, errOut io.Writer, args ...string) error {
-	f.calls = append(f.calls, args)
 	var data []byte
 	if in != nil {
 		var err error
 		if data, err = io.ReadAll(in); err != nil {
 			return err
 		}
+	}
+	_fakeVMMu.Lock()
+	f.calls = append(f.calls, args)
+	if in != nil {
 		f.stdin = data
 	}
 	f.stdins = append(f.stdins, data)
+	_fakeVMMu.Unlock()
 	if f.answer != nil {
 		_, _ = io.WriteString(out, f.answer(args))
 	} else {
@@ -1358,5 +1367,38 @@ func TestDevMainMCPCommands(t *testing.T) {
 	}
 	if vm, _ := run(t, "mcp: {servers: {docs: {url: \"https://mcp.example.com\"}}}\n"); slices.ContainsFunc(vm.calls, func(c []string) bool { return slices.Contains(c, _mcpWhich) }) {
 		t.Errorf("remote servers only, calls %q: want no guest check", vm.calls)
+	}
+}
+
+// TestCollectSummaryInParallel: what the exit summary asks the guest for
+// goes at once: each answer here waits for all of them to have arrived.
+func TestCollectSummaryInParallel(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	arrived := 0
+	all := make(chan struct{})
+	vm := func(_ context.Context, _ io.Reader, out, _ io.Writer, args ...string) error {
+		mu.Lock()
+		if arrived++; arrived == 4 {
+			close(all)
+		}
+		mu.Unlock()
+		select {
+		case <-all:
+		case <-time.After(5 * time.Second):
+			t.Errorf("%q answered before the others arrived: the calls ran one by one", args)
+		}
+		if args[0] == "events" {
+			_, _ = io.WriteString(out, "EGRESS ALLOW api.anthropic.com:443\n")
+		}
+		return nil
+	}
+	count := func() int {
+		_ = vm(context.Background(), nil, io.Discard, io.Discard, "attach", "abc", "--", "sums")
+		return 2
+	}
+	summary, unsynced := collectSummary(context.Background(), "abc", "./app", time.Now(), count, config{}, vm, nil)
+	if unsynced != 2 || !strings.Contains(summary, "the guest has 2 changes: sbox sync ./app") || !strings.Contains(summary, "api.anthropic.com:443") {
+		t.Errorf("unsynced %d, summary %q", unsynced, summary)
 	}
 }

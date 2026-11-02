@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -355,15 +356,14 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
 	close(stopWatch)
 	<-watched
-	unsynced := 0 // a live session's changes are on the Mac already
-	if !cfg.live() {
-		unsynced = guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
-	}
+	count := func() int { return guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore)) }
 	var refusals []string
-	if cfg.live() {
+	if cfg.live() { // a live session's changes are on the Mac already
+		count = func() int { return 0 }
 		refusals = liveRefusals(host.stateDir, project)
 	}
-	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm, refusals))
+	summary, unsynced := collectSummary(ctx, id, args[0], started, count, cfg, vm, refusals)
+	_, _ = io.WriteString(stderr, summary)
 	if *trace {
 		for _, phase := range []string{"setup", "terminal"} {
 			var out bytes.Buffer
@@ -854,12 +854,20 @@ func runHooks(ctx context.Context, id string, cfg config, force, trace bool, std
 // collectSummary asks the session what it saw (the helpers' events and the
 // guest's listening ports) and returns sessionSummary's lines; a session
 // that can't answer gets just the first line.
-func collectSummary(ctx context.Context, id, dir string, started time.Time, unsynced int, cfg config, vm sboxRunFunc, extra []string) string {
+func collectSummary(ctx context.Context, id, dir string, started time.Time, count func() int, cfg config, vm sboxRunFunc, extra []string) (string, int) {
+	// Together: each is a round trip into the guest, and you are waiting
+	// for your shell.
 	var events, ss bytes.Buffer
-	_ = vm(ctx, nil, &events, io.Discard, "events", id)
-	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
-	blocked := append(portLines(ss.String(), cfg.Ports), toolDenials(ctx, vm, id, started)...)
-	return sessionSummary(time.Since(started), dir, unsynced, cfg.live(), parseEvents(events.String()), append(blocked, extra...))
+	var denials []string
+	var unsynced int
+	var wg sync.WaitGroup
+	wg.Go(func() { _ = vm(ctx, nil, &events, io.Discard, "events", id) })
+	wg.Go(func() { _ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn") })
+	wg.Go(func() { denials = toolDenials(ctx, vm, id, started) })
+	wg.Go(func() { unsynced = count() })
+	wg.Wait()
+	blocked := append(portLines(ss.String(), cfg.Ports), denials...)
+	return sessionSummary(time.Since(started), dir, unsynced, cfg.live(), parseEvents(events.String()), append(blocked, extra...)), unsynced
 }
 
 // liveSession finds the project's running or paused session.

@@ -165,6 +165,7 @@ func TestApplyPulls(t *testing.T) {
 // fakeSyncGuest plays sbox-run for sync: a guest whose project tree is a
 // map, reached through attach.
 type fakeSyncGuest struct {
+	mu      sync.Mutex // sbox dev's exit summary calls in parallel
 	t       *testing.T
 	project string
 	files   map[string]string // the guest's work tree
@@ -186,6 +187,8 @@ func (g *fakeSyncGuest) pullRules() ignoreRules {
 }
 
 func (g *fakeSyncGuest) run(_ context.Context, in io.Reader, out, _ io.Writer, args ...string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.calls = append(g.calls, args)
 	switch args[0] {
 	case "ps":
