@@ -43,7 +43,11 @@ homebrew_casks:
     repository:
       owner: incu6us
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      # A deploy key that can write to homebrew-tap alone (the
+      # HOMEBREW_TAP_KEY secret), instead of a token.
+      git:
+        url: "git@github.com:incu6us/homebrew-tap.git"
+        private_key: "{{ .Env.HOMEBREW_TAP_KEY }}"
     commit_author:
       name: incu6us
       email: vyacheslavpryimak@gmail.com
