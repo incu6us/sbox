@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,42 +50,59 @@ const (
 	_nfs4errNotSupp           = 10004
 	_nfs4errTooSmall          = 10005
 	_nfs4errServerFault       = 10006
+	_nfs4errBadType           = 10007
+	_nfs4errDenied            = 10010
 	_nfs4errNoFileHandle      = 10020
 	_nfs4errMinorVersMismatch = 10021
 	_nfs4errStaleClientID     = 10022
+	_nfs4errBadStateID        = 10025
 	_nfs4errSymlink           = 10029
 	_nfs4errRestoreFH         = 10030
+	_nfs4errAttrNotSupp       = 10032
 	_nfs4errBadXDR            = 10036
 	_nfs4errBadName           = 10041
 	_nfs4errOpIllegal         = 10044
 
 	_opAccess             = 3
 	_opClose              = 4
+	_opCommit             = 5
+	_opCreate             = 6
 	_opDelegPurge         = 7
 	_opDelegReturn        = 8
 	_opGetAttr            = 9
 	_opGetFH              = 10
+	_opLink               = 11
+	_opLock               = 12
+	_opLockT              = 13
+	_opLockU              = 14
 	_opLookup             = 15
 	_opLookupP            = 16
 	_opOpen               = 18
+	_opOpenConfirm        = 20
+	_opOpenDowngrade      = 21
 	_opPutFH              = 22
 	_opPutPubFH           = 23
 	_opPutRootFH          = 24
 	_opRead               = 25
 	_opReadDir            = 26
 	_opReadLink           = 27
+	_opRemove             = 28
+	_opRename             = 29
 	_opRenew              = 30
 	_opRestoreFH          = 31
 	_opSaveFH             = 32
 	_opSecInfo            = 33
+	_opSetAttr            = 34
 	_opSetClientID        = 35
 	_opSetClientIDConfirm = 36
+	_opWrite              = 38
 	_opReleaseLockOwner   = 39
 	_opIllegal            = 10044
 
-	_nf4Reg = 1
-	_nf4Dir = 2
-	_nf4Lnk = 5
+	_nf4Reg  = 1
+	_nf4Dir  = 2
+	_nf4Lnk  = 5
+	_nf4FIFO = 7
 
 	_accessRead    = 0x01
 	_accessLookup  = 0x02
@@ -134,9 +152,11 @@ const (
 	_attrSpaceTotal      = 44
 	_attrSpaceUsed       = 45
 	_attrTimeAccess      = 47
+	_attrTimeAccessSet   = 48
 	_attrTimeDelta       = 51
 	_attrTimeMetadata    = 52
 	_attrTimeModify      = 53
+	_attrTimeModifySet   = 54
 	_attrMountedOnFileID = 55
 
 	// _guestOwner is who the guest sees owning every file: its runner.
@@ -238,10 +258,103 @@ type nfsServer struct {
 	clients  map[uint64][8]byte // client id → its confirm verifier
 	nextID   uint64
 	stateids uint64
+
+	// protect are paths from the root the guest may not change, besides
+	// _protectedNames at any depth.
+	protect []string
+	// refused, when set, hears each refused change: the operation and the
+	// path from the root.
+	refused func(op, rel string)
+	verf    [8]byte // WRITE's verifier: new each start, so the client resends unsynced writes
+
+	locks      map[[2]uint64][]lockRange // by device and inode
+	lockOwners map[uint64]lockOwner      // by the lock stateid's id
+}
+
+// _protectedNames may not be changed at any depth: git's hooks and config
+// run code at the Mac's next git command, direnv runs .envrc, editors run
+// their folders' tasks, husky its hooks.
+var _protectedNames = []string{".git", ".envrc", ".vscode", ".idea", ".husky"}
+
+type lockOwner struct {
+	client uint64
+	owner  string
+}
+
+type lockRange struct {
+	owner      lockOwner
+	start, end uint64 // end exclusive; ^0 to the end of the file
+	write      bool
 }
 
 func newNFSServer(root string, key []byte) *nfsServer {
-	return &nfsServer{root: root, key: key, clients: map[uint64][8]byte{}, nextID: uint64(time.Now().Unix()) << 32}
+	s := &nfsServer{root: root, key: key, clients: map[uint64][8]byte{}, nextID: uint64(time.Now().Unix()) << 32,
+		locks: map[[2]uint64][]lockRange{}, lockOwners: map[uint64]lockOwner{}}
+	_, _ = rand.Read(s.verf[:])
+	return s
+}
+
+// rel is p from the root, "" for the root itself.
+func (s *nfsServer) rel(p string) string {
+	if p == s.root {
+		return ""
+	}
+	return strings.TrimPrefix(p, s.root+"/")
+}
+
+// protected reports whether p may not be changed: a protected name at any
+// depth, a protect path, or anything under either. Case-insensitive, as
+// APFS is. ponytail: no Unicode normalisation; the default names are ASCII.
+func (s *nfsServer) protected(p string) bool {
+	rel := strings.ToLower(s.rel(p))
+	if rel == "" {
+		return false
+	}
+	for _, c := range strings.Split(rel, "/") {
+		for _, n := range _protectedNames {
+			if c == n {
+				return true
+			}
+		}
+	}
+	for _, q := range s.protect {
+		q = strings.ToLower(q)
+		if rel == q || strings.HasPrefix(rel, q+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsProtected reports whether a protect path lies under the folder p:
+// moving or removing p would move it out of reach.
+func (s *nfsServer) holdsProtected(p string) bool {
+	rel := strings.ToLower(s.rel(p))
+	for _, q := range s.protect {
+		if q = strings.ToLower(q); rel == "" || strings.HasPrefix(q, rel+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// refuse answers a refused change to p.
+func (s *nfsServer) refuse(op, p string) uint32 {
+	if s.refused != nil {
+		s.refused(op, s.rel(p))
+	}
+	return _nfs4errAccess
+}
+
+// symlinkTarget reports whether a new symlink in dir may point at target:
+// relative, inside the folder, and not into a protected path. Tools on
+// the Mac follow symlinks even though this server doesn't.
+func (s *nfsServer) symlinkTarget(dir, target string) bool {
+	if target == "" || filepath.IsAbs(target) {
+		return false
+	}
+	p := filepath.Join(dir, target)
+	return (p == s.root || strings.HasPrefix(p, s.root+"/")) && !s.protected(p)
 }
 
 // fileHandle is a resolved handle: the file's identity and where it is now.
@@ -444,6 +557,8 @@ func errnoStatus(err error) uint32 {
 		return _nfs4errNameTooLong
 	case syscall.ENOTEMPTY:
 		return _nfs4errNotEmpty
+	case syscall.ELOOP:
+		return _nfs4errSymlink
 	}
 	return _nfs4errIO
 }
@@ -593,7 +708,11 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		}
 		w.u32(_nfsOK)
 		w.u32(ask & (_accessRead | _accessLookup | _accessModify | _accessExtend | _accessDelete | _accessExecute))
-		w.u32(access(st.cur.path, ask))
+		got := access(st.cur.path, ask)
+		if s.protected(st.cur.path) {
+			got &^= _accessModify | _accessExtend | _accessDelete
+		}
+		w.u32(got)
 		return _nfsOK
 	case _opReadLink:
 		if st.cur == nil {
@@ -685,6 +804,217 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 			return fail(_nfs4errStaleClientID)
 		}
 		return fail(_nfsOK)
+	case _opWrite:
+		return s.write(r, w, st)
+	case _opCommit:
+		r.u64()
+		r.u32()
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		if st.cur == nil {
+			return fail(_nfs4errNoFileHandle)
+		}
+		f, err := os.OpenFile(st.cur.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			return fail(errnoStatus(err))
+		}
+		err = f.Sync()
+		_ = f.Close()
+		if err != nil {
+			return fail(errnoStatus(err))
+		}
+		w.u32(_nfsOK)
+		w.b = append(w.b, s.verf[:]...)
+		return _nfsOK
+	case _opCreate:
+		return s.create(r, w, st)
+	case _opRemove:
+		name := r.str(1024)
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		dir, status := st.dir()
+		if status == _nfsOK {
+			status = checkName(name)
+		}
+		if status != _nfsOK {
+			return fail(status)
+		}
+		p := dir.path + "/" + name
+		if s.protected(p) || s.holdsProtected(p) {
+			return fail(s.refuse("remove", p))
+		}
+		before := dirChange(dir.path)
+		var sys syscall.Stat_t
+		err := syscall.Lstat(p, &sys)
+		if err == nil && fileType(sys.Mode) == _nf4Dir {
+			err = syscall.Rmdir(p)
+		} else if err == nil {
+			err = syscall.Unlink(p)
+		}
+		if err != nil {
+			return fail(errnoStatus(err))
+		}
+		w.u32(_nfsOK)
+		changeInfo(w, before, dirChange(dir.path))
+		return _nfsOK
+	case _opRename:
+		oldName, newName := r.str(1024), r.str(1024)
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		to, status := st.dir()
+		if status == _nfsOK && st.saved == nil {
+			status = _nfs4errNoFileHandle
+		}
+		var from *fileHandle
+		if status == _nfsOK {
+			from, status = (&compoundState{cur: st.saved}).dir()
+		}
+		for _, n := range []string{oldName, newName} {
+			if status == _nfsOK {
+				status = checkName(n)
+			}
+		}
+		if status != _nfsOK {
+			return fail(status)
+		}
+		src, dst := from.path+"/"+oldName, to.path+"/"+newName
+		for _, p := range []string{src, dst} {
+			if s.protected(p) || s.holdsProtected(p) {
+				return fail(s.refuse("rename", p))
+			}
+		}
+		srcBefore, dstBefore := dirChange(from.path), dirChange(to.path)
+		if err := os.Rename(src, dst); err != nil {
+			return fail(errnoStatus(err))
+		}
+		w.u32(_nfsOK)
+		changeInfo(w, srcBefore, dirChange(from.path))
+		changeInfo(w, dstBefore, dirChange(to.path))
+		return _nfsOK
+	case _opLink:
+		name := r.str(1024)
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		dir, status := st.dir()
+		if status == _nfsOK && st.saved == nil {
+			status = _nfs4errNoFileHandle
+		}
+		if status == _nfsOK {
+			status = checkName(name)
+		}
+		if status != _nfsOK {
+			return fail(status)
+		}
+		src, dst := st.saved.path, dir.path+"/"+name
+		var sys syscall.Stat_t
+		if err := syscall.Lstat(src, &sys); err != nil {
+			return fail(errnoStatus(err))
+		}
+		switch fileType(sys.Mode) {
+		case _nf4Dir:
+			return fail(_nfs4errIsDir)
+		case _nf4Lnk:
+			return fail(_nfs4errNotSupp) // which link(2) makes of a symlink varies; no need for one
+		}
+		for _, p := range []string{src, dst} {
+			if s.protected(p) {
+				return fail(s.refuse("link", p))
+			}
+		}
+		before := dirChange(dir.path)
+		if err := os.Link(src, dst); err != nil {
+			return fail(errnoStatus(err))
+		}
+		w.u32(_nfsOK)
+		changeInfo(w, before, dirChange(dir.path))
+		return _nfsOK
+	case _opSetAttr:
+		r.take(16) // stateid
+		mask := r.bitmap()
+		vals := &xdrReader{b: r.opaque(1 << 16)}
+		status := uint32(_nfsOK)
+		switch {
+		case r.err:
+			status = _nfs4errBadXDR
+		case st.cur == nil:
+			status = _nfs4errNoFileHandle
+		case s.protected(st.cur.path):
+			status = s.refuse("setattr", st.cur.path)
+		}
+		var set []int
+		if status == _nfsOK {
+			set, status = s.setattr(st.cur.path, mask, vals)
+		}
+		w.u32(status)
+		w.bitmap(attrMask(set...)) // SETATTR's attrsset follows even a failure
+		return status
+	case _opLock:
+		return s.lock(r, w, st)
+	case _opLockT:
+		typ, offset, length := r.u32(), r.u64(), r.u64()
+		owner := lockOwner{r.u64(), string(r.opaque(1024))}
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		if st.cur == nil {
+			return fail(_nfs4errNoFileHandle)
+		}
+		want, status := newRange(owner, typ, offset, length)
+		if status != _nfsOK {
+			return fail(status)
+		}
+		if c, ok := s.conflict(*st.cur, want); ok {
+			return denied(w, c)
+		}
+		return fail(_nfsOK)
+	case _opLockU:
+		typ := r.u32()
+		seqid, id := r.u32(), r.take(16)[4:]
+		offset, length := r.u64(), r.u64()
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		if st.cur == nil {
+			return fail(_nfs4errNoFileHandle)
+		}
+		owner, ok := s.lockOwners[binary.BigEndian.Uint64(id)]
+		if !ok {
+			return fail(_nfs4errBadStateID)
+		}
+		cut, status := newRange(owner, typ, offset, length)
+		if status != _nfsOK {
+			return fail(status)
+		}
+		s.unlock(*st.cur, cut)
+		w.u32(_nfsOK)
+		w.u32(seqid + 1)
+		w.b = append(w.b, id...)
+		return _nfsOK
+	case _opOpenConfirm:
+		_, other, seqid := r.u32(), r.take(12), r.u32()
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		w.u32(_nfsOK)
+		w.u32(seqid + 1)
+		w.b = append(w.b, other...)
+		return _nfsOK
+	case _opOpenDowngrade:
+		_, other := r.u32(), r.take(12)
+		seqid := r.u32()
+		r.u32()
+		r.u32()
+		if r.err {
+			return fail(_nfs4errBadXDR)
+		}
+		w.u32(_nfsOK)
+		w.u32(seqid + 1)
+		w.b = append(w.b, other...)
+		return _nfsOK
 	case _opDelegReturn: // sbox never delegates
 		r.take(16)
 		return fail(_nfsOK)
@@ -696,7 +1026,343 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		r.opaque(1024)
 		return fail(_nfsOK)
 	}
+	if op >= _opAccess && op <= _opReleaseLockOwner { // known, not served: NVERIFY, OPENATTR, VERIFY
+		return fail(_nfs4errNotSupp)
+	}
 	return _nfs4errOpIllegal
+}
+
+func dirChange(p string) uint64 {
+	var st syscall.Stat_t
+	if syscall.Lstat(p, &st) != nil {
+		return 0
+	}
+	return changeOf(&st)
+}
+
+func changeInfo(w *xdrWriter, before, after uint64) {
+	w.u32(0) // not atomic
+	w.u64(before)
+	w.u64(after)
+}
+
+// write is WRITE. A stable write is synced before the reply.
+func (s *nfsServer) write(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
+	fail := func(status uint32) uint32 {
+		w.u32(status)
+		return status
+	}
+	r.take(16) // stateid
+	offset, stable := r.u64(), r.u32()
+	data := r.opaque(_maxIO)
+	if r.err {
+		return fail(_nfs4errBadXDR)
+	}
+	if st.cur == nil {
+		return fail(_nfs4errNoFileHandle)
+	}
+	if s.protected(st.cur.path) {
+		return fail(s.refuse("write", st.cur.path))
+	}
+	f, err := os.OpenFile(st.cur.path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fail(errnoStatus(err))
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteAt(data, int64(offset)); err != nil {
+		return fail(errnoStatus(err))
+	}
+	if stable != 0 {
+		if err := f.Sync(); err != nil {
+			return fail(errnoStatus(err))
+		}
+		stable = 2 // FILE_SYNC
+	}
+	w.u32(_nfsOK)
+	w.u32(uint32(len(data)))
+	w.u32(stable)
+	w.b = append(w.b, s.verf[:]...)
+	return _nfsOK
+}
+
+// create is CREATE: a directory, a symlink or a FIFO. Regular files come
+// from OPEN; devices and sockets aren't made.
+func (s *nfsServer) create(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
+	fail := func(status uint32) uint32 {
+		w.u32(status)
+		return status
+	}
+	typ := r.u32()
+	var target string
+	switch typ {
+	case _nf4Lnk:
+		target = r.str(4096)
+	case 3, 4: // block and character devices
+		r.u32()
+		r.u32()
+	}
+	name := r.str(1024)
+	mask := r.bitmap()
+	vals := &xdrReader{b: r.opaque(1 << 16)}
+	if r.err {
+		return fail(_nfs4errBadXDR)
+	}
+	dir, status := st.dir()
+	if status == _nfsOK {
+		status = checkName(name)
+	}
+	if status != _nfsOK {
+		return fail(status)
+	}
+	p := dir.path + "/" + name
+	if s.protected(p) || typ == _nf4Lnk && !s.symlinkTarget(dir.path, target) {
+		return fail(s.refuse("create", p))
+	}
+	mode := createMode(mask, vals, 0o755)
+	before := dirChange(dir.path)
+	var err error
+	switch typ {
+	case _nf4Dir:
+		err = syscall.Mkdir(p, mode)
+	case _nf4Lnk:
+		err = syscall.Symlink(target, p)
+	case _nf4FIFO:
+		err = syscall.Mkfifo(p, mode)
+	default:
+		return fail(_nfs4errBadType)
+	}
+	if err != nil {
+		return fail(errnoStatus(err))
+	}
+	var set []int
+	if typ != _nf4Lnk && hasAttr(mask, _attrMode) {
+		_ = os.Chmod(p, os.FileMode(mode)) // past the umask
+		set = append(set, _attrMode)
+	}
+	f, _, err := lstatHandle(p)
+	if err != nil {
+		return fail(errnoStatus(err))
+	}
+	st.cur = &f
+	w.u32(_nfsOK)
+	changeInfo(w, before, dirChange(dir.path))
+	w.bitmap(attrMask(set...))
+	return _nfsOK
+}
+
+// createMode is the mode in a create's attributes, or def.
+func createMode(mask []uint32, vals *xdrReader, def uint32) uint32 {
+	if !hasAttr(mask, _attrMode) {
+		return def
+	}
+	for a := 0; a < _attrMode; a++ { // skip the values before mode: only size can come first
+		if hasAttr(mask, a) && a == _attrSize {
+			vals.u64()
+		}
+	}
+	return vals.u32() & 0o7777
+}
+
+// setattr applies a SETATTR's values to p and returns the attributes set.
+// Ownership can't change (every file is the Mac user's) and is accepted
+// as is.
+func (s *nfsServer) setattr(p string, mask []uint32, vals *xdrReader) ([]int, uint32) {
+	settable := attrMask(_attrSize, _attrMode, _attrOwner, _attrOwnerGroup, _attrTimeAccessSet, _attrTimeModifySet)
+	for i, word := range mask {
+		if i >= len(settable) && word != 0 || i < len(settable) && word&^settable[i] != 0 {
+			return nil, _nfs4errAttrNotSupp
+		}
+	}
+	var sys syscall.Stat_t
+	if err := syscall.Lstat(p, &sys); err != nil {
+		return nil, errnoStatus(err)
+	}
+	link := fileType(sys.Mode) == _nf4Lnk
+	atime := time.Unix(sys.Atimespec.Sec, sys.Atimespec.Nsec)
+	mtime := time.Unix(sys.Mtimespec.Sec, sys.Mtimespec.Nsec)
+	settime := func() time.Time {
+		if vals.u32() == 1 { // SET_TO_CLIENT_TIME
+			return time.Unix(int64(vals.u64()), int64(vals.u32()))
+		}
+		return time.Now()
+	}
+	var set []int
+	var times bool
+	for a := 0; a < 32*len(mask); a++ {
+		if !hasAttr(mask, a) {
+			continue
+		}
+		var err error
+		switch a {
+		case _attrSize:
+			size := vals.u64()
+			if fileType(sys.Mode) != _nf4Reg {
+				return set, _nfs4errInval
+			}
+			err = os.Truncate(p, int64(size))
+		case _attrMode:
+			mode := vals.u32()
+			if !link {
+				err = os.Chmod(p, os.FileMode(mode&0o777)|unixBits(mode))
+			}
+		case _attrOwner, _attrOwnerGroup:
+			vals.str(64)
+		case _attrTimeAccessSet:
+			atime, times = settime(), true
+		case _attrTimeModifySet:
+			mtime, times = settime(), true
+		}
+		if vals.err {
+			return set, _nfs4errBadXDR
+		}
+		if err != nil {
+			return set, errnoStatus(err)
+		}
+		set = append(set, a)
+	}
+	if times && !link {
+		if err := os.Chtimes(p, atime, mtime); err != nil {
+			return nil, errnoStatus(err)
+		}
+	}
+	return set, _nfsOK
+}
+
+// unixBits turns a mode's setuid, setgid and sticky bits into Go's.
+func unixBits(mode uint32) os.FileMode {
+	var m os.FileMode
+	if mode&0o4000 != 0 {
+		m |= os.ModeSetuid
+	}
+	if mode&0o2000 != 0 {
+		m |= os.ModeSetgid
+	}
+	if mode&0o1000 != 0 {
+		m |= os.ModeSticky
+	}
+	return m
+}
+
+// newRange is a lock request's range: INVAL for an empty one or one past
+// the largest offset.
+func newRange(owner lockOwner, typ uint32, offset, length uint64) (lockRange, uint32) {
+	l := lockRange{owner: owner, start: offset, write: typ == 2 || typ == 4}
+	switch {
+	case length == 0:
+		return l, _nfs4errInval
+	case length == ^uint64(0):
+		l.end = ^uint64(0)
+	case offset+length < offset:
+		return l, _nfs4errInval
+	default:
+		l.end = offset + length
+	}
+	return l, _nfsOK
+}
+
+// conflict is a lock on f that want can't share: another owner's,
+// overlapping, and one of the two a write lock.
+func (s *nfsServer) conflict(f fileHandle, want lockRange) (lockRange, bool) {
+	for _, l := range s.locks[[2]uint64{uint64(f.dev), f.ino}] {
+		if l.owner != want.owner && l.start < want.end && want.start < l.end && (l.write || want.write) {
+			return l, true
+		}
+	}
+	return lockRange{}, false
+}
+
+// unlock drops cut's owner's locks on f over cut's range, splitting a
+// lock that sticks out on either side.
+func (s *nfsServer) unlock(f fileHandle, cut lockRange) {
+	key := [2]uint64{uint64(f.dev), f.ino}
+	var kept []lockRange
+	for _, l := range s.locks[key] {
+		if l.owner != cut.owner || l.end <= cut.start || cut.end <= l.start {
+			kept = append(kept, l)
+			continue
+		}
+		if l.start < cut.start {
+			kept = append(kept, lockRange{owner: l.owner, start: l.start, end: cut.start, write: l.write})
+		}
+		if cut.end < l.end {
+			kept = append(kept, lockRange{owner: l.owner, start: cut.end, end: l.end, write: l.write})
+		}
+	}
+	if len(kept) == 0 {
+		delete(s.locks, key)
+		return
+	}
+	s.locks[key] = kept
+}
+
+func denied(w *xdrWriter, l lockRange) uint32 {
+	w.u32(_nfs4errDenied)
+	w.u64(l.start)
+	if l.end == ^uint64(0) {
+		w.u64(^uint64(0))
+	} else {
+		w.u64(l.end - l.start)
+	}
+	if l.write {
+		w.u32(2)
+	} else {
+		w.u32(1)
+	}
+	w.u64(l.owner.client)
+	w.opaque([]byte(l.owner.owner))
+	return _nfs4errDenied
+}
+
+// lock is LOCK: granted unless another owner holds a conflicting range.
+func (s *nfsServer) lock(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
+	fail := func(status uint32) uint32 {
+		w.u32(status)
+		return status
+	}
+	typ := r.u32()
+	r.u32() // reclaim
+	offset, length := r.u64(), r.u64()
+	var owner lockOwner
+	var id uint64
+	var seqid uint32
+	if r.u32() == 1 { // a new lock owner, from an open
+		r.u32()
+		r.take(16)
+		seqid = r.u32()
+		owner = lockOwner{r.u64(), string(r.opaque(1024))}
+		s.stateids++
+		id = s.stateids
+	} else {
+		other := r.take(16)[4:]
+		seqid = r.u32()
+		id = binary.BigEndian.Uint64(other)
+		var ok bool
+		if owner, ok = s.lockOwners[id]; !ok && !r.err {
+			return fail(_nfs4errBadStateID)
+		}
+	}
+	if r.err {
+		return fail(_nfs4errBadXDR)
+	}
+	if st.cur == nil {
+		return fail(_nfs4errNoFileHandle)
+	}
+	want, status := newRange(owner, typ, offset, length)
+	if status != _nfsOK {
+		return fail(status)
+	}
+	if c, ok := s.conflict(*st.cur, want); ok {
+		return denied(w, c)
+	}
+	s.unlock(*st.cur, want) // an upgrade or downgrade replaces the owner's own range
+	key := [2]uint64{uint64(st.cur.dev), st.cur.ino}
+	s.locks[key] = append(s.locks[key], want)
+	s.lockOwners[id] = owner
+	w.u32(_nfsOK)
+	w.u32(seqid + 1)
+	w.u64(id)
+	w.u32(0)
+	return _nfsOK
 }
 
 // access is the ACCESS bits of ask the Mac user has on p. A symlink is
@@ -801,8 +1467,9 @@ func b2u(b bool) uint32 {
 	return 0
 }
 
-// open is OPEN. ponytail: reading only for now; writes come with the
-// protected paths.
+// open is OPEN: an existing file, or a new one (UNCHECKED, GUARDED, or
+// EXCLUSIVE with its verifier kept in the file's times, so a retransmit
+// opens the file it made).
 func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	fail := func(status uint32) uint32 {
 		w.u32(status)
@@ -813,14 +1480,17 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	r.u32() // share_deny
 	r.u64() // the owner's client id
 	r.opaque(1024)
-	create := r.u32()
-	if create == 1 {
-		switch r.u32() {
+	create, how := r.u32() == 1, uint32(0)
+	var mask []uint32
+	var vals *xdrReader
+	var verf []byte
+	if create {
+		switch how = r.u32(); how {
 		case 0, 1: // UNCHECKED, GUARDED
-			r.bitmap()
-			r.opaque(1 << 16)
+			mask = r.bitmap()
+			vals = &xdrReader{b: r.opaque(1 << 16)}
 		default: // EXCLUSIVE
-			r.take(8)
+			verf = r.take(8)
 		}
 	}
 	claim := r.u32()
@@ -839,12 +1509,8 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	if r.err {
 		return fail(_nfs4errBadXDR)
 	}
-	if create == 1 || shareAccess&2 != 0 {
-		return fail(_nfs4errROFS)
-	}
 
-	var dirChange uint64
-	target := st.cur
+	var p, dirPath string
 	if claim == 0 {
 		dir, status := st.dir()
 		if status == _nfsOK {
@@ -853,21 +1519,47 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 		if status != _nfsOK {
 			return fail(status)
 		}
-		var dsys syscall.Stat_t
-		if err := syscall.Lstat(dir.path, &dsys); err != nil {
-			return fail(errnoStatus(err))
-		}
-		dirChange = changeOf(&dsys)
-		f, _, err := lstatHandle(dir.path + "/" + name)
-		if err != nil {
-			return fail(errnoStatus(err))
-		}
-		target = &f
-	} else if target == nil {
+		dirPath, p = dir.path, dir.path+"/"+name
+	} else if st.cur == nil {
 		return fail(_nfs4errNoFileHandle)
+	} else {
+		p, dirPath, create = st.cur.path, filepath.Dir(st.cur.path), false
 	}
-	var sys syscall.Stat_t
-	if err := syscall.Lstat(target.path, &sys); err != nil {
+	if (create || shareAccess&2 != 0) && s.protected(p) {
+		return fail(s.refuse("open", p))
+	}
+	before := dirChange(dirPath)
+	var set []int
+	if create {
+		flags := os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW
+		if how != 0 {
+			flags |= os.O_EXCL
+		}
+		mode := uint32(0o644)
+		if how != 2 {
+			mode = createMode(mask, vals, mode)
+		}
+		f, err := os.OpenFile(p, flags, os.FileMode(mode))
+		switch {
+		case err == nil:
+			_ = f.Close()
+			if how == 2 {
+				t := verifierTime(verf)
+				_ = os.Chtimes(p, t, t)
+			} else if hasAttr(mask, _attrMode) {
+				_ = os.Chmod(p, os.FileMode(mode&0o777)) // past the umask
+				set = append(set, _attrMode)
+			}
+		case how == 2 && errors.Is(err, fs.ErrExist):
+			if fi, err := os.Lstat(p); err != nil || !fi.ModTime().Equal(verifierTime(verf)) {
+				return fail(_nfs4errExist)
+			}
+		default:
+			return fail(errnoStatus(err))
+		}
+	}
+	f, sys, err := lstatHandle(p)
+	if err != nil {
 		return fail(errnoStatus(err))
 	}
 	switch fileType(sys.Mode) {
@@ -876,19 +1568,22 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	case _nf4Lnk:
 		return fail(_nfs4errSymlink)
 	}
-	st.cur = target
+	st.cur = &f
 	s.stateids++
 	w.u32(_nfsOK)
 	w.u32(1)
 	w.u64(s.stateids)
 	w.u32(0)
-	w.u32(0) // change_info: not atomic
-	w.u64(dirChange)
-	w.u64(dirChange)
+	changeInfo(w, before, dirChange(dirPath))
 	w.u32(_openResultLocktypePOSIX)
-	w.bitmap(nil) // attrset
-	w.u32(0)      // no delegation
+	w.bitmap(attrMask(set...))
+	w.u32(0) // no delegation
 	return _nfsOK
+}
+
+// verifierTime is where an EXCLUSIVE create keeps its verifier.
+func verifierTime(verf []byte) time.Time {
+	return time.Unix(int64(binary.BigEndian.Uint32(verf[:4])), int64(binary.BigEndian.Uint32(verf[4:])%1e9))
 }
 
 // read is READ. Every stateid is accepted: nothing is shared but the

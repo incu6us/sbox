@@ -731,3 +731,435 @@ func TestNFSServeConn(t *testing.T) {
 		t.Error("a record over the limit was read")
 	}
 }
+
+// modeAttrs is a fattr4 setting mode.
+func modeAttrs(w *xdrWriter, mode uint32) {
+	w.bitmap(attrMask(_attrMode))
+	var v xdrWriter
+	v.u32(mode)
+	w.opaque(v.b)
+}
+
+// openWrite adds an OPEN of name for writing: how is -1 for no create,
+// else UNCHECKED (0), GUARDED (1) or EXCLUSIVE (2, with verf).
+func openWrite(c *compoundArgs, name string, how int, verf string) {
+	w := c.add(_opOpen)
+	w.u32(1)
+	w.u32(3) // share_access BOTH
+	w.u32(0)
+	w.u64(7)
+	w.opaque([]byte("owner"))
+	if how < 0 {
+		w.u32(0)
+	} else {
+		w.u32(1)
+		w.u32(uint32(how))
+		if how == 2 {
+			w.b = append(w.b, verf...)
+		} else {
+			modeAttrs(w, 0o640)
+		}
+	}
+	w.u32(0) // CLAIM_NULL
+	w.str(name)
+}
+
+// write adds a WRITE of data at offset with an anonymous stateid.
+func write(c *compoundArgs, offset uint64, data string, stable uint32) {
+	w := c.add(_opWrite)
+	w.b = append(w.b, make([]byte, 16)...)
+	w.u64(offset)
+	w.u32(stable)
+	w.opaque([]byte(data))
+}
+
+// run is compound's status, failing the test on anything but want.
+func runWant(t *testing.T, s *nfsServer, name string, want uint32, c *compoundArgs) *xdrReader {
+	t.Helper()
+	status, r := compound(t, s, 0, c)
+	if status != want {
+		t.Errorf("%s: %d, want %d", name, status, want)
+	}
+	return r
+}
+
+func TestNFSWrites(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	if err := os.Mkdir(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	root := lookupHandle(t, s)
+	read := func(p string) string { b, _ := os.ReadFile(filepath.Join(dir, p)); return string(b) }
+
+	var c compoundArgs
+	c.add(_opPutFH).opaque(root)
+	openWrite(&c, "new.txt", 0, "")
+	write(&c, 0, "made in the guest\n", 2)
+	r := runWant(t, s, "OPEN create, WRITE", _nfsOK, &c)
+	if got := read("new.txt"); got != "made in the guest\n" {
+		t.Errorf("new.txt on the Mac: %q", got)
+	}
+	if fi, _ := os.Stat(filepath.Join(dir, "new.txt")); fi == nil || fi.Mode().Perm() != 0o640 {
+		t.Errorf("new.txt mode %v, want the create's 0640", fi)
+	}
+	result(t, r, _opPutFH)
+	result(t, r, _opOpen)
+	r.take(16 + 4 + 16 + 4) // stateid, change_info, rflags
+	if attrset := r.bitmap(); !hasAttr(attrset, _attrMode) {
+		t.Error("OPEN's attrset lacks mode")
+	}
+	r.u32() // delegation
+	result(t, r, _opWrite)
+	if count, committed := r.u32(), r.u32(); count != 18 || committed != 2 {
+		t.Errorf("WRITE: count %d, committed %d", count, committed)
+	}
+	verf := r.take(8)
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "new.txt"))
+	c.add(_opCommit).u64(0)
+	c.w.u32(0)
+	r = runWant(t, s, "COMMIT", _nfsOK, &c)
+	result(t, r, _opPutFH)
+	if result(t, r, _opCommit); !bytes.Equal(r.take(8), verf) {
+		t.Error("COMMIT's verifier isn't WRITE's")
+	}
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(root)
+	openWrite(&c, "new.txt", 1, "")
+	runWant(t, s, "GUARDED on an existing file", _nfs4errExist, &c)
+	for _, tt := range []struct {
+		verf string
+		want uint32
+	}{{"exclusv1", _nfsOK}, {"exclusv1", _nfsOK}, {"exclusv2", _nfs4errExist}} {
+		c = compoundArgs{}
+		c.add(_opPutFH).opaque(root)
+		openWrite(&c, "excl.txt", 2, tt.verf)
+		runWant(t, s, "EXCLUSIVE "+tt.verf, tt.want, &c)
+	}
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "new.txt"))
+	w := c.add(_opSetAttr)
+	w.b = append(w.b, make([]byte, 16)...)
+	w.bitmap(attrMask(_attrSize, _attrMode))
+	var v xdrWriter
+	v.u64(4)
+	v.u32(0o600)
+	w.opaque(v.b)
+	runWant(t, s, "SETATTR size and mode", _nfsOK, &c)
+	if fi, _ := os.Stat(filepath.Join(dir, "new.txt")); read("new.txt") != "made" || fi.Mode().Perm() != 0o600 {
+		t.Errorf("after SETATTR: %q, %v", read("new.txt"), fi.Mode())
+	}
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(root)
+	w = c.add(_opCreate)
+	w.u32(_nf4Dir)
+	w.str("made")
+	modeAttrs(w, 0o750)
+	c.add(_opPutFH).opaque(root)
+	w = c.add(_opCreate)
+	w.u32(_nf4Lnk)
+	w.str("app/x")
+	w.str("rel")
+	modeAttrs(w, 0o777)
+	runWant(t, s, "CREATE a directory and a relative symlink", _nfsOK, &c)
+	if fi, err := os.Stat(filepath.Join(dir, "made")); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o750 {
+		t.Errorf("made: %v %v", fi, err)
+	}
+	if target, err := os.Readlink(filepath.Join(dir, "rel")); err != nil || target != "app/x" {
+		t.Errorf("rel -> %q, %v", target, err)
+	}
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(root)
+	c.add(_opSaveFH)
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "app"))
+	w = c.add(_opRename)
+	w.str("new.txt")
+	w.str("moved.txt")
+	runWant(t, s, "RENAME into app", _nfsOK, &c)
+	if read("app/moved.txt") != "made" || read("new.txt") != "" {
+		t.Errorf("after RENAME: app/moved.txt %q", read("app/moved.txt"))
+	}
+
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "app", "moved.txt"))
+	c.add(_opSaveFH)
+	c.add(_opPutFH).opaque(root)
+	c.add(_opLink).str("hard.txt")
+	runWant(t, s, "LINK", _nfsOK, &c)
+	if read("hard.txt") != "made" {
+		t.Errorf("hard.txt %q", read("hard.txt"))
+	}
+
+	for _, name := range []string{"hard.txt", "made"} {
+		c = compoundArgs{}
+		c.add(_opPutFH).opaque(root)
+		c.add(_opRemove).str(name)
+		runWant(t, s, "REMOVE "+name, _nfsOK, &c)
+		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s still there: %v", name, err)
+		}
+	}
+}
+
+// TestNFSProtected: every way to change a protected path is refused, by
+// path, case-insensitively, and the Mac's files stay as they were.
+func TestNFSProtected(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	for _, d := range []string{".git", ".git/hooks", "sub", "sub/.git", "config"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, body := range map[string]string{".git/config": "[core]\n", ".git/HEAD": "ref\n", "sub/.git/config": "[sub]\n",
+		".vscode": "", "config/prod.env": "SECRET=1\n", "config/dev.env": "x\n"} {
+		if p == ".vscode" {
+			if err := os.Mkdir(filepath.Join(dir, p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.protect = []string{"config/prod.env"}
+	root := lookupHandle(t, s)
+	git := lookupHandle(t, s, ".git")
+
+	setattr := func(h []byte) func(c *compoundArgs) {
+		return func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(h)
+			w := c.add(_opSetAttr)
+			w.b = append(w.b, make([]byte, 16)...)
+			modeAttrs(w, 0o777)
+		}
+	}
+	create := func(h []byte, typ uint32, name, link string) func(c *compoundArgs) {
+		return func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(h)
+			w := c.add(_opCreate)
+			w.u32(typ)
+			if typ == _nf4Lnk {
+				w.str(link)
+			}
+			w.str(name)
+			modeAttrs(w, 0o755)
+		}
+	}
+	rename := func(from []byte, old string, to []byte, name string) func(c *compoundArgs) {
+		return func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(from)
+			c.add(_opSaveFH)
+			c.add(_opPutFH).opaque(to)
+			w := c.add(_opRename)
+			w.str(old)
+			w.str(name)
+		}
+	}
+	for _, tt := range []struct {
+		name  string
+		build func(c *compoundArgs)
+	}{
+		{"open .git/config for writing", func(c *compoundArgs) { c.add(_opPutFH).opaque(git); openWrite(c, "config", -1, "") }},
+		{"create a hook", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, ".git", "hooks"))
+			openWrite(c, "pre-commit", 0, "")
+		}},
+		{"write .git/HEAD", func(c *compoundArgs) { c.add(_opPutFH).opaque(lookupHandle(t, s, ".git", "HEAD")); write(c, 0, "x", 2) }},
+		{"chmod .git/HEAD", setattr(lookupHandle(t, s, ".git", "HEAD"))},
+		{"remove .git/HEAD", func(c *compoundArgs) { c.add(_opPutFH).opaque(git); c.add(_opRemove).str("HEAD") }},
+		{"rename .git away", rename(root, ".git", root, "git-old")},
+		{"rename onto .git/HEAD", rename(root, "README.md", git, "HEAD")},
+		{"create .ENVRC", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, ".ENVRC", 0, "") }},
+		{"mkdir in .vscode", create(lookupHandle(t, s, ".vscode"), _nf4Dir, "x", "")},
+		{"mkdir .Idea", create(root, _nf4Dir, ".Idea", "")},
+		{"a nested repo's config", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, "sub", ".git"))
+			openWrite(c, "config", -1, "")
+		}},
+		{"link .git/config elsewhere", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, ".git", "config"))
+			c.add(_opSaveFH)
+			c.add(_opPutFH).opaque(root)
+			c.add(_opLink).str("notes")
+		}},
+		{"a protect path", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, "config"))
+			openWrite(c, "prod.env", -1, "")
+		}},
+		{"a protect path, other case", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, "config"))
+			openWrite(c, "PROD.env", -1, "")
+		}},
+		{"rename the folder holding a protect path", rename(root, "config", root, "cfg")},
+		{"a symlink to an absolute path", create(root, _nf4Lnk, "zshrc", "/Users/you/.zshrc")},
+		{"a symlink out of the folder", create(lookupHandle(t, s, "sub"), _nf4Lnk, "up", "../../x")},
+		{"a symlink into .git", create(root, _nf4Lnk, "notes", "sub/../.git/hooks/pre-commit")},
+	} {
+		var c compoundArgs
+		tt.build(&c)
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+			t.Errorf("%s: %d, want ACCESS", tt.name, status)
+		}
+	}
+	for p, want := range map[string]string{".git/config": "[core]\n", ".git/HEAD": "ref\n", "sub/.git/config": "[sub]\n", "config/prod.env": "SECRET=1\n"} {
+		if got, _ := os.ReadFile(filepath.Join(dir, p)); string(got) != want {
+			t.Errorf("%s changed: %q", p, got)
+		}
+	}
+	for _, p := range []string{".git/hooks/pre-commit", "git-old", ".envrc", ".Idea", "notes", "zshrc", "sub/up", "cfg"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists: %v", p, err)
+		}
+	}
+
+	// Next to them, writes go through, and ACCESS tells the client first.
+	var c compoundArgs
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "config"))
+	openWrite(&c, "dev.env", -1, "")
+	runWant(t, s, "config/dev.env, not protected", _nfsOK, &c)
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(git)
+	c.add(_opAccess).u32(_accessRead | _accessModify | _accessExtend | _accessDelete | _accessLookup)
+	r := runWant(t, s, "ACCESS .git", _nfsOK, &c)
+	result(t, r, _opPutFH)
+	result(t, r, _opAccess)
+	if r.u32(); r.u32() != _accessRead|_accessLookup {
+		t.Error("ACCESS on .git grants more than reading")
+	}
+}
+
+// TestNFSIgnoresTheCallersUID: credentials claiming root change nothing:
+// the server acts as the Mac user and refuses by path.
+func TestNFSIgnoresTheCallersUID(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	var args xdrWriter
+	args.opaque(nil) // tag
+	args.u32(0)
+	args.u32(2)
+	args.u32(_opPutRootFH)
+	args.u32(_opOpen)
+	args.u32(1)
+	args.u32(3)
+	args.u32(0)
+	args.u64(7)
+	args.opaque([]byte("owner"))
+	args.u32(1)
+	args.u32(0)
+	modeAttrs(&args, 0o644)
+	args.u32(0)
+	args.str(".git")
+
+	var root xdrWriter // AUTH_SYS: stamp, machine name, uid 0, gid 0, no groups
+	root.u32(0)
+	root.str("guest")
+	root.u32(0)
+	root.u32(0)
+	root.u32(0)
+	var w xdrWriter
+	for _, v := range []uint32{9, 0, 2, _nfsProgram, 4, 1, 1} {
+		w.u32(v)
+	}
+	w.opaque(root.b)
+	w.u32(0)
+	w.opaque(nil)
+	w.b = append(w.b, args.b...)
+	r := &xdrReader{b: s.call(w.b)}
+	r.take(12)
+	r.u32()
+	r.opaque(400)
+	if accept, status := r.u32(), r.u32(); accept != 0 || status != _nfs4errAccess {
+		t.Errorf("OPEN .git as uid 0: accept %d, status %d, want ACCESS", accept, status)
+	}
+}
+
+func TestNFSLocks(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	fh := lookupHandle(t, s, "README.md")
+
+	lock := func(owner string, typ uint32, offset, length uint64) (uint32, []byte) {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(fh)
+		w := c.add(_opLock)
+		w.u32(typ)
+		w.u32(0) // not a reclaim
+		w.u64(offset)
+		w.u64(length)
+		w.u32(1) // a new lock owner
+		w.u32(1) // open seqid
+		w.b = append(w.b, make([]byte, 16)...)
+		w.u32(1) // lock seqid
+		w.u64(7)
+		w.opaque([]byte(owner))
+		status, r := compound(t, s, 0, &c)
+		result(t, r, _opPutFH)
+		result(t, r, _opLock)
+		if status != _nfsOK {
+			return status, nil
+		}
+		return status, r.take(16)
+	}
+	test := func(owner string, offset, length uint64) uint32 {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(fh)
+		w := c.add(_opLockT)
+		w.u32(2)
+		w.u64(offset)
+		w.u64(length)
+		w.u64(7)
+		w.opaque([]byte(owner))
+		status, _ := compound(t, s, 0, &c)
+		return status
+	}
+	unlock := func(stateid []byte, offset, length uint64) uint32 {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(fh)
+		w := c.add(_opLockU)
+		w.u32(2)
+		w.u32(2)
+		w.b = append(w.b, stateid...)
+		w.u64(offset)
+		w.u64(length)
+		status, _ := compound(t, s, 0, &c)
+		return status
+	}
+
+	statusA, a := lock("a", 2, 0, 10)
+	if statusA != _nfsOK {
+		t.Fatalf("a's write lock: %d", statusA)
+	}
+	if status := test("b", 5, 1); status != _nfs4errDenied {
+		t.Errorf("b tests 5..6 under a's lock: %d, want DENIED", status)
+	}
+	if status, _ := lock("b", 2, 5, ^uint64(0)); status != _nfs4errDenied {
+		t.Errorf("b locks 5..end: %d, want DENIED", status)
+	}
+	if status, _ := lock("b", 1, 10, 10); status != _nfsOK {
+		t.Errorf("b locks 10..20, next to a's: %d", status)
+	}
+	if status := test("a", 0, 10); status != _nfsOK {
+		t.Errorf("a tests its own range: %d", status)
+	}
+	if status := unlock(a, 0, 10); status != _nfsOK {
+		t.Errorf("a unlocks: %d", status)
+	}
+	if status, _ := lock("b", 2, 0, 10); status != _nfsOK {
+		t.Errorf("b locks 0..10 after a let go: %d", status)
+	}
+}

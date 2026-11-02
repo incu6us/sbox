@@ -105,7 +105,8 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
   another session, even one granted that port as a service, gets nothing.
 - **NFSv4.0**, the simplest version the guest kernel speaks: no sessions
   (4.1), no delegations, no pNFS. Byte-range locks are granted and tracked
-  in memory, enough for one client.
+  in memory: conflicts between the guest's own processes are refused, so
+  SQLite and other lock users stay safe.
 - **File handles are the file's device and inode plus a MAC**, resolved
   with `fsgetpath(2)`, which gives the file's real path for the inside-the-
   folder and protected checks. Handles survive renames and a server
@@ -120,13 +121,24 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
   time without following links. `READLINK` returns the link's text, which
   the guest resolves on its own side, where `/Users/...` doesn't exist.
 - `..` past the project root.
-- Any write to a protected path: `WRITE`, `SETATTR`, `OPEN` for writing,
-  `CREATE`, `REMOVE`, `RENAME` from or to it, `LINK` to it. Creating a
-  protected name that doesn't exist yet (a new `.envrc`) is a write too, and
-  so is renaming a directory that contains a protected path. Names compare
-  case- and normalisation-insensitively, as APFS does (`.ENVRC` is
-  `.envrc`). Refusals are `NFS4ERR_ACCES` in the guest and BLOCKED lines in
-  the summary and `sbox watch`.
+- Any change to a protected path: `WRITE`, `SETATTR`, `OPEN` for writing or
+  creating, `CREATE`, `REMOVE`, `RENAME` from or to it. Creating a
+  protected name that doesn't exist yet (a new `.envrc`) is a change too.
+  The default names (`.git`, `.envrc`, `.vscode`, `.idea`, `.husky`) are
+  protected at any depth, so a nested repository's `.git` is too; a
+  project's `protect` entries are paths from the root, and moving or
+  removing a folder that holds one is refused. Names compare
+  case-insensitively, as APFS does (`.ENVRC` is `.envrc`).
+- A hard link to a protected file (`LINK .git/config notes` would be a
+  writable second name for it).
+- A new symlink whose target is absolute, leaves the folder, or points
+  into a protected path. The server never follows symlinks, but tools on
+  the Mac do: `src/config.json -> /Users/you/.zshrc` would have the next
+  build on the Mac write your `.zshrc`.
+- Refusals are `NFS4ERR_ACCESS` (Permission denied) in the guest, and
+  `ACCESS` already reports a protected path as read-only. The caller's
+  uid doesn't matter: the server acts as the Mac user, so root in the
+  guest is refused the same way.
 
 ### Ownership
 
@@ -267,7 +279,7 @@ branch isn't merged before the workspace gating lands.
   branch until 4), `sbox live-serve` with its token, the token-sending
   expose, the relay, the guest's mount. A VM test: the real guest kernel
   mounts it, lists, reads, sees a symlink only on its own side.
-- [ ] **3. Writes and protected paths.** `OPEN` for writing, `WRITE`,
+- [x] **3. Writes and protected paths.** `OPEN` for writing, `WRITE`,
   `COMMIT`, `CREATE`, `REMOVE`, `RENAME`, `LINK`, `SETATTR`, the locks;
   every protected-path rule above, case-insensitive. Table tests per rule;
   the VM test writes, and fails on each protected path as runner and root.

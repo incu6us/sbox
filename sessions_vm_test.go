@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -1506,4 +1507,94 @@ func TestLiveMountOnVM(t *testing.T) {
 	if strings.Contains(out, "the Mac's secret") {
 		t.Errorf("the guest read through the symlink on the Mac:\n%s", out)
 	}
+}
+
+// TestLiveMountWritesOnVM: the guest's writes land in the Mac's folder,
+// owned by the Mac user; each protected path refuses them, and the Mac's
+// .git is byte-identical afterwards.
+func TestLiveMountWritesOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\n")
+	writeTestFile(t, filepath.Join(dir, "old.txt"), "old\n")
+	for _, d := range []string{".git", ".git/hooks"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(dir, ".git", "config"), "[core]\n")
+	gitBefore := treeDigest(t, filepath.Join(dir, ".git"))
+	state := t.TempDir()
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
+		ln, err := serveLive(state, project, folder)
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		st, err := liveState(state, project)
+		return &liveRelay{port: st.port, token: st.token}, err
+	}}
+	try := func(name, cmd string) string {
+		return cmd + " 2>/dev/null && echo '" + name + ": allowed' || echo '" + name + ": refused'; "
+	}
+	script := "cd ~/work && echo made in the guest > new.txt && mkdir -p d/e && mv old.txt d/e/moved.txt && rm -r d/e && " +
+		"echo appended >> new.txt && echo writes-ok; " +
+		try("touch .git/x", "touch .git/x") + try("append .git/config", "echo x >> .git/config") +
+		try("hook", "printf '#!/bin/sh\\n' > .git/hooks/pre-commit") + try(".envrc", "echo x > .envrc") +
+		try("mv .git", "mv .git git-old") + try("absolute symlink", "ln -s /etc/passwd pw") + try("relative symlink", "ln -s new.txt rel")
+	var stdout, stderr bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &stderr, sboxRun, host); code != exitOK {
+		t.Fatalf("devMain: exit %d\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"writes-ok", "touch .git/x: refused", "append .git/config: refused", "hook: refused", ".envrc: refused",
+		"mv .git: refused", "absolute symlink: refused", "relative symlink: allowed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, stderr.String())
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "new.txt"))
+	if string(got) != "made in the guest\nappended\n" || err != nil {
+		t.Errorf("new.txt on the Mac: %q, %v", got, err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "new.txt")); err == nil && fi.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+		t.Errorf("new.txt owned by %d, want the Mac user %d", fi.Sys().(*syscall.Stat_t).Uid, os.Getuid())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old.txt")); !os.IsNotExist(err) {
+		t.Errorf("old.txt still on the Mac: %v", err)
+	}
+	if treeDigest(t, filepath.Join(dir, ".git")) != gitBefore {
+		t.Error("the Mac's .git changed")
+	}
+	for _, p := range []string{".envrc", "pw", "git-old"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists on the Mac: %v", p, err)
+		}
+	}
+}
+
+// treeDigest is every path, mode and content under dir, for comparing.
+func treeDigest(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		data := []byte{}
+		if fi.Mode().IsRegular() {
+			if data, err = os.ReadFile(p); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(&b, "%s %v %x\n", p, fi.Mode(), sha256.Sum256(data))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }
