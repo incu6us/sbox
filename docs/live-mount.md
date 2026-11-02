@@ -85,7 +85,8 @@ wrote. `protect` narrows that; it can't close it.
 
 ```
 guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the session's namespace)
-   ──unix socket──▶ ssh -R over Lima's own ssh ──▶ unix socket on the Mac ──▶ sbox live-serve
+   ──unix socket──▶ expose (Lima VM, sends the session's token) ──▶ the Mac's 127.0.0.1:<port>
+   ──▶ sbox live-serve (checks the token, then speaks NFS)
 ```
 
 - **The server is sbox itself**, a hidden `sbox live-serve <session>`
@@ -93,20 +94,25 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
   folder only, as you. It outlives the terminal, like the session, and
   exits when the session is gone (`sbox stop`, the exit prompt, or the
   session missing on a periodic check).
-- **No TCP port opens on the Mac.** The server listens on a unix socket in
-  sbox's state folder. An `ssh -R` over Lima's ssh (`limactl show-ssh`)
-  carries it to the session's folder in the Lima VM, and a relay inside
-  the session's namespace serves it on `172.16.0.1:2049` (2049 joins
-  `listening`). Only that session's namespace has a path to it; another
-  session, even one granted every service port, has none.
+- **It listens on the Mac's loopback only, and answers only after a token.**
+  The relay pair is the one `services` already use: a relay inside the
+  session's namespace on `172.16.0.1:2049` (2049 joins `listening`) and an
+  expose outside it that connects to the Mac through Lima's
+  `host.lima.internal`. For live mounts the expose first sends a 32-byte
+  token made for that session. The token travels in the session's start
+  request and is kept root-only in the session folder in the Lima VM,
+  never on the guest's drive. A connection without it is closed, so
+  another session, even one granted that port as a service, gets nothing.
 - **NFSv4.0**, the simplest version the guest kernel speaks: no sessions
   (4.1), no delegations, no pNFS. Byte-range locks are granted and tracked
   in memory, enough for one client.
-- **File handles are the file's inode plus a MAC**, resolved through macOS's
-  `/.vol/<fs>/<inode>`, with the path from `fsgetpath` for the protected
-  check. Handles survive renames and a server restart (a reattach after the
-  server died starts it again, and the guest's mount carries on); a forged
-  handle fails the MAC.
+- **File handles are the file's device and inode plus a MAC**, resolved
+  with `fsgetpath(2)`, which gives the file's real path for the inside-the-
+  folder and protected checks. Handles survive renames and a server
+  restart (a reattach after the server died starts it again on the same
+  port, and the guest's mount carries on); a forged handle fails the MAC.
+  Every call runs under one lock, so no guest call can swap a directory
+  for a symlink under another.
 
 ### What the server refuses
 
@@ -171,7 +177,7 @@ in the guest is left for later.
   folder itself, nothing to sync` and exits 0.
 - The summary's `session 1h12m · sbox sync … shows what changed` becomes
   `session 1h12m · live, changes are on the Mac`.
-- `sbox stop` stops the server, its `ssh -R` and the relay with the
+- `sbox stop` stops the server and the relay pair with the
   session.
 
 ## Spike results (2026-11-02)
@@ -225,46 +231,53 @@ a kernel we would build, pin and update ourselves. **Chosen: A**
 
 ## Code touchpoints
 
-- `nfs.go` (new): XDR, RPC record marking, `COMPOUND` and the operations;
-  handles, the no-follow walk, protected paths. `nfs_test.go` drives it
-  with encoded compounds against a temp folder.
-- `live.go` (new): `sbox live-serve`, its unix socket and `ssh -R`, start
-  and stop from `sbox dev`, the periodic session check.
+- `nfs_darwin.go` (new): XDR, RPC records, `COMPOUND` and the operations;
+  handles, the no-follow walk, protected paths. `nfs_darwin_test.go`
+  drives it with encoded compounds against a temp folder. macOS only
+  (`fsgetpath`), like the product.
+- `live.go` (new): `sbox live-serve`, its loopback listener and token,
+  start and stop from `sbox dev`, the periodic session check.
+- `scripts/sbox-proxy.py`: `expose` sends a token file's bytes first.
+- `scripts/sbox-run.sh`: a live session's relay pair on `172.16.0.1:2049`,
+  the token kept root-only, 2049 in `listening`.
+- `scripts/guest-init.sh`: the NFSv4 mount at `/home/runner/work`, `local`
+  binds, the environment for watching and git.
 - `config.go`: `dev.mount`, `dev.local`, `protect`, validation, boot-record
   key.
 - `workspace.go`: `mount` grant, `allow.live`, the request, BLOCKED line,
   approve-once.
-- `scripts/sbox-run.sh`: `start --live`: the relay on `172.16.0.1:2049` to
-  the session's socket, 2049 in `listening`, cleanup.
-- `scripts/guest-init.sh`: the NFSv4 mount at `/home/runner/work`, `local`
-  binds, the environment for watching and git.
 - `sessions.go` / `sync.go`: no copy and no push at boot, sync's message,
   the summary line, `sbox config` output.
 - `README.md`, `docs/config.md`, `MILESTONE.md`.
 
 ## Commits
 
+The real guest kernel is the client that matters, so the path to it comes
+right after the read-only server, before writes are built on top. The
+branch isn't merged before the workspace gating lands.
+
 - [x] **0. Spike, no product code.** Done 2026-11-02; results under
   "Spike results" above. The first design (re-export a Lima mount over
   NFS) doesn't work; A replaced it.
-- [ ] **1. The server, read-only, and its path to the guest.** `nfs.go`:
-  client id, `PUTROOTFH`/`PUTFH`/`GETFH`, `LOOKUP`/`LOOKUPP`, `GETATTR`,
+- [x] **1. The server, read-only.** `nfs_darwin.go`: RPC records, client
+  id, `PUTROOTFH`/`PUTFH`/`GETFH`, `LOOKUP`/`LOOKUPP`, `GETATTR`,
   `ACCESS`, `READDIR`, `READLINK`, `OPEN` for reading, `READ`, `CLOSE`,
-  `SAVEFH`/`RESTOREFH`, `RENEW`; handles; the no-follow walk. `live.go`:
-  the socket, `ssh -R`, the relay. A VM test: the real guest kernel mounts
-  it read-only, lists, reads, follows a symlink only on its own side.
-- [ ] **2. Writes and protected paths.** `OPEN` for writing, `WRITE`,
+  `SAVEFH`/`RESTOREFH`, `SECINFO`, `RENEW`; handles; no symlink followed.
+- [ ] **2. The path to the guest, read.** `dev.mount: live` (ungated on the
+  branch until 4), `sbox live-serve` with its token, the token-sending
+  expose, the relay, the guest's mount. A VM test: the real guest kernel
+  mounts it, lists, reads, sees a symlink only on its own side.
+- [ ] **3. Writes and protected paths.** `OPEN` for writing, `WRITE`,
   `COMMIT`, `CREATE`, `REMOVE`, `RENAME`, `LINK`, `SETATTR`, the locks;
   every protected-path rule above, case-insensitive. Table tests per rule;
   the VM test writes, and fails on each protected path as runner and root.
-- [ ] **3. Config and workspace keys.** `dev.mount`, `dev.local`,
-  `protect`, `mount` grant, `allow.live`, BLOCKED and approve-once,
+- [ ] **4. Workspace gating and the other keys.** `mount` grant,
+  `allow.live`, BLOCKED and approve-once, `dev.local`, `protect`,
   `sbox config` output.
-- [ ] **4. Guest and host sides.** `guest-init.sh` mounts it and binds
-  `local`, with the environment; `sbox dev` starts and stops the server, no
-  copy or push at boot, `sync` and the summary, `-restart` on a mode
-  change, the server restarted on reattach.
-- [ ] **5. Docs, timings and the real VM.** README section with the
+- [ ] **5. Host side.** No copy or push at boot, `sync` and the summary,
+  `-restart` on a mode change, the server restarted on reattach on its
+  port, stopped with the session.
+- [ ] **6. Docs, timings and the real VM.** README section with the
   trade-off in plain words, `docs/config.md`, `MILESTONE.md`; timings
   against copy mode on the Next.js app (`git status`, `npm ci` with
   `node_modules` local, `next dev` start and a reload after a Mac edit).
@@ -285,12 +298,12 @@ a kernel we would build, pin and update ourselves. **Chosen: A**
 - [ ] A symlink in the folder to `~/.ssh` gives the guest nothing of the
   Mac's `~/.ssh`; `..` from the root stays at the root; a forged handle is
   refused.
-- [ ] Another session granted every service port can't reach this
-  session's server; no TCP port is listening on the Mac for it.
+- [ ] Another session granted this session's port as a service gets its
+  connection closed; the server listens on the Mac's loopback only.
 - [ ] Killing `sbox live-serve` and reattaching: the guest's mount carries
   on with the same files open.
 - [ ] `sbox sync` on a live session says so; `sbox stop` leaves no server,
-  `ssh -R` or relay behind.
+  relay or token behind.
 - [ ] Copy-mode sessions behave exactly as before; the full VM suite
   passes.
 
@@ -307,8 +320,10 @@ a kernel we would build, pin and update ourselves. **Chosen: A**
   paths.
 - **Our own guest kernel with 9p, NFSv3 or FUSE** (design B): a simpler
   server, but a kernel to build, pin and update.
-- **A TCP port on the Mac for the server**: reachable from any session
-  granted that port; the `ssh -R` socket is reachable from one.
+- **`ssh -R` over Lima's ssh to a unix socket**, instead of a loopback
+  port and a token: no port at all, but an `ssh` process per session, an
+  sshd setting for the socket's mode, and more to restart; the token gives
+  the same isolation.
 - **A writable `.git`**: commits from the guest would be convenient, and
   are exactly how a guest gets code to run on the Mac.
 
