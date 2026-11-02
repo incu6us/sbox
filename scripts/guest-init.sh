@@ -22,10 +22,11 @@ prlimit --pid $$ --nproc=2048:2048
 for d in /tmp /var/tmp /run; do
 	mount -t tmpfs -o mode=1777,size=256m tmpfs "$d"
 done
-# A session on a project brings that project's work drive: the runner's
-# home, kept between sessions. Otherwise the home is scratch, like /tmp.
+# A session on a project brings that project's work drive, the third:
+# the runner's home, kept between sessions. Otherwise the home is scratch,
+# like /tmp.
 kept_home=
-if mount LABEL=sbox-work /home/runner 2>/dev/null; then
+if [ -d /drive/sbox/ssh ] && mount -t ext4 -o noatime /dev/vdc /home/runner 2>/dev/null; then
 	kept_home=1
 else
 	mount -t tmpfs -o mode=1777,size=256m tmpfs /home/runner
@@ -144,7 +145,7 @@ overlay() { # lower target
 	mount -t overlay overlay -o "lowerdir=$1,upperdir=/run/ovl/$n/upper,workdir=/run/ovl/$n/work" "$2"
 	chown runner:runner "$2"
 }
-if [ -b /dev/vdc ]; then
+if [ -z "$kept_home" ] && [ -b /dev/vdc ]; then
 	mount -o ro /dev/vdc /mnt
 	[ -e /home/runner/work/node_modules ] || overlay /mnt/node_modules /home/runner/work/node_modules
 	overlay /mnt/npm-cache /home/runner/.npm

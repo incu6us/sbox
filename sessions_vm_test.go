@@ -1670,3 +1670,35 @@ func TestSettingsMergeSkippedOnVM(t *testing.T) {
 		t.Errorf("after a forged mark: deny %q, want the config's back", got)
 	}
 }
+
+// TestWorkDriveMountOnVM: the kept home is its drive mounted directly, with
+// no access times, and the console has no complaint about that drive.
+func TestWorkDriveMountOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir := t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	var kept string
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), keep: func(id string, _ int) bool { kept = id; return true }}
+	var out, errOut bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "grep", " /home/runner ", "/proc/mounts"}, strings.NewReader(""), &out, &errOut, sboxRun, host); code != exitOK {
+		t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "stop", kept) })
+	if got := out.String(); !strings.HasPrefix(got, "/dev/vdc /home/runner ext4 ") || !strings.Contains(got, "noatime") {
+		t.Errorf("the home's mount: %q, want /dev/vdc with noatime", got)
+	}
+	var console bytes.Buffer
+	if err := sboxRun(ctx, nil, &console, io.Discard, "log", kept); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(console.String(), "already mounted") {
+		t.Errorf("the console complains about a drive:\n%s", console.String())
+	}
+}
