@@ -42,7 +42,6 @@ state=${SBOX_STATE:-/var/lib/sbox}
 sessions=$state/sessions
 egress_entry='^(\*\.)?[a-z0-9.-]+:([0-9]{1,5}|\*)$'
 as_vm_user=(setpriv --reuid=sbox-vm --regid=sbox-vm --clear-groups)
-snap_drive_mb=1024 # the run drive's size in a snapshot: the guest remembers it
 
 # raw_entries prints the egress entries that are raw TCP (an exact host on
 # a port other than 443), sorted.
@@ -52,140 +51,6 @@ raw_entries() {
 		host=${entry%:*} port=${entry##*:}
 		if [[ $host != \*.* && $port =~ ^[0-9]+$ && $port != 443 ]]; then echo "$entry"; fi
 	done | sort
-}
-
-# make_netns <name>: a namespace with the tap the guest talks to, and no
-# route out.
-make_netns() {
-	ip netns add "$1"
-	ip netns exec "$1" ip link set lo up
-	ip netns exec "$1" ip tuntap add dev tap0 mode tap user "$(id -u sbox-vm)"
-	ip netns exec "$1" ip addr add 172.16.0.1/30 dev tap0
-	ip netns exec "$1" ip link set tap0 up
-}
-
-# vm_json <root> <phase> <vcpus> <MiB> <extra drives>: Firecracker's config.
-vm_json() {
-	cat >"$1/vm.json" <<EOF
-{
-  "boot-source": {
-    "kernel_image_path": "/vmlinux",
-    "boot_args": "console=ttyS0 reboot=k panic=1 quiet loglevel=1 ro init=/sbin/sbox-init sbox.phase=$2"
-  },
-  "drives": [
-    {"drive_id": "rootfs", "path_on_host": "/rootfs.ext4", "is_root_device": true, "is_read_only": true},
-    {"drive_id": "run", "path_on_host": "/drive.ext4", "is_root_device": false, "is_read_only": true}$5
-  ],
-  "network-interfaces": [{"iface_id": "eth0", "host_dev_name": "tap0", "guest_mac": "06:00:ac:10:00:02"}],
-  "machine-config": {"vcpu_count": $3, "mem_size_mib": $4}
-}
-EOF
-}
-
-# A session on a project resumes a snapshot instead of booting: a guest past
-# its kernel, parked in the stub below, one per size in $state/snap. The stub
-# runs from a placeholder drive and holds no session's anything, so neither
-# does the snapshot. It warms the page cache with what a boot runs, lets go
-# of the drive, and tries to mount it until the drive under it is a real
-# one: a restored guest needs no signal.
-snap_work_drive='{"drive_id": "work", "path_on_host": "/work.ext4", "is_root_device": false, "is_read_only": false}'
-snap_stub='#!/bin/sh
-# Run from memory: a script on the drive would keep it mounted.
-if [ -z "$SBOX_STUB" ]; then SBOX_STUB=1 exec sh -c "$(cat /drive/sbox/init.sh)"; fi
-unset SBOX_STUB
-cd /
-python3 -I -c "import json, tempfile, os, sys" 2>/dev/null
-perl -e 1 2>/dev/null
-for c in ip mount setpriv sha256sum date; do "$c" --version >/dev/null 2>&1; done
-/usr/sbin/sshd -V >/dev/null 2>&1
-umount /drive
-echo "SBOX-SNAP READY"
-while :; do
-	if mount -t ext4 -o ro /dev/vdb /drive 2>/dev/null; then
-		[ -f /drive/sbox/nonce ] && exec /bin/sh /drive/sbox/init.sh
-		umount /drive
-	fi
-	sleep 0.02
-done'
-
-# snap_stamp names what a snapshot is good for: the kernel, the image, the
-# Firecracker and the stub it was taken with.
-snap_stamp() {
-	{
-		# Inode, size, time and name, not the link count: each jail links them.
-		ls -iLln "$base/vmlinux" "$base/rootfs.ext4" "$base/bin/firecracker" 2>/dev/null | awk '{$2 = $3 = $4 = $5 = ""; print}' || true
-		printf '%s' "$snap_stub"
-	} | cksum
-}
-
-snapshot_ok() {
-	[[ -f $1/snap && -f $1/mem && -f $1/stamp && $(cat "$1/stamp") == "$(snap_stamp)" ]]
-}
-
-# snapshot_build <vcpus> <MiB> takes the snapshot of that size, unless there
-# is one or another process is at it. It keeps the three newest sizes: the
-# memory file is sparse, but they still add up.
-snapshot_build() {
-	local vcpus=${1:-} mem=${2:-} dir id netns root jp i
-	if ! [[ $vcpus =~ ^[1-9][0-9]?$ && $mem =~ ^[1-9][0-9]{2,5}$ ]]; then
-		echo "sbox-run: snapshot <vcpus> <MiB>" >&2
-		exit 2
-	fi
-	dir=$state/snap/$vcpus-$mem
-	snapshot_ok "$dir" && return 0
-	mkdir -p "$state/snap"
-	find "$state/snap" -maxdepth 1 -name '*.lock' -mmin +5 -exec rm -rf {} + 2>/dev/null || true
-	mkdir "$dir.lock" 2>/dev/null || return 0
-	id=$(printf 'f%015x' "$$")
-	netns=sbox-$id
-	root=$jail_base/firecracker/$id/root
-	# shellcheck disable=SC2064 # expanded now: these are locals
-	trap "teardown '$id'; rm -rf '$dir.lock'" EXIT
-	make_netns "$netns"
-	mkdir -p "$root/run" "$dir.lock/stub/sbox"
-	chown sbox-vm "$root/run"
-	ln "$base/vmlinux" "$root/vmlinux"
-	ln "$base/rootfs.ext4" "$root/rootfs.ext4"
-	printf '%s\n' "$snap_stub" >"$dir.lock/stub/sbox/init.sh"
-	truncate -s "${snap_drive_mb}M" "$root/drive.ext4"
-	mkfs.ext4 -q -d "$dir.lock/stub" -F "$root/drive.ext4"
-	truncate -s 20G "$root/work.ext4"
-	chown sbox-vm "$root/drive.ext4" "$root/work.ext4"
-	vm_json "$root" main "$vcpus" "$mem" ", $snap_work_drive"
-	timeout --kill-after=5 120 "$base/bin/jailer" \
-		--id "$id" \
-		--exec-file "$base/bin/firecracker" \
-		--uid "$(id -u sbox-vm)" --gid "$(id -g sbox-vm)" \
-		--chroot-base-dir "$jail_base" \
-		--cgroup-version 2 \
-		--netns "/var/run/netns/$netns" \
-		-- --api-sock /run/firecracker.socket --config-file /vm.json </dev/null >"$dir.lock/console" 2>&1 &
-	jp=$!
-	for ((i = 0; i < 1200; i++)); do
-		grep -q 'SBOX-SNAP READY' "$dir.lock/console" && break
-		sleep 0.05
-	done
-	if ! grep -q 'SBOX-SNAP READY' "$dir.lock/console"; then
-		echo "sbox-run: the snapshot's guest never got to its stub" >&2
-		exit 1
-	fi
-	sleep 0.3
-	vm_api "$id" Paused >/dev/null
-	curl -fsS --unix-socket "$root/run/firecracker.socket" -X PUT -H 'Content-Type: application/json' \
-		-d '{"snapshot_type":"Full","snapshot_path":"/snap","mem_file_path":"/mem"}' http://localhost/snapshot/create >/dev/null
-	kill "$jp" 2>/dev/null || true
-	wait "$jp" 2>/dev/null || true
-	mkdir "$dir.lock/out"
-	# Mostly zeros: a sparse copy takes a fraction of the guest's memory.
-	cp --sparse=always "$root/mem" "$dir.lock/out/mem" 2>/dev/null || mv "$root/mem" "$dir.lock/out/mem"
-	mv "$root/snap" "$dir.lock/out/snap"
-	chown sbox-vm "$dir.lock/out/mem" "$dir.lock/out/snap"
-	chmod 0400 "$dir.lock/out/mem" "$dir.lock/out/snap"
-	snap_stamp >"$dir.lock/out/stamp"
-	rm -rf "$dir"
-	mv "$dir.lock/out" "$dir"
-	# shellcheck disable=SC2012 # our own names: digits and a dash
-	ls -dt "$state"/snap/[0-9]*-*[0-9]/ 2>/dev/null | tail -n +4 | while read -r old; do rm -rf "$old"; done
 }
 
 # fwd_pair <run> <kind> <port> [host]: a relay and an expose joined by the
@@ -348,7 +213,7 @@ session_start() {
 	echo running >"$dir/state"
 	SBOX_SESSION=1 SBOX_WORK=$work setsid "${BASH:-bash}" "$0" "$id" 0 <"$dir/run.tar" >"$dir/console.log" 2>&1 &
 	echo $! >"$dir/pid"
-	for ((i = 0; i < 6000; i++)); do # 120 s
+	for ((i = 0; i < 1200; i++)); do # 120 s
 		if grep -q "SBOX-$nonce START" "$dir/console.log"; then
 			rm -f "$dir/run.tar"
 			[[ -z $new ]] || echo "NEW $id"
@@ -356,7 +221,7 @@ session_start() {
 			return 0
 		fi
 		kill -0 "$(cat "$dir/pid")" 2>/dev/null || break
-		sleep 0.02
+		sleep 0.1
 	done
 	echo "sbox-run: session $id did not start" >&2
 	tail -n 20 "$dir/console.log" >&2
@@ -571,7 +436,6 @@ pause) session_vm_state "${2:-}" running paused Paused; exit 0 ;;
 resume) session_vm_state "${2:-}" paused running Resumed; exit 0 ;;
 stop) shift; session_stop "$@"; exit 0 ;;
 start) shift; session_start "$@"; exit 0 ;;
-snapshot) shift; snapshot_build "$@"; exit 0 ;;
 esac
 
 id=${1:-} timeout=${2:-} prefetch_timeout=${3:-0}
@@ -621,42 +485,17 @@ if [[ -f $run/drive/live.token ]]; then
 	chmod 0400 "$run/live.token"
 fi
 
-# A session on a project resumes the snapshot of its size, if there is one
-# and the drive fits the size the snapshot's guest remembers. Without one it
-# boots, and a snapshot is taken once this session is under way. Restored,
-# the guest takes the clock and a reseed from its drive: it wakes up with
-# the snapshot's time and random state.
-vm_vcpus=2 vm_mem=1024
-if [[ -s $run/drive/sbox/vm ]]; then
-	read -r v m <"$run/drive/sbox/vm"
-	[[ $v =~ ^[1-9][0-9]?$ ]] && vm_vcpus=$v
-	[[ $m =~ ^[1-9][0-9]{2,5}$ ]] && vm_mem=$m
-fi
-size_mb=$(($(du -sm "$run/drive" | cut -f1) * 13 / 10 + 32))
-restore_from=""
-if [[ ${SBOX_SESSION:-} == 1 && -n ${SBOX_WORK:-} && ${SBOX_SNAPSHOT:-1} != 0 && ! -f $run/drive/sbox/prefetch.sh ]]; then
-	if snapshot_ok "$state/snap/$vm_vcpus-$vm_mem"; then
-		if ((size_mb <= snap_drive_mb)); then
-			restore_from=$state/snap/$vm_vcpus-$vm_mem
-			size_mb=$snap_drive_mb
-			(
-				umask 077
-				printf '%s\n' "${EPOCHREALTIME:-$(date +%s)}" >"$run/drive/sbox/now"
-				head -c 64 /dev/urandom >"$run/drive/sbox/seed"
-				chmod 0400 "$run/drive/sbox/now" "$run/drive/sbox/seed"
-			)
-		fi
-	else
-		setsid "${BASH:-bash}" -c 'sleep "$1"; exec "$2" "$3" snapshot "$4" "$5"' _ "${SBOX_SNAPSHOT_DELAY:-20}" "${BASH:-bash}" "$0" "$vm_vcpus" "$vm_mem" </dev/null >/dev/null 2>&1 &
-	fi
-fi
-
 # The run's drive: the skill plus the guest init and job, read-only in the guest.
+size_mb=$(($(du -sm "$run/drive" | cut -f1) * 13 / 10 + 32))
 truncate -s "${size_mb}M" "$run/drive.ext4"
 mkfs.ext4 -q -d "$run/drive" -F "$run/drive.ext4"
 
-make_netns "$netns"
+ip netns add "$netns"
 in_ns() { ip netns exec "$netns" "$@"; }
+in_ns ip link set lo up
+in_ns ip tuntap add dev tap0 mode tap user "$(id -u sbox-vm)"
+in_ns ip addr add 172.16.0.1/30 dev tap0
+in_ns ip link set tap0 up
 
 # Helpers run unprivileged (as_vm_user). They are started directly, not via
 # in_ns: ip netns exec and setpriv exec the next program, so $! is the
@@ -707,22 +546,6 @@ table ip sbox {
 }
 EOF
 
-# snapshot_load <API socket> <jailer pid> restores the snapshot hard-linked
-# into the jail, once Firecracker's API is up. On a refusal it marks the run
-# and ends the jailer, so boot can fall back.
-snapshot_load() {
-	local i
-	for ((i = 0; i < 500; i++)); do
-		[[ -e $1 ]] && break
-		sleep 0.01
-	done
-	curl -fsS --unix-socket "$1" -X PUT -H 'Content-Type: application/json' \
-		-d '{"snapshot_path":"/snap","mem_backend":{"backend_type":"File","backend_path":"/mem"},"resume_vm":true}' \
-		http://localhost/snapshot/load && return 0
-	: >"$run/restore-failed"
-	kill "$2" 2>/dev/null || true
-}
-
 # boot <jail id> <timeout> <phase> <deps drive mode: none|ro|rw>
 # Boots one microVM and returns the jailer's status (124/137: timed out).
 boot() {
@@ -746,44 +569,33 @@ boot() {
 		ln "$run/out.img" "$root/out.img"
 		extra+=", {\"drive_id\": \"out\", \"path_on_host\": \"/out.img\", \"is_root_device\": false, \"is_read_only\": false}"
 	fi
-	# A session's project work drive, writable: the guest's /dev/vdc.
+	# A session's project work drive, writable; the guest finds it by label.
 	if [[ -n ${SBOX_WORK:-} && $phase == main ]]; then
 		ln "$SBOX_WORK" "$root/work.ext4"
 		extra+=", {\"drive_id\": \"work\", \"path_on_host\": \"/work.ext4\", \"is_root_device\": false, \"is_read_only\": false}"
 	fi
-	# sbox/vm: "<vcpus> <MiB>" for the main microVM.
-	local vcpus=2 mem=1024
-	if [[ $phase == main ]]; then vcpus=$vm_vcpus mem=$vm_mem; fi
-	if [[ $phase == main && -n $restore_from ]]; then
-		local status=0 jp
-		mkdir -p "$root/run"
-		chown sbox-vm "$root/run"
-		ln "$restore_from/snap" "$root/snap"
-		ln "$restore_from/mem" "$root/mem"
-		# </dev/null: the serial console reads stdin.
-		timeout --kill-after=5 "$secs" "$base/bin/jailer" \
-			--id "$jid" \
-			--exec-file "$base/bin/firecracker" \
-			--uid "$(id -u sbox-vm)" --gid "$(id -g sbox-vm)" \
-			--chroot-base-dir "$jail_base" \
-			--cgroup-version 2 \
-			--netns "/var/run/netns/$netns" \
-			-- --api-sock /run/firecracker.socket </dev/null &
-		jp=$!
-		snapshot_load "$root/run/firecracker.socket" "$jp" </dev/null >/dev/null 2>&1 &
-		wait "$jp" || status=$?
-		# Refused: the snapshot goes, and this session boots.
-		if [[ -f $run/restore-failed ]]; then
-			rm -f "$run/restore-failed"
-			rm -rf "$restore_from" "$jail_base/firecracker/$jid"
-			rmdir "/sys/fs/cgroup/firecracker/$jid" 2>/dev/null || true
-			restore_from=""
-			boot "$@"
-			return $?
-		fi
-		return "$status"
+	# sbox/vm: "<vcpus> <MiB>" for the main microVM; 0 or anything else
+	# keeps the default.
+	local vcpus=2 mem=1024 v m
+	if [[ $phase == main && -s $run/drive/sbox/vm ]]; then
+		read -r v m <"$run/drive/sbox/vm"
+		[[ $v =~ ^[1-9][0-9]?$ ]] && vcpus=$v
+		[[ $m =~ ^[1-9][0-9]{2,5}$ ]] && mem=$m
 	fi
-	vm_json "$root" "$phase" "$vcpus" "$mem" "$extra"
+	cat >"$root/vm.json" <<EOF
+{
+  "boot-source": {
+    "kernel_image_path": "/vmlinux",
+    "boot_args": "console=ttyS0 reboot=k panic=1 quiet loglevel=1 ro init=/sbin/sbox-init sbox.phase=$phase"
+  },
+  "drives": [
+    {"drive_id": "rootfs", "path_on_host": "/rootfs.ext4", "is_root_device": true, "is_read_only": true},
+    {"drive_id": "run", "path_on_host": "/drive.ext4", "is_root_device": false, "is_read_only": true}$extra
+  ],
+  "network-interfaces": [{"iface_id": "eth0", "host_dev_name": "tap0", "guest_mac": "06:00:ac:10:00:02"}],
+  "machine-config": {"vcpu_count": $vcpus, "mem_size_mib": $mem}
+}
+EOF
 	# Sessions are paused and resumed through Firecracker's API; one-shot
 	# runs need no API.
 	local api=(--no-api)
