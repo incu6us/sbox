@@ -403,3 +403,43 @@ func TestDevTrace(t *testing.T) {
 		t.Errorf("a refused write in the home is the runner's own business, not the sandbox's:\n%s", strings.Join(got, "\n"))
 	}
 }
+
+// TestDenialGuard: the denial script's Python runs only when a transcript
+// was written since the session began, so a session without the agent
+// doesn't pay for a cold start at exit.
+func TestDenialGuard(t *testing.T) {
+	t.Parallel()
+	run := func(home string) string {
+		cmd := exec.Command("sh", "-c", _denialGuard, "sh", "2026-10-28T09:30:00Z", "print('python ran')", "30")
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("guard: %v: %s", err, out)
+		}
+		return string(out)
+	}
+	home := t.TempDir()
+	if got := run(home); got != "" {
+		t.Errorf("no transcripts: %q", got)
+	}
+	projects := filepath.Join(home, ".claude", "projects", "-home-runner-work")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(projects, "s.jsonl")
+	writeTestFile(t, transcript, "{}\n")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(transcript, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(home); got != "" {
+		t.Errorf("a transcript from before the session: %q", got)
+	}
+	recent := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(transcript, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(home); got != "python ran\n" {
+		t.Errorf("a transcript from this session: %q, want the script run", got)
+	}
+}

@@ -534,6 +534,12 @@ func consoleText(raw string) string {
 	return b.String()
 }
 
+// _denialGuard runs _denialScript ($2, given the session's start, $1) only
+// when a transcript was written in the session's last $3 minutes: Python's
+// cold start is most of a quiet session's exit.
+const _denialGuard = `find "$HOME/.claude/projects" -name '*.jsonl' -mmin "-$3" 2>/dev/null | grep -q . || exit 0
+exec python3 -I -c "$2" "$1"`
+
 // _denialScript runs in the guest as the runner and prints a "kind\ttool"
 // line for each tool call Claude Code denied since argv[1] (an RFC 3339
 // time, compared as text with the transcripts' timestamps). The format,
@@ -595,7 +601,8 @@ func denialLines(out string) []string {
 // since since; none when it can't answer.
 func toolDenials(ctx context.Context, vm sboxRunFunc, id string, since time.Time) []string {
 	var out bytes.Buffer
-	if err := vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "python3", "-I", "-c", _denialScript, since.UTC().Format(time.RFC3339)); err != nil {
+	if err := vm(ctx, strings.NewReader(""), &out, io.Discard, "attach", id, "--", "sh", "-c", _denialGuard, "sh", since.UTC().Format(time.RFC3339), _denialScript,
+		strconv.Itoa(int(time.Since(since).Minutes())+2)); err != nil {
 		return nil
 	}
 	return denialLines(out.String())
