@@ -1,4 +1,4 @@
-//go:build vm
+//go:build vm && darwin
 
 package main
 

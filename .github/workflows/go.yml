@@ -9,7 +9,8 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # macOS: the VM tests (-tags vm) build only there.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - name: Set up Go
@@ -27,6 +28,7 @@ jobs:
   build:
     # macOS runs the shell tests under bash 3.2, Linux under bash 5 (the VM's).
     strategy:
+      fail-fast: false
       matrix:
         os: [ macos-latest, ubuntu-latest ]
     runs-on: ${{ matrix.os }}
