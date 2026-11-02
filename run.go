@@ -140,7 +140,15 @@ type guestJob struct {
 	// pauseAfter pauses a session when nothing has been connected to the
 	// guest (a terminal, a forwarded port) for this long; 0 never.
 	pauseAfter time.Duration
-	canary     string // the fake credentials' marker; a random one when empty
+	canary     string     // the fake credentials' marker; a random one when empty
+	live       *liveRelay // a live mount: the guest mounts the Mac's folder instead of a copy
+}
+
+// liveRelay is where a live session's NFS goes: the Mac's server port, and
+// the token it answers to.
+type liveRelay struct {
+	port  int
+	token []byte
 }
 
 // mountCopy is one mount: a resolved Mac path and where it goes.
@@ -511,7 +519,10 @@ func packTree(tw *tar.Writer, src, prefix string, skip ignoreRules, total *int64
 func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) error {
 	tw := tar.NewWriter(w)
 	total := int64(0)
-	err := packTree(tw, dir, "skill", job.ignore, &total)
+	var err error
+	if job.live == nil { // a live session mounts the folder instead
+		err = packTree(tw, dir, "skill", job.ignore, &total)
+	}
 	var mountList strings.Builder
 	for i, m := range job.mounts {
 		if err == nil {
@@ -577,6 +588,10 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 			}
 			files = append(files, file{name, b.String(), 0o644})
 		}
+	}
+	if job.live != nil {
+		// live.token is outside sbox/: sbox-run keeps it off the guest's drive.
+		files = append(files, file{"sbox/live", fmt.Sprintf("%d\n", job.live.port), 0o644}, file{"live.token", string(job.live.token), 0o400})
 	}
 	if job.scan != "" {
 		files = append(files, file{"sbox/scan.sh", job.scan, 0o700})

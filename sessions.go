@@ -260,6 +260,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			}
 		}
 		_, _ = fmt.Fprintf(stderr, "sbox: attached to session %s, running %s\n", id, age(time.Since(live.Started)))
+		if cfg.live() { // the guest's mount needs its server: started again if it stopped
+			if _, err := host.liveServer(project, args[0]); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
+			}
+		}
 		if changed := configChanged(host.stateDir, project, id, cfg); len(changed) > 0 {
 			applied, rest := applyLive(ctx, vm, id, cfg, job, changed, stderr)
 			if len(applied) > 0 {
@@ -283,6 +288,12 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
 			return exitFail
 		}
+		if cfg.live() {
+			if job.live, err = host.liveServer(project, args[0]); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
+				return exitFail
+			}
+		}
 		var newDrive bool
 		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
 			return code
@@ -290,13 +301,18 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		if err := recordBoot(host.stateDir, project, id, job.canary, cfg); err != nil {
 			_, _ = fmt.Fprintln(stderr, "sbox: recording the session's config:", err)
 		}
+		// A live session works on the folder itself: no base, nothing to push.
 		if newDrive {
-			if err := recordBase(host.stateDir, project, args[0], syncRules(cfg.Dev.Ignore)); err != nil {
-				_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
+			if !cfg.live() {
+				if err := recordBase(host.stateDir, project, args[0], syncRules(cfg.Dev.Ignore)); err != nil {
+					_, _ = fmt.Fprintln(stderr, "sbox: recording the sync base:", err)
+				}
 			}
 			_, _ = fmt.Fprintln(stderr, "sbox: the root is read-only; install tools into the home (~/.local, rustup, uv python install, npm prefix ~/.local), which is kept between sessions")
-		} else if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, syncRules(cfg.Dev.Ignore), stderr); err != nil {
-			_, _ = fmt.Fprintln(stderr, "sbox: copying the Mac's changes in:", err)
+		} else if !cfg.live() {
+			if err := pushOnBoot(ctx, vm, id, args[0], project, host.stateDir, syncRules(cfg.Dev.Ignore), stderr); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: copying the Mac's changes in:", err)
+			}
 		}
 		if code := runHooks(ctx, id, cfg, false, *trace, stdout, stderr, vm); code != exitOK {
 			_, _ = fmt.Fprintf(stderr, "sbox: the terminal opens anyway; fix it there, then sbox setup-env %s\n", args[0])
@@ -326,14 +342,17 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	stopWatch, watched := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watched)
-		if host.title != nil {
+		if host.title != nil && !cfg.live() {
 			host.watchChanges(ctx, vm, id, project, syncRules(cfg.Dev.Ignore), stopWatch)
 		}
 	}()
 	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
 	close(stopWatch)
 	<-watched
-	unsynced := guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
+	unsynced := 0 // a live session's changes are on the Mac already
+	if !cfg.live() {
+		unsynced = guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
+	}
 	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm))
 	if *trace {
 		for _, phase := range []string{"setup", "terminal"} {
@@ -404,6 +423,17 @@ type devHost struct {
 	approve              func(lines []string) bool   // asks to allow refused requests for this project alone; refused outright when nil
 	title                func(string)                // sets the terminal's title; no change notice when nil
 	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
+	// startLive starts a live session's server, or finds it running, and
+	// returns where the guest's relay goes; startLiveServer when nil.
+	startLive func(project, dir string) (*liveRelay, error)
+}
+
+// liveServer starts or finds project's live server.
+func (h devHost) liveServer(project, dir string) (*liveRelay, error) {
+	if h.startLive != nil {
+		return h.startLive(project, dir)
+	}
+	return startLiveServer(h.stateDir, project, dir)
 }
 
 // watchChanges puts the count of the guest's unsynced changes in the

@@ -263,7 +263,7 @@ branch isn't merged before the workspace gating lands.
   id, `PUTROOTFH`/`PUTFH`/`GETFH`, `LOOKUP`/`LOOKUPP`, `GETATTR`,
   `ACCESS`, `READDIR`, `READLINK`, `OPEN` for reading, `READ`, `CLOSE`,
   `SAVEFH`/`RESTOREFH`, `SECINFO`, `RENEW`; handles; no symlink followed.
-- [ ] **2. The path to the guest, read.** `dev.mount: live` (ungated on the
+- [x] **2. The path to the guest, read.** `dev.mount: live` (ungated on the
   branch until 4), `sbox live-serve` with its token, the token-sending
   expose, the relay, the guest's mount. A VM test: the real guest kernel
   mounts it, lists, reads, sees a symlink only on its own side.

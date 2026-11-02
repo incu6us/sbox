@@ -90,7 +90,21 @@ echo "0 2147483647" >/proc/sys/net/ipv4/ping_group_range
 # work and is never overwritten. Only what this boot wrote is chowned, so
 # a kept home with node_modules isn't walked on every boot.
 chown runner:runner /home/runner
-if [ ! -e /home/runner/work ]; then
+# A live session mounts the Mac's folder itself over the work folder: sbox
+# live-serve on the Mac, through the relay on 172.16.0.1:2049, which may
+# still be starting. On a kept home an earlier copy stays underneath.
+if [ -s /drive/sbox/live ]; then
+	mkdir -p /home/runner/work
+	i=0
+	until mount -t nfs4 -o vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,hard,timeo=600 172.16.0.1:/ /home/runner/work 2>/dev/null; do
+		i=$((i + 1))
+		if [ "$i" -ge 30 ]; then
+			echo "sbox: the live mount didn't answer; ~/work is not the Mac's folder"
+			break
+		fi
+		sleep 1
+	done
+elif [ ! -e /home/runner/work ]; then
 	cp -a /drive/skill /home/runner/work
 	chown -R runner:runner /home/runner/work
 fi

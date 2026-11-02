@@ -254,6 +254,29 @@ func TestLoadConfigDevSize(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDevMount(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	none := filepath.Join(t.TempDir(), "none")
+	if cfg, err := loadConfig(none, write(t, "dev: {mount: live}\n")); err != nil || !cfg.live() {
+		t.Errorf("dev.mount live: live() %v, %v", cfg.live(), err)
+	}
+	for _, body := range []string{"dev: {}\n", "dev: {mount: copy}\n"} {
+		if cfg, err := loadConfig(none, write(t, body)); err != nil || cfg.live() {
+			t.Errorf("%q: live() %v, %v; want a copy", body, cfg.live(), err)
+		}
+	}
+	if _, err := loadConfig(none, write(t, "dev: {mount: nfs}\n")); err == nil || !strings.Contains(err.Error(), "dev.mount") {
+		t.Errorf("dev.mount nfs: %v, want a refusal naming the key", err)
+	}
+}
+
 func TestLoadConfigAgent(t *testing.T) {
 	t.Parallel()
 	write := func(t *testing.T, body string) string {

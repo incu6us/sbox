@@ -1456,3 +1456,54 @@ func TestWorkspacesOnVM(t *testing.T) {
 		t.Errorf("sbox run in client-a: %v, exit %d, %q %s", err, res.exitCode, runOut.String(), runErr.String())
 	}
 }
+
+// TestLiveMountOnVM: the real guest kernel mounts the Mac's folder through
+// sbox's NFS server: it lists and reads it, sees a symlink as its text
+// only (the Mac's side of it never followed), and sees a file the Mac
+// writes after boot.
+func TestLiveMountOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, outside := t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\n")
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello from the Mac\n")
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sub", "deep.txt"), "deep\n")
+	writeTestFile(t, filepath.Join(outside, "secret"), "the Mac's secret\n")
+	if err := os.Symlink(outside, filepath.Join(dir, "out")); err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
+		ln, err := serveLive(state, project, folder)
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		st, err := liveState(state, project)
+		return &liveRelay{port: st.port, token: st.token}, err
+	}}
+	go func() {
+		time.Sleep(20 * time.Second) // after the guest is up and waiting for it
+		writeTestFile(t, filepath.Join(dir, "late.txt"), "written on the Mac after boot\n")
+	}()
+	script := "cd ~/work && ls -a && cat README.md sub/deep.txt && readlink out; cat out/secret; mount | grep ' /home/runner/work '; " +
+		"for i in $(seq 1 120); do [ -f late.txt ] && cat late.txt && break; sleep 1; done"
+	var stdout, stderr bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &stderr, sboxRun, host); code != exitOK {
+		t.Fatalf("devMain: exit %d\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"README.md", "sub", "hello from the Mac", "deep", outside, "nfs4", "written on the Mac after boot"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, stderr.String())
+		}
+	}
+	if strings.Contains(out, "the Mac's secret") {
+		t.Errorf("the guest read through the symlink on the Mac:\n%s", out)
+	}
+}

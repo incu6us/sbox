@@ -98,6 +98,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return logMain(ctx, args[1:], stdout, stderr, sboxRun, time.Second)
 	case "watch":
 		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second)
+	case "live-serve": // started by sbox dev for a live mount; not in the usage
+		return liveServeMain(ctx, args[1:], stderr, hostStateDir(), sboxRun)
 	case "clean":
 		return cleanMain(ctx, args[1:], stdout, stderr, sboxRun, hostStateDir())
 	case "ps", "stop", "pause", "resume":

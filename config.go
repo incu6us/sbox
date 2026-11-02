@@ -38,6 +38,7 @@ type config struct {
 		Start       []string          `yaml:"start,omitempty"`       // steps run at every fresh boot; a trailing & runs one in the background
 		Command     string            `yaml:"command,omitempty"`     // run by sbox dev when no command is given; a login shell when unset
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
+		Mount       string            `yaml:"mount,omitempty"`       // copy (the default) or live: the Mac's folder itself (docs/live-mount.md)
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
 		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules, .gitignore and the like; ! takes one back
@@ -164,6 +165,9 @@ func changedKeys(was, now map[string]string) []string {
 	slices.Sort(changed)
 	return changed
 }
+
+// live reports whether sbox dev mounts the Mac's folder instead of a copy.
+func (c config) live() bool { return c.Dev.Mount == "live" }
 
 // devCommand is what sbox dev runs when given no command: "" for a login
 // shell.
@@ -326,6 +330,9 @@ func (cfg *config) merge(c config) {
 	if c.Dev.Command != "" {
 		cfg.Dev.Command = c.Dev.Command
 	}
+	if c.Dev.Mount != "" {
+		cfg.Dev.Mount = c.Dev.Mount
+	}
 	if c.Dev.Permissions != "" {
 		cfg.Dev.Permissions = c.Dev.Permissions
 	}
@@ -470,6 +477,9 @@ func (c *config) check() error {
 	}
 	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {
 		return fmt.Errorf("dev.permissions: %q: want skip or ask", p)
+	}
+	if m := c.Dev.Mount; m != "" && m != "copy" && m != "live" {
+		return fmt.Errorf("dev.mount: %q: want copy or live", m)
 	}
 	for _, rules := range [][]string{c.Permissions.Allow, c.Permissions.Deny, c.MCP.Allow, c.MCP.Deny} {
 		if slices.Contains(rules, "") {

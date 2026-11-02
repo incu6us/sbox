@@ -693,6 +693,66 @@ func TestRunTarCarriesPortsAndServices(t *testing.T) {
 	}
 }
 
+// TestSboxRunLiveMount: a live session's relay pair carries the guest's
+// NFS on 172.16.0.1:2049 to the Mac's server, the expose sending the
+// token first; the token never reaches the guest's drive.
+func TestSboxRunLiveMount(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee000000000009"
+	drive := filepath.Join(t.TempDir(), "drive")
+	nft := filepath.Join(t.TempDir(), "ruleset")
+	e.extra = []string{"FAKE_DRIVE_COPY=" + drive, "FAKE_NFT=" + nft}
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, live: &liveRelay{port: 49152, token: bytes.Repeat([]byte("t"), 32)}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	asVM := "--reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py")
+	for _, want := range []struct{ prog, call string }{
+		{"ip", "netns exec sbox-" + id + " setpriv " + asVM + " relay 172.16.0.1 2049 " + run + "/fwd/live-49152.sock"},
+		{"setpriv", asVM + " expose " + run + "/fwd/live-49152.sock host.lima.internal 49152 " + run + "/live.token"},
+		{"chown", "sbox-vm " + run + "/live.token"},
+	} {
+		if !slices.Contains(e.calls(want.prog), want.call) {
+			t.Errorf("%s calls %q lack %q", want.prog, e.calls(want.prog), want.call)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(drive, "live.token")); !os.IsNotExist(err) {
+		t.Errorf("the token is on the guest's drive (%v)", err)
+	}
+	if port, _ := os.ReadFile(filepath.Join(drive, "sbox", "live")); string(port) != "49152\n" {
+		t.Errorf("sbox/live %q, want the port", port)
+	}
+	if ruleset, _ := os.ReadFile(nft); !strings.Contains(string(ruleset), "172.16.0.1 . 2049") {
+		t.Errorf("2049 isn't in listening:\n%s", ruleset)
+	}
+}
+
+func TestRunTarCarriesLive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "big.bin"), []byte("project"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	job := guestJob{command: []string{"true"}, live: &liveRelay{port: 49152, token: bytes.Repeat([]byte("t"), 32)}}
+	if err := writeRunTar(&buf, dir, job, "n", "c"); err != nil {
+		t.Fatal(err)
+	}
+	files := tarFiles(t, buf.Bytes())
+	if files["sbox/live"] != "49152\n" || files["live.token"] != strings.Repeat("t", 32) {
+		t.Errorf("sbox/live %q, live.token %q", files["sbox/live"], files["live.token"])
+	}
+	if _, ok := files["skill/big.bin"]; ok {
+		t.Error("a live session's tar carries the project: the guest mounts it instead")
+	}
+}
+
 func TestSboxRunStartRefusesAPortInUse(t *testing.T) {
 	t.Parallel()
 	e := newSboxRunEnv(t)

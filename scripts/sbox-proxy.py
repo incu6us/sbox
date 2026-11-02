@@ -10,13 +10,15 @@ relay: inside a run's network namespace, forwards TCP connections on
        <address>:<port> to that unix socket. Unix sockets live on the
        filesystem, so the run's namespace still has no route out.
 expose: the other half: listens on a unix socket and connects each client
-       to <host>:<port>. A session's forwarded ports and services are a
+       to <host>:<port>, first sending a token file's bytes when one is
+       given (a live mount's server answers only after its session's
+       token). A session's forwarded ports, services and live mount are a
        relay and an expose joined by a socket, one in the run's namespace
        and one outside it.
 
 Usage: sbox-proxy.py serve <socket> <log file> [host:port ... | --rules <file>]
        sbox-proxy.py relay <address> <port> <socket>
-       sbox-proxy.py expose <socket> <host> <port>
+       sbox-proxy.py expose <socket> <host> <port> [token file]
 """
 import os
 import socket
@@ -197,7 +199,11 @@ def relay(address, port, sock_path):
         threading.Thread(target=splice, args=(client, upstream), daemon=True).start()
 
 
-def expose(sock_path, host, port):
+def expose(sock_path, host, port, token_path=None):
+    token = b""
+    if token_path:
+        with open(token_path, "rb") as f:
+            token = f.read()
     if os.path.exists(sock_path):
         os.unlink(sock_path)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -208,6 +214,7 @@ def expose(sock_path, host, port):
         try:
             upstream = socket.create_connection((host, port), timeout=10)
             upstream.settimeout(None)
+            upstream.sendall(token)
         except OSError:
             client.close()
             continue
@@ -245,6 +252,29 @@ def selftest():
         assert source.rules() == [("api.anthropic.com", 443), ("*.github.com", 443)], source.rules()
         os.unlink(path)
         assert source.rules() == [("api.anthropic.com", 443), ("*.github.com", 443)], "a missing file keeps the last rules"
+
+        # expose with a token file: each connection upstream starts with the
+        # token's bytes, then carries the client's.
+        token_path = os.path.join(d, "token")
+        with open(token_path, "wb") as f:
+            f.write(b"T" * 32)
+        upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream.bind(("127.0.0.1", 0))
+        upstream.listen(1)
+        sock_path = os.path.join(d, "expose.sock")
+        threading.Thread(target=expose, args=(sock_path, "127.0.0.1", upstream.getsockname()[1], token_path), daemon=True).start()
+        for _ in range(100):
+            if os.path.exists(sock_path):
+                break
+            threading.Event().wait(0.02)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(sock_path)
+        client.sendall(b"nfs")
+        conn, _ = upstream.accept()
+        got = b""
+        while len(got) < 35:
+            got += conn.recv(64)
+        assert got == b"T" * 32 + b"nfs", got
     print("ok")
 
 
@@ -261,7 +291,7 @@ if __name__ == "__main__":
         serve(args[1], args[2])
     elif len(args) == 4 and args[0] == "relay":
         relay(args[1], int(args[2]), args[3])
-    elif len(args) == 4 and args[0] == "expose":
-        expose(args[1], args[2], int(args[3]))
+    elif len(args) in (4, 5) and args[0] == "expose":
+        expose(args[1], args[2], int(args[3]), *args[4:])
     else:
         sys.exit(__doc__)

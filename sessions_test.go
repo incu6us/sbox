@@ -527,6 +527,47 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 	}
 }
 
+// TestDevMainLive: a live session gets the server's port and token
+// instead of the project, and nothing is synced at boot, since the guest
+// works on the folder itself.
+func TestDevMainLive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {mount: live}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var started []string
+	host := devHost{stateDir: t.TempDir(), startLive: func(project, folder string) (*liveRelay, error) {
+		started = append(started, project+" "+folder)
+		return &liveRelay{port: 4242, token: []byte("token")}, nil
+	}}
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if want := mustProjectID(t, dir) + " " + dir; !slices.Equal(started, []string{want}) {
+		t.Errorf("startLive calls %q, want %q", started, want)
+	}
+	files := tarFiles(t, vm.stdins[1])
+	if files["sbox/live"] != "4242\n" || files["live.token"] != "token" || files["skill/sbox.yaml"] != "" {
+		t.Errorf("run tar: sbox/live %q, live.token %q, skill/sbox.yaml %q", files["sbox/live"], files["live.token"], files["skill/sbox.yaml"])
+	}
+	for _, c := range vm.calls {
+		if c[0] == "attach" && len(c) > 2 && strings.Contains(strings.Join(c, " "), "tar") {
+			t.Errorf("a live session synced at boot: %q", c)
+		}
+	}
+	if _, err := loadBase(host.stateDir, mustProjectID(t, dir)); err == nil {
+		t.Error("a live session recorded a sync base")
+	}
+}
+
 func TestDevMainForwardsConfiguredPorts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
