@@ -70,3 +70,19 @@ func TestUsageListsEveryFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestVersion(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"version"}, &stdout, &stderr); code != exitOK || stdout.String() != "sbox "+sboxVersion()+"\n" {
+		t.Errorf("sbox version: exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	if v := sboxVersion(); v == "" {
+		t.Error("an empty version")
+	}
+	var help bytes.Buffer
+	run(nil, &bytes.Buffer{}, &help)
+	if !strings.Contains(help.String(), "\n  version ") {
+		t.Errorf("help lacks version:\n%s", help.String())
+	}
+}

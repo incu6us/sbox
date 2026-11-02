@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 )
 
@@ -17,6 +18,21 @@ const (
 	exitFail
 	exitUsage
 )
+
+// version is the release's tag, set by GoReleaser (-X main.version).
+var version = ""
+
+// sboxVersion is the release's tag, or the module version go install
+// recorded, or "dev" for a local build.
+func sboxVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -56,7 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			"  resume   continue a paused session: sbox resume <session-id>\n"+
 			"  log      print a session's console output; -f follows it, -blocked shows what was blocked, -start dev.start's background output: sbox log [-f] [-blocked | -start] <session-id>\n"+
 			"  watch    show what a session is blocked from, as it happens: sbox watch [session-id]\n"+
-			"  clean    remove every project's saved state (what sbox dev keeps): sbox clean\n")
+			"  clean    remove every project's saved state (what sbox dev keeps): sbox clean\n"+
+			"\n  version  print sbox's version: sbox version\n")
 		return exitUsage
 	}
 	if len(args) == 0 {
@@ -98,6 +115,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return logMain(ctx, args[1:], stdout, stderr, sboxRun, time.Second)
 	case "watch":
 		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second, hostStateDir())
+	case "version":
+		_, _ = fmt.Fprintln(stdout, "sbox", sboxVersion())
 	case "live-serve": // started by sbox dev for a live mount; not in the usage
 		return liveServeMain(ctx, args[1:], stderr, hostStateDir(), sboxRun)
 	case "clean":

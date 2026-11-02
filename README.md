@@ -59,6 +59,7 @@ sbox stop|pause|resume <session-id>
 sbox log [-f] [-blocked | -start] <session-id>
 sbox watch [session-id]
 sbox clean
+sbox version
 ```
 
 ### `sbox setup`
