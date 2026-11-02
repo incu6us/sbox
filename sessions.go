@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -297,6 +299,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				return exitFail
 			}
 		}
+		job.claudeKey = claudeKey(host.stateDir, project)
 		var newDrive bool
 		if id, newDrive, code = startSession(ctx, args[0], project, job, stderr, vm); code != exitOK {
 			return code
@@ -458,6 +461,41 @@ func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error)
 		relay.local = cfg.liveLocal()
 	}
 	return relay, err
+}
+
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	return b, err
+}
+
+// readOrMake returns p's content, writing make's (0600) when p is missing.
+func readOrMake(p string, make func() ([]byte, error)) ([]byte, error) {
+	b, err := os.ReadFile(p)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return b, err
+	}
+	if b, err = make(); err != nil {
+		return nil, err
+	}
+	return b, os.WriteFile(p, b, 0o600)
+}
+
+// claudeKey is project's key for the guest's settings mark, kept with the
+// project's other state. A session without one just merges at every boot.
+func claudeKey(stateDir, project string) string {
+	dir := filepath.Join(stateDir, "projects", project)
+	if os.MkdirAll(dir, 0o700) != nil {
+		return ""
+	}
+	key, err := readOrMake(filepath.Join(dir, "claude.key"), func() ([]byte, error) {
+		b, err := randomBytes(32)
+		return []byte(hex.EncodeToString(b)), err
+	})
+	if err != nil {
+		return ""
+	}
+	return string(key)
 }
 
 // liveProtectFile is the protect list a project's live server reads, again

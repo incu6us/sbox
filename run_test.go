@@ -109,7 +109,7 @@ func TestWriteRunTar(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeRunTar(&buf, dir, guestJob{command: []string{"sh", "-c", "it's"}}, "n0nce", "c4n4ry"); err != nil {
+	if err := writeRunTar(&buf, dir, guestJob{command: []string{"sh", "-c", "it's"}, claude: []byte("{}"), claudeKey: "k3y"}, "n0nce", "c4n4ry"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,6 +141,7 @@ func TestWriteRunTar(t *testing.T) {
 		{name: "skill/link", linkname: "scripts/a.sh"},
 		{name: "sbox/nonce", mode: 0o400, body: "n0nce"},
 		{name: "sbox/canary", mode: 0o400, body: "c4n4ry"},
+		{name: "sbox/claude.key", mode: 0o400, body: "k3y"},
 		{name: "sbox/init.sh", mode: 0o700, body: _guestInit},
 		{name: "sbox/cmd.sh", mode: 0o755, body: "#!/bin/sh\nexec 'sh' '-c' 'it'\\''s'\n"},
 	}

@@ -957,6 +957,29 @@ func TestDevMainAgentSettings(t *testing.T) {
 	if files["sbox/claude.json"] != string(cfg.claudeSettings()) || files["sbox/claude.py"] != _claudeScript {
 		t.Errorf("run tar: claude.json %q, claude.py %d bytes; want the settings and the helper", files["sbox/claude.json"], len(files["sbox/claude.py"]))
 	}
+
+	// The key that signs the guest's merge mark: one per project, kept.
+	state := t.TempDir()
+	key := func(dir string) string {
+		vm := fakeVM{answer: func(args []string) string {
+			if args[0] == "start" {
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, devHost{stateDir: state}); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		return tarFiles(t, vm.stdins[1])["sbox/claude.key"]
+	}
+	first := key(dir)
+	if len(first) != 64 || key(dir) != first {
+		t.Errorf("sbox/claude.key %q, then another; want 64 hex characters, the same each boot", first)
+	}
+	if key(t.TempDir()) == first {
+		t.Error("two projects share a key")
+	}
 }
 
 func TestDevMainPreflightAndSummary(t *testing.T) {

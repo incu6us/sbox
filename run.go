@@ -135,6 +135,7 @@ type guestJob struct {
 	vcpus      int               // the main microVM's size; 0 keeps sbox-run's default
 	memoryMiB  int
 	claude     []byte      // Claude Code settings for scripts/sbox-claude.py to merge in the guest
+	claudeKey  string      // root-only in the guest: signs the mark that lets a boot skip that merge
 	mounts     []mountCopy // Mac files and folders the guest init copies into the home
 	ignore     ignoreRules // what the project copy leaves out (sbox dev); everything when nil
 	// pauseAfter pauses a session when nothing has been connected to the
@@ -565,6 +566,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	if job.claude != nil {
 		files = append(files, file{"sbox/claude.json", string(job.claude), 0o644}, file{"sbox/claude.py", _claudeScript, 0o644})
+		if job.claudeKey != "" {
+			files = append(files, file{"sbox/claude.key", job.claudeKey, 0o400})
+		}
 	}
 	if job.pauseAfter > 0 {
 		files = append(files, file{"sbox/pause_after", fmt.Sprintf("%d\n", int(job.pauseAfter.Seconds())), 0o644})

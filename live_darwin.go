@@ -4,12 +4,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -61,24 +58,6 @@ func liveState(stateDir, project string) (liveFiles, error) {
 		return liveFiles{}, fmt.Errorf("%s: %w", filepath.Join(dir, "port"), err)
 	}
 	return st, nil
-}
-
-func randomBytes(n int) ([]byte, error) {
-	b := make([]byte, n)
-	_, err := rand.Read(b)
-	return b, err
-}
-
-// readOrMake returns p's content, writing make's (0600) when p is missing.
-func readOrMake(p string, make func() ([]byte, error)) ([]byte, error) {
-	b, err := os.ReadFile(p)
-	if !errors.Is(err, fs.ErrNotExist) {
-		return b, err
-	}
-	if b, err = make(); err != nil {
-		return nil, err
-	}
-	return b, os.WriteFile(p, b, 0o600)
 }
 
 // liveAccept serves srv on each connection from ln that starts with token,

@@ -1622,3 +1622,51 @@ func treeDigest(t *testing.T, dir string) string {
 	}
 	return b.String()
 }
+
+// TestSettingsMergeSkippedOnVM: with nothing changed, a boot leaves the
+// guest's Claude Code settings alone (the merge is a second of Python);
+// settings changed since, or a mark forged by the runner, are merged again;
+// and the runner can't read the key that signs the mark.
+func TestSettingsMergeSkippedOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "permissions: {deny: [WebFetch]}\n")
+	dev := func(script string) string {
+		t.Helper()
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, devHost{stateDir: state, userConfig: allowAll(t)}); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		return strings.TrimSpace(out.String())
+	}
+	const settings = "/home/runner/.claude/settings.json"
+	stamp := "stat -c %y " + settings
+	first := dev(stamp + "; cat /drive/sbox/claude.key 2>&1 | grep -c denied")
+	if !strings.HasSuffix(first, "\n1") {
+		t.Errorf("first boot: %q, want the runner refused the key", first)
+	}
+	first, _, _ = strings.Cut(first, "\n")
+	if again := dev(stamp); again != first {
+		t.Errorf("a boot with nothing changed rewrote the settings: %q, was %q", again, first)
+	}
+
+	const denied = `python3 -c 'import json; print(json.load(open("` + settings + `"))["permissions"]["deny"])'`
+	const weaken = `python3 -c 'import json; p = "` + settings + `"; d = json.load(open(p)); d["permissions"]["deny"] = []; json.dump(d, open(p, "w"))'`
+	dev(weaken)
+	if got := dev(denied); !strings.Contains(got, "WebFetch") {
+		t.Errorf("after the guest edited its settings: deny %q, want the config's back", got)
+	}
+	// The same, with a mark the runner made over what it could read.
+	dev(weaken + "; { cat /drive/sbox/claude.json " + settings + "; } | sha256sum > ~/.sbox/claude.mark")
+	if got := dev(denied); !strings.Contains(got, "WebFetch") {
+		t.Errorf("after a forged mark: deny %q, want the config's back", got)
+	}
+}

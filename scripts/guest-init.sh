@@ -174,10 +174,28 @@ fi
 
 # Dev sessions: Claude Code's permissions and MCP servers from the config,
 # merged into the runner's files by the runner, keeping Claude Code's own.
+# The merge is a second of Python, so a boot skips it when nothing changed:
+# no servers to keep in a file Claude Code rewrites, and the mark the last
+# merge left still matches. The mark is keyed with what only root reads, so
+# the runner can't forge one to keep settings it weakened. The runner's
+# files are read and written as the runner: root would follow its links.
+as_runner() { setpriv --reuid=runner --regid=runner --init-groups --reset-env "$@"; }
+claude_mark() {
+	{
+		cat /drive/sbox/claude.key /drive/sbox/claude.json
+		as_runner cat /home/runner/.claude/settings.json 2>/dev/null
+		cat /drive/sbox/claude.key
+	} | sha256sum
+}
 if [ -f /drive/sbox/claude.json ]; then
-	setpriv --reuid=runner --regid=runner --init-groups --reset-env \
-		python3 -I /drive/sbox/claude.py /drive/sbox/claude.json /home/runner 2>&1 ||
-		echo "sbox: could not write Claude Code's settings"
+	if ! [ -f /drive/sbox/claude.key ] || ! grep -q '"mcpServers":{}' /drive/sbox/claude.json ||
+		[ "$(claude_mark)" != "$(as_runner cat /home/runner/.sbox/claude.mark 2>/dev/null)" ]; then
+		if as_runner python3 -I /drive/sbox/claude.py /drive/sbox/claude.json /home/runner 2>&1; then
+			[ -f /drive/sbox/claude.key ] && claude_mark | as_runner sh -c 'mkdir -p /home/runner/.sbox && cat >/home/runner/.sbox/claude.mark'
+		else
+			echo "sbox: could not write Claude Code's settings"
+		fi
+	fi
 fi
 
 # Sessions: sshd on the tap address with the keys and host key that
