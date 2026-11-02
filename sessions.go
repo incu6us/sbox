@@ -47,9 +47,11 @@ func cleanMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 	if err := vm(ctx, nil, io.Discard, stderr, "clean"); err != nil {
 		return vmFailed(stderr, err)
 	}
-	if err := os.RemoveAll(filepath.Join(stateDir, "projects")); err != nil {
-		_, _ = fmt.Fprintln(stderr, "sbox:", err)
-		return exitFail
+	for _, d := range []string{"projects", "live"} { // live: the live servers' keys, tokens and logs
+		if err := os.RemoveAll(filepath.Join(stateDir, d)); err != nil {
+			_, _ = fmt.Fprintln(stderr, "sbox:", err)
+			return exitFail
+		}
 	}
 	_, _ = fmt.Fprintln(stdout, "removed every project's saved state")
 	return exitOK
@@ -289,6 +291,7 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			return exitFail
 		}
 		if cfg.live() {
+			_ = os.Remove(liveRefusedFile(host.stateDir, project)) // a new session's summary is its own
 			if job.live, err = host.liveServer(project, args[0], cfg); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
 				return exitFail
@@ -353,7 +356,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if !cfg.live() {
 		unsynced = guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore))
 	}
-	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm))
+	var refusals []string
+	if cfg.live() {
+		refusals = liveRefusals(host.stateDir, project)
+	}
+	_, _ = io.WriteString(stderr, collectSummary(ctx, id, args[0], started, unsynced, cfg, vm, refusals))
 	if *trace {
 		for _, phase := range []string{"setup", "terminal"} {
 			var out bytes.Buffer
@@ -780,7 +787,14 @@ func markApplied(stateDir, project, id string, cfg config, keys []string) error 
 // devJob is what a dev session runs: nothing but the guest's sshd, with
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
-	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: cfg.Dev.Env, secrets: secrets,
+	env := cfg.Dev.Env
+	if cfg.live() {
+		// Watchers poll (no inotify for the Mac's edits over NFS), and git
+		// doesn't try to write the read-only .git's index. dev.env wins.
+		env = map[string]string{"WATCHPACK_POLLING": "true", "CHOKIDAR_USEPOLLING": "1", "GIT_OPTIONAL_LOCKS": "0"}
+		maps.Copy(env, cfg.Dev.Env)
+	}
+	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: env, secrets: secrets,
 		vcpus: cmp.Or(cfg.Dev.VCPUs, cfg.VM.VCPUs), memoryMiB: cmp.Or(cfg.Dev.MemoryMiB, cfg.VM.MemoryMiB), claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore), pauseAfter: cfg.Dev.PauseAfter}
 }
 
@@ -802,12 +816,12 @@ func runHooks(ctx context.Context, id string, cfg config, force, trace bool, std
 // collectSummary asks the session what it saw (the helpers' events and the
 // guest's listening ports) and returns sessionSummary's lines; a session
 // that can't answer gets just the first line.
-func collectSummary(ctx context.Context, id, dir string, started time.Time, unsynced int, cfg config, vm sboxRunFunc) string {
+func collectSummary(ctx context.Context, id, dir string, started time.Time, unsynced int, cfg config, vm sboxRunFunc, extra []string) string {
 	var events, ss bytes.Buffer
 	_ = vm(ctx, nil, &events, io.Discard, "events", id)
 	_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
 	blocked := append(portLines(ss.String(), cfg.Ports), toolDenials(ctx, vm, id, started)...)
-	return sessionSummary(time.Since(started), dir, unsynced, parseEvents(events.String()), blocked)
+	return sessionSummary(time.Since(started), dir, unsynced, cfg.live(), parseEvents(events.String()), append(blocked, extra...))
 }
 
 // liveSession finds the project's running or paused session.

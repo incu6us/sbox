@@ -294,6 +294,9 @@ func TestLoadConfigLiveKeys(t *testing.T) {
 	if cfg, err := loadConfig(none, write(t, "dev: {mount: live}\n")); err != nil || !slices.Equal(cfg.liveLocal(), []string{"node_modules", ".venv"}) {
 		t.Errorf("default local %v, %v; want what copy mode leaves out", cfg.liveLocal(), err)
 	}
+	if keys := cfg.bootKeys(); keys["dev.mount"] != `"live"` || keys["dev.local"] != `["node_modules",".next"]` {
+		t.Errorf("bootKeys dev.mount %s, dev.local %s; a change needs a new session", keys["dev.mount"], keys["dev.local"])
+	}
 	for _, tt := range []struct{ body, key string }{
 		{"dev: {local: [../x]}\n", "dev.local"},
 		{"dev: {local: [/abs]}\n", "dev.local"},

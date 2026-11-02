@@ -484,6 +484,10 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 	if err != nil {
 		return configFailed(stderr, err)
 	}
+	if cfg.live() {
+		_, _ = fmt.Fprintln(stdout, "live: the guest works on the folder itself, nothing to sync")
+		return exitOK
+	}
 	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
 	if _, err := loadBase(stateDir, project); err != nil {
 		_, _ = fmt.Fprintf(stderr, "sbox: no sync base for %s: sbox dev records one when it first copies the project in (sbox dev -fresh starts over)\n", dir)

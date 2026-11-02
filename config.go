@@ -147,6 +147,13 @@ func (c config) bootKeys() map[string]string {
 		"dev.vcpus": c.Dev.VCPUs, "dev.memory_mib": c.Dev.MemoryMiB, "dev.permissions": c.Dev.Permissions, "dev.pause_after": c.Dev.PauseAfter,
 		"permissions": c.Permissions, "mcp": c.MCP,
 	}
+	// Only when set, so sessions recorded before these keys still match.
+	if c.Dev.Mount != "" {
+		keys["dev.mount"] = c.Dev.Mount
+	}
+	if len(c.Dev.Local) > 0 {
+		keys["dev.local"] = c.Dev.Local
+	}
 	out := make(map[string]string, len(keys))
 	for k, v := range keys {
 		data, _ := json.Marshal(v) // maps, slices and strings: never fails; map keys come out sorted
@@ -162,6 +169,11 @@ func changedKeys(was, now map[string]string) []string {
 	for k, v := range now {
 		if was[k] != v {
 			changed = append(changed, k)
+		}
+	}
+	for k := range was {
+		if _, ok := now[k]; !ok {
+			changed = append(changed, k) // a key that is gone, dev.mount back to a copy
 		}
 	}
 	slices.Sort(changed)

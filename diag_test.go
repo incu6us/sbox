@@ -81,14 +81,39 @@ LISTEN 0 511 0.0.0.0:80 0.0.0.0:*
 
 func TestSessionSummary(t *testing.T) {
 	t.Parallel()
-	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", 3, parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
+	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", 3, false, parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
 	for _, want := range []string{"session 2h5m · the guest has 3 changes: sbox sync ./app", "egress   api.anthropic.com:443 ×2", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary lacks %q:\n%s", want, got)
 		}
 	}
-	if quiet := sessionSummary(time.Minute, "./app", 0, parseEvents(""), nil); !strings.Contains(quiet, "nothing to sync") || strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
+	if quiet := sessionSummary(time.Minute, "./app", 0, false, parseEvents(""), nil); !strings.Contains(quiet, "nothing to sync") || strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
 		t.Errorf("a quiet session's summary %q, want just the first line", quiet)
+	}
+	if live := sessionSummary(time.Minute, "./app", 0, true, parseEvents(""), nil); live != "session 1m · live: the changes are on the Mac already\n" {
+		t.Errorf("a live session's summary %q", live)
+	}
+}
+
+// TestLiveRefusals: the live server's refusals, one BLOCKED line per path
+// in the order first refused, each with its operations counted.
+func TestLiveRefusals(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	const project = "0011223344556677"
+	if got := liveRefusals(state, project); len(got) != 0 {
+		t.Errorf("no log: %q", got)
+	}
+	if err := os.MkdirAll(filepath.Dir(liveRefusedFile(state, project)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, liveRefusedFile(state, project), "open .git/config\nwrite .git/config\nopen .git/config\ncreate .envrc\n")
+	want := []string{
+		"BLOCKED live    .git/config  read-only in a live session (open ×2, write ×1)",
+		"BLOCKED live    .envrc  read-only in a live session (create ×1)",
+	}
+	if got := liveRefusals(state, project); !slices.Equal(got, want) {
+		t.Errorf("liveRefusals =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -208,7 +233,12 @@ func TestWatchMain(t *testing.T) {
 	t.Parallel()
 	vm := &eventsVM{rounds: 3}
 	var stdout, stderr bytes.Buffer
-	if code := watchMain(context.Background(), nil, &stdout, &stderr, vm.run, time.Millisecond); code != exitOK {
+	state := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(liveRefusedFile(state, "0011223344556677")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, liveRefusedFile(state, "0011223344556677"), "write .git/config\n")
+	if code := watchMain(context.Background(), nil, &stdout, &stderr, vm.run, time.Millisecond, state); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	got := strings.Split(strings.TrimSpace(stdout.String()), "\n")
@@ -216,6 +246,7 @@ func TestWatchMain(t *testing.T) {
 		"watching session 0123abcd (Ctrl-C to stop)",
 		"BLOCKED egress  a.example:443 ×1  not in egress",
 		"BLOCKED port    3000  listening on loopback only, the forward can't reach it → listen on 0.0.0.0 (e.g. --host 0.0.0.0)",
+		"BLOCKED live    .git/config  read-only in a live session (write ×1)",
 		"BLOCKED egress  b.example:443 ×1  not in egress",
 		"BLOCKED tool    Bash ×1  rejected at the prompt",
 		"BLOCKED egress  b.example:443 ×2  not in egress",
@@ -224,7 +255,7 @@ func TestWatchMain(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("watch printed\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if code := watchMain(context.Background(), []string{"x", "y"}, &stdout, &stderr, vm.run, time.Millisecond); code != exitUsage {
+	if code := watchMain(context.Background(), []string{"x", "y"}, &stdout, &stderr, vm.run, time.Millisecond, state); code != exitUsage {
 		t.Errorf("two args: exit %d, want usage", code)
 	}
 }

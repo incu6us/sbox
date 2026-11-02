@@ -467,14 +467,21 @@ func TestCleanMain(t *testing.T) {
 	if err := os.WriteFile(base, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	live := liveProtectFile(state, "abc")
+	if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, live, "x\n")
 	vm := fakeVM{}
 	var stdout, stderr bytes.Buffer
 	if code := cleanMain(context.Background(), nil, &stdout, &stderr, vm.run, state); code != exitOK ||
 		!slices.EqualFunc(vm.calls, [][]string{{"clean"}}, slices.Equal) || !strings.Contains(stdout.String(), "removed") {
 		t.Errorf("sbox clean: exit %d, calls %q, stdout %q", code, vm.calls, stdout.String())
 	}
-	if _, err := os.Stat(filepath.Join(state, "projects")); !os.IsNotExist(err) {
-		t.Errorf("the Mac's project state is still there (%v); want it removed with the VM's", err)
+	for _, d := range []string{"projects", "live"} {
+		if _, err := os.Stat(filepath.Join(state, d)); !os.IsNotExist(err) {
+			t.Errorf("the Mac's %s state is still there (%v); want it removed with the VM's", d, err)
+		}
 	}
 	if _, err := os.Stat(state); err != nil {
 		t.Errorf("the state folder itself went too: %v", err)
@@ -537,9 +544,20 @@ func TestDevMainLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	var started []string
-	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
+	state := t.TempDir()
+	stale := liveRefusedFile(state, mustProjectID(t, dir))
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, stale, "write from-an-earlier-session\n")
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
 		started = append(started, project+" "+folder)
-		return &liveRelay{port: 4242, token: []byte("token")}, nil
+		f, err := os.OpenFile(liveRefusedFile(state, project), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		if err == nil {
+			_, _ = f.WriteString("write .git/config\n") // as the server does when the guest is refused
+			_ = f.Close()
+		}
+		return &liveRelay{port: 4242, token: []byte("token")}, err
 	}}
 	vm := fakeVM{answer: func(args []string) string {
 		if args[0] == "start" {
@@ -568,6 +586,45 @@ func TestDevMainLive(t *testing.T) {
 	}
 	if _, err := loadBase(host.stateDir, mustProjectID(t, dir)); err == nil {
 		t.Error("a live session recorded a sync base")
+	}
+	for _, kv := range []string{"WATCHPACK_POLLING=true", "CHOKIDAR_USEPOLLING=1", "GIT_OPTIONAL_LOCKS=0"} {
+		if !strings.Contains(files["sbox/env"], kv+"\n") {
+			t.Errorf("sbox/env lacks %s:\n%s", kv, files["sbox/env"])
+		}
+	}
+	for _, want := range []string{"live: the changes are on the Mac already", "BLOCKED live    .git/config  read-only in a live session (write ×1)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "from-an-earlier-session") {
+		t.Errorf("an earlier session's refusals are in this one's summary:\n%s", stderr.String())
+	}
+
+	// Attached again, the server is started again if it stopped.
+	running := fakeVM{answer: func(args []string) string {
+		if args[0] == "ps" {
+			return "abcdef0123456789 running 1700000000 " + mustProjectID(t, dir) + "\n"
+		}
+		return ""
+	}}
+	started = nil
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, running.run, host); code != exitOK || len(started) != 1 {
+		t.Errorf("reattach: exit %d, startLive calls %q\n%s", code, started, stderr.String())
+	}
+}
+
+// TestSyncLive: a live session has nothing to sync, and sbox sync says so.
+func TestSyncLive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\n")
+	vm := fakeVM{}
+	var stdout, stderr bytes.Buffer
+	if code := syncMain(context.Background(), []string{dir}, &stdout, &stderr, vm.run, devHost{stateDir: t.TempDir(), userConfig: allowAll(t)}); code != exitOK ||
+		len(vm.calls) != 0 || !strings.Contains(stdout.String(), "live: the guest works on the folder itself, nothing to sync") {
+		t.Errorf("sbox sync on a live project: exit %d, calls %q, stdout %q, stderr %q", code, vm.calls, stdout.String(), stderr.String())
 	}
 }
 

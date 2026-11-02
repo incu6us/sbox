@@ -89,11 +89,11 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
    ──▶ sbox live-serve (checks the token, then speaks NFS)
 ```
 
-- **The server is sbox itself**, a hidden `sbox live-serve <session>`
-  started in the background by `sbox dev`, serving that session's project
-  folder only, as you. It outlives the terminal, like the session, and
-  exits when the session is gone (`sbox stop`, the exit prompt, or the
-  session missing on a periodic check).
+- **The server is sbox itself**, a hidden `sbox live-serve <project> <dir>`
+  started in the background by `sbox dev`, serving that project folder
+  only, as you. It outlives the terminal, like the session, and exits
+  once the project has had no session for two checks 30 s apart; a
+  session started meanwhile reuses it.
 - **It listens on the Mac's loopback only, and answers only after a token.**
   The relay pair is the one `services` already use: a relay inside the
   session's namespace on `172.16.0.1:2049` (2049 joins `listening`) and an
@@ -190,8 +190,8 @@ in the guest is left for later.
   folder itself, nothing to sync` and exits 0.
 - The summary's `session 1h12m · sbox sync … shows what changed` becomes
   `session 1h12m · live, changes are on the Mac`.
-- `sbox stop` stops the server and the relay pair with the
-  session.
+- `sbox stop` stops the relay pair with the session, and the server
+  stops itself within a minute.
 
 ## Spike results (2026-11-02)
 
@@ -287,9 +287,12 @@ branch isn't merged before the workspace gating lands.
 - [x] **4. Workspace gating and the other keys.** `mount` grant,
   `allow.live`, BLOCKED and approve-once, `dev.local`, `protect`,
   `sbox config` output.
-- [ ] **5. Host side.** No copy or push at boot, `sync` and the summary,
+- [x] **5. Host side.** No copy or push at boot, `sync` and the summary,
   `-restart` on a mode change, the server restarted on reattach on its
-  port, stopped with the session.
+  port; it stops itself within a minute of its session (two `ps` checks
+  30 s apart), and a session started meanwhile reuses it. Refusals are
+  BLOCKED lines in the summary and `sbox watch`; `sbox clean` removes the
+  live servers' state.
 - [ ] **6. Docs, timings and the real VM.** README section with the
   trade-off in plain words, `docs/config.md`, `MILESTONE.md`; timings
   against copy mode on the Next.js app (`git status`, `npm ci` with

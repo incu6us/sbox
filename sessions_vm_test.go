@@ -723,7 +723,7 @@ sleep 2`
 	wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var watched bytes.Buffer
-	if code := watchMain(wctx, []string{kept}, &watched, io.Discard, sboxRun, time.Second); code != exitOK ||
+	if code := watchMain(wctx, []string{kept}, &watched, io.Discard, sboxRun, time.Second, t.TempDir()); code != exitOK ||
 		!strings.Contains(watched.String(), "example.com:443") || !strings.Contains(watched.String(), "BLOCKED port    5173") {
 		t.Errorf("sbox watch: exit %d:\n%s", code, watched.String())
 	}
@@ -1478,6 +1478,13 @@ func TestLiveMountOnVM(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "out")); err != nil {
 		t.Fatal(err)
 	}
+	// A repository made on the Mac: git in the guest reads it through the
+	// read-only .git.
+	for _, args := range [][]string{{"init", "-q"}, {"add", "README.md"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "first"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
 	state := t.TempDir()
 	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
 		ln, err := serveLive(state, project, folder)
@@ -1493,16 +1500,20 @@ func TestLiveMountOnVM(t *testing.T) {
 		writeTestFile(t, filepath.Join(dir, "late.txt"), "written on the Mac after boot\n")
 	}()
 	script := "cd ~/work && ls -a && cat README.md sub/deep.txt && readlink out; cat out/secret; mount | grep ' /home/runner/work '; " +
+		"git log --oneline | grep -c first; git status --short 2>&1 | grep -c 'sub/'; " +
 		"for i in $(seq 1 120); do [ -f late.txt ] && cat late.txt && break; sleep 1; done"
 	var stdout, stderr bytes.Buffer
 	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &stderr, sboxRun, host); code != exitOK {
 		t.Fatalf("devMain: exit %d\n%s\n%s", code, stdout.String(), stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"README.md", "sub", "hello from the Mac", "deep", outside, "nfs4", "written on the Mac after boot"} {
+	for _, want := range []string{"README.md", "sub", "hello from the Mac", "deep", outside, "nfs4", "written on the Mac after boot", "\n1\n1\n"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, stderr.String())
 		}
+	}
+	if !strings.Contains(stderr.String(), "live: the changes are on the Mac already") {
+		t.Errorf("the summary doesn't say the session was live:\n%s", stderr.String())
 	}
 	if strings.Contains(out, "the Mac's secret") {
 		t.Errorf("the guest read through the symlink on the Mac:\n%s", out)
@@ -1573,6 +1584,11 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 	for _, p := range []string{".envrc", "pw", "git-old"} {
 		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
 			t.Errorf("%s exists on the Mac: %v", p, err)
+		}
+	}
+	for _, want := range []string{"BLOCKED live    .git/config  read-only in a live session", "BLOCKED live    .envrc  read-only in a live session", "BLOCKED live    pw  read-only"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("the summary lacks %q:\n%s", want, stderr.String())
 		}
 	}
 	// dev.local's default: node_modules is the guest's own, kept on its disk.

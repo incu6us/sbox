@@ -97,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "log":
 		return logMain(ctx, args[1:], stdout, stderr, sboxRun, time.Second)
 	case "watch":
-		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second)
+		return watchMain(ctx, args[1:], stdout, stderr, sboxRun, 2*time.Second, hostStateDir())
 	case "live-serve": // started by sbox dev for a live mount; not in the usage
 		return liveServeMain(ctx, args[1:], stderr, hostStateDir(), sboxRun)
 	case "clean":

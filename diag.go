@@ -195,9 +195,11 @@ func portLines(ss string, forwarded []int) []string {
 
 // sessionSummary is what sbox dev prints when the terminal closes;
 // unsynced is the guest's changes not yet synced, -1 when unknown.
-func sessionSummary(ran time.Duration, dir string, unsynced int, ev sessionEvents, ports []string) string {
+func sessionSummary(ran time.Duration, dir string, unsynced int, live bool, ev sessionEvents, ports []string) string {
 	var b strings.Builder
 	switch {
+	case live:
+		fmt.Fprintf(&b, "session %s · live: the changes are on the Mac already\n", age(ran))
 	case unsynced > 0:
 		fmt.Fprintf(&b, "session %s · the guest has %d %s: sbox sync %s\n", age(ran), unsynced, plural(unsynced, "change", "changes"), dir)
 	case unsynced == 0:
@@ -212,6 +214,46 @@ func sessionSummary(ran time.Duration, dir string, unsynced int, ev sessionEvent
 		b.WriteString(line + "\n")
 	}
 	return b.String()
+}
+
+// liveRefusedFile is where a project's live server logs each refused
+// change, "op path" per line; a new session starts it empty.
+func liveRefusedFile(stateDir, project string) string {
+	return filepath.Join(stateDir, "live", project, "refused")
+}
+
+// liveRefusals is the live server's log as BLOCKED lines: one per path, in
+// the order first refused, its operations counted.
+func liveRefusals(stateDir, project string) []string {
+	data, err := os.ReadFile(liveRefusedFile(stateDir, project))
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	ops := map[string][]string{}
+	counts := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		op, p, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		if _, seen := ops[p]; !seen {
+			paths = append(paths, p)
+		}
+		if counts[p+" "+op] == 0 {
+			ops[p] = append(ops[p], op)
+		}
+		counts[p+" "+op]++
+	}
+	var lines []string
+	for _, p := range paths {
+		var each []string
+		for _, op := range ops[p] {
+			each = append(each, fmt.Sprintf("%s ×%d", op, counts[p+" "+op]))
+		}
+		lines = append(lines, fmt.Sprintf("BLOCKED live    %s  read-only in a live session (%s)", p, strings.Join(each, ", ")))
+	}
+	return lines
 }
 
 // egressAllows reports whether the egress rules let the guest reach
@@ -345,19 +387,19 @@ func readMCPJSON(dir string) map[string]mcpServer {
 // watchMain implements `sbox watch [id]`: a running session's BLOCKED
 // lines as they appear or their counts change, until it ends. With no id,
 // the one live session.
-func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, every time.Duration) int {
+func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm sboxRunFunc, every time.Duration, stateDir string) int {
 	if len(args) > 1 {
 		_, _ = fmt.Fprintln(stderr, "usage: sbox watch [session-id]")
 		return exitUsage
 	}
-	var id string
+	var ps bytes.Buffer
+	if err := vm(ctx, nil, &ps, stderr, "ps"); err != nil {
+		return vmFailed(stderr, err)
+	}
+	var id, project string
 	if len(args) == 1 {
 		id = args[0]
 	} else {
-		var ps bytes.Buffer
-		if err := vm(ctx, nil, &ps, stderr, "ps"); err != nil {
-			return vmFailed(stderr, err)
-		}
 		var live []string
 		for _, s := range parseSessions(ps.String()) {
 			if s.State != "exited" {
@@ -369,6 +411,11 @@ func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 			return exitUsage
 		}
 		id = live[0]
+	}
+	for _, s := range parseSessions(ps.String()) {
+		if s.ID == id {
+			project = s.Project // a live mount's refusals are logged by project
+		}
 	}
 	if !_sessionID.MatchString(id) {
 		_, _ = fmt.Fprintf(stderr, "sbox: %q is not a session id (sbox ps lists them)\n", id)
@@ -388,6 +435,9 @@ func watchMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm 
 		_ = vm(ctx, strings.NewReader(""), &ss, io.Discard, "attach", id, "--", "ss", "-Hltn")
 		ev := parseEvents(events.String())
 		lines := append(ev.blocked(), portLines(ss.String(), ev.ports)...)
+		if project != "" {
+			lines = append(lines, liveRefusals(stateDir, project)...)
+		}
 		for _, line := range append(lines, toolDenials(ctx, vm, id, since)...) {
 			f := strings.Fields(line)
 			key := strings.Join(f[:min(3, len(f))], " ")
