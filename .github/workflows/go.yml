@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches:
+      - "*"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          args: --build-tags vm
+
+  build:
+    # macOS runs the shell tests under bash 3.2, Linux under bash 5 (the VM's).
+    strategy:
+      matrix:
+        os: [ macos-latest, ubuntu-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet -tags vm ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Build
+        run: GOOS=darwin GOARCH=arm64 go build -v .

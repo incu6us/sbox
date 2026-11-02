@@ -1,0 +1,56 @@
+version: 2
+
+env:
+  - CGO_ENABLED=0
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  # sbox needs Apple Silicon M3 or later (nested virtualization).
+  - binary: sbox
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  prerelease: auto
+  # Re-running a release job would otherwise die on 422 already_exists.
+  mode: replace
+  github:
+    owner: incu6us
+    name: sbox
+
+homebrew_casks:
+  - name: sbox
+    repository:
+      owner: incu6us
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: incu6us
+      email: vyacheslavpryimak@gmail.com
+    homepage: "https://github.com/incu6us/sbox"
+    description: "Run projects and AI agents in Firecracker microVMs on macOS"
+    # The binary is not signed/notarized, so Gatekeeper would quarantine it.
+    hooks:
+      post:
+        install_steps: |
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/sbox"]

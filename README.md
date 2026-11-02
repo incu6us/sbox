@@ -31,9 +31,13 @@ macOS ── limactl ──▶ Lima VM "sbox" (vz, nested virtualization, no hos
 ## Install
 
 ```sh
-go install github.com/incu6us/sbox@latest   # or, from a clone: go build -o sbox .
+brew trust --cask incu6us/tap/sbox   # Homebrew 7 loads casks from other taps only once trusted
+brew install --cask incu6us/tap/sbox
 sbox setup
 ```
+
+Or with Go: `go install github.com/incu6us/sbox@latest`, or from a clone
+`go build -o sbox .`.
 
 ## Commands
 
