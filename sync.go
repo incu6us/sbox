@@ -815,6 +815,26 @@ func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir 
 	if err != nil {
 		return nil
 	}
+	host, err := readManifest(dir, rules)
+	if err != nil {
+		return err
+	}
+	// Sync leaves .git out, so the guest's history would stop at the
+	// drive's first boot: the Mac's replaces it, guest commits included.
+	// ponytail: copied whole every boot; compare a fingerprint if a big
+	// .git makes boots slow.
+	copyGit := func() error {
+		if info, err := os.Lstat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {
+			return nil
+		}
+		return copyMounts(ctx, vm, id, []mountCopy{{filepath.Join(dir, ".git"), "/home/runner/work/.git"}}, stderr)
+	}
+	// Nothing changed on the Mac: nothing to push, so the guest's project
+	// isn't read, whatever its size. The terminal's title and the exit
+	// summary count the guest's own changes.
+	if maps.Equal(host, base) {
+		return copyGit()
+	}
 	tmp, err := os.MkdirTemp("", "sbox-sync-")
 	if err != nil {
 		return err
@@ -825,10 +845,6 @@ func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir 
 		return err
 	}
 	guest, err := readManifest(pulled, rules)
-	if err != nil {
-		return err
-	}
-	host, err := readManifest(dir, rules)
 	if err != nil {
 		return err
 	}
@@ -845,14 +861,8 @@ func pushOnBoot(ctx context.Context, vm sboxRunFunc, id, dir, project, stateDir 
 	if err := applyPushes(ctx, vm, id, dir, pushes, host, stderr); err != nil {
 		return err
 	}
-	// Sync leaves .git out, so the guest's history would stop at the
-	// drive's first boot: the Mac's replaces it, guest commits included.
-	// ponytail: copied whole every boot; compare a fingerprint if a big
-	// .git makes boots slow.
-	if info, err := os.Lstat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
-		if err := copyMounts(ctx, vm, id, []mountCopy{{filepath.Join(dir, ".git"), "/home/runner/work/.git"}}, stderr); err != nil {
-			return err
-		}
+	if err := copyGit(); err != nil {
+		return err
 	}
 	if err := saveBase(stateDir, project, nextBase(base, pushes, host, guest)); err != nil {
 		return err

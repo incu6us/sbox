@@ -846,3 +846,44 @@ func TestRunChangesMounts(t *testing.T) {
 		t.Errorf("-patch: exit %d, %q; want a word about the mount left out", code, errOut.String())
 	}
 }
+
+// TestPushOnBootNothingToPush: with the Mac's files as the base has them,
+// nothing in the guest's project is read (its size would be a boot's cost;
+// the terminal's title and the exit summary count the guest's changes), and
+// .git is still copied in.
+func TestPushOnBootNothingToPush(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "a.txt"), "a\n")
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, ".git", "HEAD"), "ref\n")
+	project := mustProjectID(t, dir)
+	rules := syncRules(nil)
+	if err := recordBase(state, project, dir, rules); err != nil {
+		t.Fatal(err)
+	}
+	base, err := loadBase(state, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := fakeVM{}
+	var stderr bytes.Buffer
+	if err := pushOnBoot(context.Background(), vm.run, "abc", dir, project, state, rules, &stderr); err != nil {
+		t.Fatalf("pushOnBoot: %v\n%s", err, stderr.String())
+	}
+	var script string
+	for _, c := range vm.calls {
+		script += strings.Join(c, " ") + "\n"
+	}
+	if strings.Contains(script, pullScript(rules)) || strings.Contains(script, sumScript(rules)) {
+		t.Errorf("the guest's project was read:\n%s", script)
+	}
+	if !strings.Contains(script, ".git") {
+		t.Errorf(".git wasn't copied in:\n%s", script)
+	}
+	if after, err := loadBase(state, project); err != nil || !maps.Equal(after, base) {
+		t.Errorf("base after: %v, %v; want it unchanged", after, err)
+	}
+}
