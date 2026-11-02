@@ -121,6 +121,11 @@ terminal to ask on, the session stops at exit. The terminal is
 real (colours, Ctrl-C, full-screen programs); it runs over SSH inside the
 VM, with a key made per session and the guest's host key pinned.
 
+A session on a project usually resumes a snapshot of a parked guest instead
+of booting one (taken in the background the first time a size is used, about
+65 MB; it holds nothing of any session's, and `sbox setup` rebuilding the image
+replaces it). A small project takes about 2.5 s from `sbox dev` to your command.
+
 The runner's home is kept per project between `sbox dev` sessions: the
 copy of the project and what was done to it, the agent's own state,
 caches, anything installed in the home. The project is copied in only the

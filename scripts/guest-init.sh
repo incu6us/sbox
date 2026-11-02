@@ -4,6 +4,14 @@
 # command runs as the unprivileged runner user, then the VM powers off.
 # Markers carry the run's nonce, readable by root only, so the command
 # can't print a fake result.
+# Resumed from a snapshot, the guest has the snapshot's clock and random
+# state, like every other guest from it: set the one, and mix in fresh bytes
+# and reseed the other before anything draws from it (RNDRESEEDCRNG, 0x5207).
+if [ -f /drive/sbox/seed ]; then
+	date -s "@$(cat /drive/sbox/now)" >/dev/null
+	cat /drive/sbox/seed >/dev/urandom
+	perl -e 'open(my $f, ">", "/dev/urandom") and ioctl($f, 0x5207, 0)'
+fi
 nonce=$(cat /drive/sbox/nonce)
 canary=$(cat /drive/sbox/canary)
 phase=main

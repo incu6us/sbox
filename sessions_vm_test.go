@@ -1702,3 +1702,59 @@ func TestWorkDriveMountOnVM(t *testing.T) {
 		t.Errorf("the console complains about a drive:\n%s", console.String())
 	}
 }
+
+// TestSnapshotRestoreOnVM: a session on a project resumes a snapshot of its
+// size: the console shows the load, the clock is the Mac's, two guests draw
+// different random numbers, and the session is a working one (its own
+// project, kept home, network).
+func TestSnapshotRestoreOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	if err := sboxRun(ctx, nil, io.Discard, io.Discard, "snapshot", "2", "1024"); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	session := func(name string) (string, string) {
+		dir := t.TempDir()
+		project, err := projectID(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+		writeTestFile(t, filepath.Join(dir, "name.txt"), name+"\n")
+		var kept string
+		host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), keep: func(id string, _ int) bool { kept = id; return true }}
+		script := `cat name.txt; date +%s; od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; echo; test -w ~ && echo home-ok; ping -c1 -W2 172.16.0.1 >/dev/null && echo net-ok`
+		var out, errOut bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &errOut, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev: exit %d: %s%s", code, out.String(), errOut.String())
+		}
+		t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "stop", kept) })
+		return kept, out.String()
+	}
+	idA, outA := session("first")
+	idB, outB := session("second")
+	var console bytes.Buffer
+	if err := sboxRun(ctx, nil, &console, io.Discard, "log", idA); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(console.String(), "load snapshot") {
+		t.Errorf("session %s booted instead of resuming:\n%s", idA, console.String())
+	}
+	check := func(out, name string) string {
+		t.Helper()
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) != 5 || lines[0] != name || lines[3] != "home-ok" || lines[4] != "net-ok" {
+			t.Fatalf("guest output %q", out)
+		}
+		secs, err := strconv.ParseInt(lines[1], 10, 64)
+		if d := time.Now().Unix() - secs; err != nil || d < -2 || d > 30 {
+			t.Errorf("guest clock %s: %d s from the Mac's (%v)", lines[1], d, err)
+		}
+		return lines[2]
+	}
+	if a, b := check(outA, "first"), check(outB, "second"); a == b {
+		t.Errorf("two restored guests drew the same random bytes: %s (sessions %s, %s)", a, idA, idB)
+	}
+}

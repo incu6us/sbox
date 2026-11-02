@@ -736,6 +736,22 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     again on reattach after it died, another session's connection closed
     for lack of the token, the server stopping itself after its session.
 
+- ✅ A faster start (2026-11-02, M4 Pro, small project, `sbox dev <dir> --
+  true`): 5.5 s to 3.4 s; before the command, about 4.1 s to about 2.5 s.
+  - A boot skips the 1 s Python merge of Claude Code's settings when nothing
+    changed, on a mark keyed with what only guest root reads, so the runner
+    can't forge one to keep settings it weakened.
+  - `pushOnBoot` doesn't read the guest's project when the Mac's files match
+    the base (0.5 s here, and it grew with the project).
+  - One SSH connection per session (0.2 s a handshake), gone 10 s after its
+    last user so idle pause still sees an idle guest.
+  - The exit summary's calls run together, and the tool-denial check starts
+    Python only when a transcript was written.
+  - The kept home is mounted from its device with `noatime`.
+  - Sessions on a project resume a Firecracker snapshot
+    ([docs/snapshots.md](docs/snapshots.md)): 2.26 s to 2.0 s for
+    `sbox-run start`, since restored guests pay a page fault per first touch.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

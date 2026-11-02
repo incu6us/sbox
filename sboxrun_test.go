@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,16 +18,26 @@ import (
 // _fakes stand in for the VM's tools when sbox-run.sh runs on the test
 // machine. Each logs its call to $FAKE_LOG, one line per call.
 var _fakes = map[string]string{
-	"ip":         `log ip "$@"; case "$*" in *" ss "*) printf '%s' "$FAKE_NS_SS" ;; *" nft -f -"*) cat >"${FAKE_NFT:-/dev/null}" ;; *" nft list "*) printf '%s' "$FAKE_NS_NFT" ;; esac`,
-	"id":         `echo 999`,
-	"mkfs.ext4":  `log mkfs.ext4 "$@"; if [ -n "$FAKE_DRIVE_COPY" ] && [ "$2" = -d ]; then cp -R "$3" "$FAKE_DRIVE_COPY"; fi`,
-	"setpriv":    `log setpriv "$@"`,
-	"chown":      `log chown "$@"`,
-	"truncate":   `for a; do last=$a; done; : >"$last"`,
-	"install":    `log install "$@"; for a; do last=$a; done; case " $* " in *" -d "*) mkdir -p "$last" ;; *) : >"$last" ;; esac`,
-	"timeout":    `while [ "${1#-}" != "$1" ]; do shift; done; shift; exec "$@"`,
-	"setsid":     `exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"`,
-	"curl":       `log curl "$@"; exit "${FAKE_CURL_EXIT:-0}"`,
+	"ip":        `log ip "$@"; case "$*" in *" ss "*) printf '%s' "$FAKE_NS_SS" ;; *" nft -f -"*) cat >"${FAKE_NFT:-/dev/null}" ;; *" nft list "*) printf '%s' "$FAKE_NS_NFT" ;; esac`,
+	"id":        `echo 999`,
+	"mkfs.ext4": `log mkfs.ext4 "$@"; if [ -n "$FAKE_DRIVE_COPY" ] && [ "$2" = -d ]; then cp -R "$3" "$FAKE_DRIVE_COPY"; fi`,
+	"setpriv":   `log setpriv "$@"`,
+	"chown":     `log chown "$@"`,
+	"truncate":  `log truncate "$@"; for a; do last=$a; done; : >"$last"`,
+	"install":   `log install "$@"; for a; do last=$a; done; case " $* " in *" -d "*) mkdir -p "$last" ;; *) : >"$last" ;; esac`,
+	"timeout":   `while [ "${1#-}" != "$1" ]; do shift; done; shift; exec "$@"`,
+	"setsid":    `exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@"`,
+	"curl": `log curl "$@"
+case "$*" in
+*snapshot/load*) exit "${FAKE_LOAD_EXIT:-0}" ;;
+*snapshot/create*)
+	while [ $# -gt 0 ]; do [ "$1" = --unix-socket ] && sock=$2; shift; done
+	root=$(dirname "$(dirname "$sock")")
+	echo guest-memory >"$root/mem"
+	echo vm-state >"$root/snap"
+	;;
+esac
+exit "${FAKE_CURL_EXIT:-0}"`,
 	"ss":         `log ss "$@"; case "$*" in *":${FAKE_BUSY_PORT:-none}"*) echo "LISTEN 0 64 127.0.0.1:$FAKE_BUSY_PORT 0.0.0.0:*" ;; esac`,
 	"jailer.sh":  _fakeJailer,
 	"logfunc.sh": `log() { name=$1; shift; echo "$name $*" >>"$FAKE_LOG"; }`,
@@ -42,10 +53,16 @@ while [ $# -gt 0 ]; do
 	shift
 done
 id=${jid%-pre}
-[ -n "$FAKE_VMJSON" ] && cp "$chroot/firecracker/$jid/root/vm.json" "$FAKE_VMJSON"
-[ -n "$FAKE_OUT" ] && [ -f "$chroot/firecracker/$jid/root/out.img" ] && cat "$FAKE_OUT" >"$chroot/firecracker/$jid/root/out.img"
+root=$chroot/firecracker/$jid/root
+[ -d "$root/run" ] && : >"$root/run/firecracker.socket"
+[ -n "$FAKE_VMJSON" ] && [ -f "$root/vm.json" ] && cp "$root/vm.json" "$FAKE_VMJSON"
+[ -n "$FAKE_OUT" ] && [ -f "$root/out.img" ] && cat "$FAKE_OUT" >"$root/out.img"
 if [ "$FAKE_JAILER" != silent ]; then
-	echo "SBOX-$(cat "$SBOX_STATE/runs/$id/drive/sbox/nonce") START"
+	if [ -f "$SBOX_STATE/runs/$id/drive/sbox/nonce" ]; then
+		echo "SBOX-$(cat "$SBOX_STATE/runs/$id/drive/sbox/nonce") START"
+	else
+		echo "SBOX-SNAP READY" # sbox-run snapshot's stub, parked
+	fi
 fi
 [ "$FAKE_JAILER" = sleep ] && exec sleep 30
 exit 0`
@@ -105,7 +122,7 @@ func (e *sboxRunEnv) run(stdin []byte, args ...string) (string, string, int) {
 	cmd := exec.Command("bash", append([]string{"scripts/sbox-run.sh"}, args...)...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+e.fake+":"+os.Getenv("PATH"),
-		"SBOX_BASE="+e.base, "SBOX_STATE="+e.state, "SBOX_JAIL="+e.jail, "FAKE_LOG="+e.log)
+		"SBOX_BASE="+e.base, "SBOX_STATE="+e.state, "SBOX_JAIL="+e.jail, "FAKE_LOG="+e.log, "SBOX_SNAPSHOT=0")
 	cmd.Env = append(cmd.Env, e.extra...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
@@ -1120,4 +1137,165 @@ func TestSboxRunLeavesABusySessionRunning(t *testing.T) {
 	if got := e.sessionFile(id, "state"); got != "running" {
 		t.Errorf("state %q with a terminal attached, want running", got)
 	}
+}
+
+// snapshotEnv is an sbox-run sandbox with snapshots on, and one made for
+// the default size.
+func snapshotEnv(t *testing.T) *sboxRunEnv {
+	t.Helper()
+	e := newSboxRunEnv(t)
+	e.extra = []string{"SBOX_SNAPSHOT=1", "SBOX_SNAPSHOT_DELAY=0", "FAKE_JAILER=sleep"}
+	if stdout, stderr, code := e.run(nil, "snapshot", "2", "1024"); code != 0 {
+		t.Fatalf("snapshot: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	return e
+}
+
+// TestSboxRunSnapshot: a snapshot is a stub guest parked on a placeholder
+// drive, with no session's anything in it; made once per size, leaving no
+// jail or namespace behind.
+func TestSboxRunSnapshot(t *testing.T) {
+	t.Parallel()
+	e := snapshotEnv(t)
+	dir := filepath.Join(e.state, "snap", "2-1024")
+	for f, want := range map[string]string{"mem": "guest-memory\n", "snap": "vm-state\n"} {
+		if got, err := os.ReadFile(filepath.Join(dir, f)); err != nil || string(got) != want {
+			t.Errorf("%s: %q, %v", f, got, err)
+		}
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "mem")); err != nil || fi.Mode().Perm() != 0o400 {
+		t.Errorf("mem: %v, %v; want read-only", fi, err)
+	}
+	curl := strings.Join(e.calls("curl"), "\n")
+	for _, want := range []string{`{"state":"Paused"}`, `"snapshot_path":"/snap"`, `"mem_file_path":"/mem"`} {
+		if !strings.Contains(curl, want) {
+			t.Errorf("curl calls lack %s:\n%s", want, curl)
+		}
+	}
+	jailer := e.calls("jailer")
+	if len(jailer) != 1 || !strings.Contains(jailer[0], "--api-sock /run/firecracker.socket --config-file /vm.json") {
+		t.Errorf("jailer calls %q", jailer)
+	}
+	if left, _ := filepath.Glob(filepath.Join(e.jail, "firecracker", "*")); len(left) != 0 {
+		t.Errorf("left in the jail: %q", left)
+	}
+	if !slices.ContainsFunc(e.calls("ip"), func(c string) bool { return strings.HasPrefix(c, "netns del sbox-") }) {
+		t.Errorf("ip calls %q, want the namespace deleted", e.calls("ip"))
+	}
+
+	if _, _, code := e.run(nil, "snapshot", "2", "1024"); code != 0 || len(e.calls("jailer")) != 1 {
+		t.Errorf("again: exit %d, %d jailer calls; want nothing to do", code, len(e.calls("jailer")))
+	}
+	for _, args := range [][]string{{"snapshot"}, {"snapshot", "x", "1024"}, {"snapshot", "2", "1"}} {
+		if _, _, code := e.run(nil, args...); code != 2 {
+			t.Errorf("%q: exit %d, want 2", args, code)
+		}
+	}
+}
+
+// TestSboxRunRestoresASnapshot: a session on a project resumes the snapshot
+// instead of booting: no vm.json for Firecracker, the load through the API,
+// the drive the size the guest remembers, with the clock and a reseed on it.
+func TestSboxRunRestoresASnapshot(t *testing.T) {
+	t.Parallel()
+	e := snapshotEnv(t)
+	const id, project = "aaaa000000000011", "0123456789abcdef"
+	drive := filepath.Join(t.TempDir(), "drive")
+	e.extra = append(e.extra, "FAKE_DRIVE_COPY="+drive)
+	e.killSessionOnCleanup(id)
+	if stdout, stderr, code := e.run(runTar(t, "n0nce"), "start", id, project); code != 0 {
+		t.Fatalf("start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	jailer := e.calls("jailer")
+	if last := jailer[len(jailer)-1]; !strings.Contains(last, "--id "+id) || !strings.HasSuffix(last, "-- --api-sock /run/firecracker.socket") {
+		t.Errorf("jailer %q, want the API alone: no config, no boot", last)
+	}
+	waitFor(t, "the snapshot's load", func() bool {
+		return slices.ContainsFunc(e.calls("curl"), func(c string) bool {
+			return strings.Contains(c, "/snapshot/load") && strings.Contains(c, `"backend_path":"/mem"`) && strings.Contains(c, `"resume_vm":true`) && strings.Contains(c, id)
+		})
+	})
+	if !slices.ContainsFunc(e.calls("truncate"), func(c string) bool { return strings.HasPrefix(c, "-s 1024M ") && strings.Contains(c, id) }) {
+		t.Errorf("truncate calls %q, want the run drive at the snapshot's 1024M", e.calls("truncate"))
+	}
+	for _, f := range []string{"now", "seed"} {
+		if fi, err := os.Stat(filepath.Join(drive, "sbox", f)); err != nil || fi.Mode().Perm() != 0o400 || fi.Size() == 0 {
+			t.Errorf("sbox/%s on the drive: %v, %v; want it root-only", f, fi, err)
+		}
+	}
+	if now, _ := os.ReadFile(filepath.Join(drive, "sbox", "now")); !regexp.MustCompile(`^[0-9]{10}(\.[0-9]+)?\n$`).Match(now) {
+		t.Errorf("sbox/now %q, want seconds, with a fraction where bash has one", now)
+	}
+}
+
+// TestSboxRunRestoreFallsBack: a snapshot Firecracker refuses is deleted and
+// the session boots cold.
+func TestSboxRunRestoreFallsBack(t *testing.T) {
+	t.Parallel()
+	e := snapshotEnv(t)
+	const id, project = "aaaa000000000012", "0123456789abcdef"
+	e.extra = append(e.extra, "FAKE_LOAD_EXIT=1")
+	e.killSessionOnCleanup(id)
+	if stdout, stderr, code := e.run(runTar(t, "n0nce"), "start", id, project); code != 0 {
+		t.Fatalf("start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	waitFor(t, "a cold boot after the refused load", func() bool {
+		jailer := e.calls("jailer")
+		return strings.HasSuffix(jailer[len(jailer)-1], "--config-file /vm.json") && strings.Contains(jailer[len(jailer)-1], "--id "+id)
+	})
+	if _, err := os.Stat(filepath.Join(e.state, "snap", "2-1024", "snap")); !os.IsNotExist(err) {
+		t.Errorf("the refused snapshot is still there: %v", err)
+	}
+}
+
+// TestSboxRunSnapshotMismatch: another size boots cold and gets its own
+// snapshot for next time; so does an image rebuilt since, and the old
+// snapshot goes.
+func TestSboxRunSnapshotMismatch(t *testing.T) {
+	t.Parallel()
+	e := snapshotEnv(t)
+	var tarBuf bytes.Buffer
+	if err := writeRunTar(&tarBuf, t.TempDir(), guestJob{command: []string{"true"}, vcpus: 4, memoryMiB: 2048}, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	const id, project = "aaaa000000000013", "0123456789abcdef"
+	e.killSessionOnCleanup(id)
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), "start", id, project); code != 0 {
+		t.Fatalf("start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !slices.ContainsFunc(e.calls("jailer"), func(c string) bool {
+		return strings.Contains(c, "--id "+id) && strings.HasSuffix(c, "--config-file /vm.json")
+	}) {
+		t.Errorf("jailer calls %q, want a cold boot of the session", e.calls("jailer"))
+	}
+	waitFor(t, "the new size's snapshot", func() bool {
+		_, err := os.Stat(filepath.Join(e.state, "snap", "4-2048", "stamp"))
+		return err == nil
+	})
+
+	if err := os.WriteFile(filepath.Join(e.base, "rootfs.ext4"), []byte("a new image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const id2, project2 = "aaaa000000000014", "fedcba9876543210"
+	e.killSessionOnCleanup(id2)
+	if stdout, stderr, code := e.run(runTar(t, "n0nce2"), "start", id2, project2); code != 0 {
+		t.Fatalf("start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if !slices.ContainsFunc(e.calls("jailer"), func(c string) bool {
+		return strings.Contains(c, "--id "+id2) && strings.HasSuffix(c, "--config-file /vm.json")
+	}) {
+		t.Errorf("jailer calls %q, want a cold boot on a new image", e.calls("jailer"))
+	}
+}
+
+// waitFor polls cond for up to 10 s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for range 200 {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("timed out waiting for %s", what)
 }
