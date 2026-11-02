@@ -319,9 +319,17 @@ session_attach() {
 		cmd=${cmd% }
 	fi
 	if [[ -t 0 ]]; then tty=(-t); fi
-	exec ip netns exec "sbox-$id" ssh ${tty[@]+"${tty[@]}"} -i "$dir/key" \
-		-o UserKnownHostsFile="$dir/known_hosts" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes \
-		-o ConnectionAttempts=10 -o LogLevel=ERROR runner@172.16.0.2 "cd /home/runner/work && exec $cmd"
+	local ssh=(ip netns exec "sbox-$id" ssh -i "$dir/key"
+		-o UserKnownHostsFile="$dir/known_hosts" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes
+		-o ConnectionAttempts=10 -o LogLevel=ERROR -S "$dir/mux")
+	# One SSH connection shared by a session's attaches: a handshake costs
+	# the guest 0.2 s, and sbox dev attaches several times around a terminal.
+	# It goes away 10 s after its last user, so idle_pause still sees an
+	# idle guest; an attach it left without a master just connects directly.
+	if [[ ! -e $dir/mux ]]; then
+		"${ssh[@]}" -M -N -f -o ControlPersist=10 runner@172.16.0.2 </dev/null >/dev/null 2>&1 || true
+	fi
+	exec "${ssh[@]}" ${tty[@]+"${tty[@]}"} -o ControlMaster=no runner@172.16.0.2 "cd /home/runner/work && exec $cmd"
 }
 
 # session_reconfigure takes a running session's egress, ports and services

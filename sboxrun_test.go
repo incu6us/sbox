@@ -477,23 +477,30 @@ func TestSboxRunAttach(t *testing.T) {
 	const id = "8888888888888888"
 	e.startSession(id)
 	session := filepath.Join(e.state, "sessions", id)
-	ssh := "netns exec sbox-" + id + " ssh -i " + session + "/key -o UserKnownHostsFile=" + session + "/known_hosts" +
-		" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes -o ConnectionAttempts=10 -o LogLevel=ERROR runner@172.16.0.2 "
+	opts := "netns exec sbox-" + id + " ssh -i " + session + "/key -o UserKnownHostsFile=" + session + "/known_hosts" +
+		" -o HostKeyAlias=sbox-guest -o StrictHostKeyChecking=yes -o ConnectionAttempts=10 -o LogLevel=ERROR -S " + session + "/mux "
+	master := opts + "-M -N -f -o ControlPersist=10 runner@172.16.0.2"
+	ssh := opts + "-o ControlMaster=no runner@172.16.0.2 "
 
+	// The first attach starts the shared connection; with one there (the
+	// fake ip makes none, so the test places its socket) it is reused.
 	tests := []struct {
 		args []string
-		want string // the logged ip call
+		want []string // the logged ip calls
 	}{
-		{args: []string{"attach", id, "--", "sh", "-c", "echo hi"}, want: ssh + `cd /home/runner/work && exec sh -c echo\ hi`},
-		{args: []string{"attach", id}, want: ssh + "cd /home/runner/work && exec bash -l"},
+		{args: []string{"attach", id, "--", "sh", "-c", "echo hi"}, want: []string{master, ssh + `cd /home/runner/work && exec sh -c echo\ hi`}},
+		{args: []string{"attach", id}, want: []string{ssh + "cd /home/runner/work && exec bash -l"}},
 	}
-	for _, tt := range tests {
+	for i, tt := range tests {
+		if i == 1 {
+			writeTestFile(t, filepath.Join(session, "mux"), "")
+		}
 		before := len(e.calls("ip"))
 		if stdout, stderr, code := e.run(nil, tt.args...); code != 0 {
 			t.Errorf("%v: exit %d, stdout %q, stderr %q", tt.args, code, stdout, stderr)
 		}
-		if calls := e.calls("ip")[before:]; len(calls) != 1 || calls[0] != tt.want {
-			t.Errorf("%v: ip calls %q, want [%q]", tt.args, calls, tt.want)
+		if calls := e.calls("ip")[before:]; !slices.Equal(calls, tt.want) {
+			t.Errorf("%v: ip calls %q, want %q", tt.args, calls, tt.want)
 		}
 	}
 
