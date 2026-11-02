@@ -711,7 +711,8 @@ a real token, and a push with a scoped GitHub token, are still to do.
 
 ## Out of scope for this version
 
-- Live two-way file sync or a mounted project directory.
+- Live two-way file sync. (A mounted project directory came later:
+  [live-mount.md](live-mount.md).)
 - Cursor or other agents in dev mode; the `command` key runs anything in
   the image, so a second agent is an image change, not a design change.
 - GUI or browser inside the guest; browser automation (Playwright,

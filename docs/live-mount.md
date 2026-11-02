@@ -293,7 +293,7 @@ branch isn't merged before the workspace gating lands.
   30 s apart), and a session started meanwhile reuses it. Refusals are
   BLOCKED lines in the summary and `sbox watch`; `sbox clean` removes the
   live servers' state.
-- [ ] **6. Docs, timings and the real VM.** README section with the
+- [x] **6. Docs, timings and the real VM.** README section with the
   trade-off in plain words, `docs/config.md`, `MILESTONE.md`; timings
   against copy mode on the Next.js app (`git status`, `npm ci` with
   `node_modules` local, `next dev` start and a reload after a Mac edit).

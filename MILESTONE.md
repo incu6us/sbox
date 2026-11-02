@@ -712,6 +712,29 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   the folder's workspace grants; `sbox config` names the workspace, the
   sources, refusals and approvals; `sbox init`'s starter asks for none of
   the four. `TestWorkspacesOnVM`.
+- ✅ Live mount (2026-11-02, [docs/live-mount.md](docs/live-mount.md)):
+  `dev.mount: live` gives the guest the Mac's folder itself instead of a
+  copy, allowed (`allow.live`) or granted (`mount: live`) by the
+  workspace. The spike ruled out re-exporting a Lima mount (virtiofs
+  handles go stale once evicted; the guest kernel speaks NFSv4 only), so
+  sbox itself serves the folder: an NFSv4.0 server in `sbox live-serve`
+  on the Mac's loopback, answering only a connection that starts with the
+  session's token, reached through a relay pair on 172.16.0.1:2049. It
+  acts as the Mac user, follows no symlink on the Mac, and refuses any
+  change to `.git`, `.envrc`, `.vscode`, `.idea`, `.husky` (any depth)
+  and `protect` paths, hard links to them and symlinks that leave the
+  folder or point into them, whatever uid the guest claims. `dev.local`
+  keeps `node_modules` and `.venv` on the guest's disk. Real guest kernel:
+  reads, writes, git through the read-only `.git`, seven refusals, the
+  Mac's `.git` byte-identical (`TestLiveMountOnVM`,
+  `TestLiveMountWritesOnVM`).
+  - Next.js app, 2 vCPUs, copy against live: `npm ci` 164 s and 226 s;
+    `git status` 0.21 s and 0.90 s (again: 0.013 s and 0.105 s); `next
+    dev`'s first page 683 s in copy mode, slow from nested virtualization
+    either way.
+  - Not yet checked by hand with the built binary: the server started
+    again on reattach after it died, another session's connection closed
+    for lack of the token, the server stopping itself after its session.
 
 ## Prerequisites ✅
 

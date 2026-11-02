@@ -183,6 +183,42 @@ forgets). Under a running session a refused request is left out and the
 session keeps what it booted with. `sbox run` takes the target folder's
 workspace grants; `sbox scan` reads no project file and ignores workspaces.
 
+**Live mount: the folder itself, not a copy.** With `dev.mount: live` the
+guest works on your Mac's folder: an edit on either side is on the other at
+once, there is nothing to sync, and the exit summary says so. It is a
+request like egress: your workspace allows it (`allow: {live: true}`) or
+grants it to every project in it (`mount: live`):
+
+```yaml
+# ~/.config/sbox/config.yaml
+workspaces:
+  personal:
+    paths: [~/src]
+    mount: live                     # every project here is mounted live
+# a project's sbox.yaml
+dev:
+  mount: live                       # or copy, the default
+  local: [node_modules, .next]      # kept on the guest's own disk (default: node_modules, .venv)
+protect: [config/prod.env]          # read-only in the guest, besides the defaults
+```
+
+sbox serves the folder to the guest itself (an NFS server inside `sbox`,
+on your Mac, as you; the Lima VM still mounts nothing of yours). It never
+follows a symlink on the Mac, keeps the guest inside the folder, and
+refuses, whatever the guest's user, any change to `.git`, `.envrc`,
+`.vscode`, `.idea` and `.husky` at any depth and to your `protect` paths,
+including a hard link to one and a new symlink that is absolute, leaves
+the folder or points into one (your tools follow symlinks even though sbox
+doesn't). The agent reads history and diffs but commits on the Mac are
+yours; each refusal is a `BLOCKED live` line in the summary and `sbox
+watch`. What a live mount gives up: copy mode's review before anything
+reaches your files. Anything you run on the Mac in that folder (`npm run`,
+`make`, the tests, an editor task) runs what the agent wrote; `protect`
+narrows that, it can't close it. Dev servers in the guest poll for the
+Mac's edits (sbox sets `WATCHPACK_POLLING` and `CHOKIDAR_USEPOLLING`);
+`dev.local` keeps dependency trees fast and their Linux binaries off the
+Mac. Changing `dev.mount` or `dev.local` needs `sbox dev -restart`.
+
 Egress entries on port 443 (or `:*`) go through an HTTPS proxy that
 tunnels to the listed hosts only; the guest's `HTTPS_PROXY` points at it,
 in the command and in every terminal. An exact host on another port, like
@@ -289,9 +325,9 @@ lookup doesn't land in your scrollback. An MCP server inherits the
 secrets, so a token it needs goes under `secrets`. sbox owns the
 `permissions` key of the guest's `~/.claude/settings.json` and the servers
 it names in `~/.claude.json`; everything else Claude Code keeps there
-survives. A project's `sbox.yaml` is yours, like the code: it can grant
-egress and ask for secrets, so read one you didn't write before running
-`sbox dev` on it.
+survives. A project's `sbox.yaml` only asks for what reaches past the VM
+(see workspaces above), but its `dev.setup` and `dev.start` steps still run
+in the guest, so read one you didn't write before running `sbox dev` on it.
 
 Nothing else crosses: the guest's network still has no route out, and
 each forwarded port is a pair of relays joined by a unix socket in the
