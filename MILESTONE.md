@@ -732,9 +732,15 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     `git status` 0.21 s and 0.90 s (again: 0.013 s and 0.105 s); `next
     dev`'s first page 683 s in copy mode, slow from nested virtualization
     either way.
-  - Not yet checked by hand with the built binary: the server started
-    again on reattach after it died, another session's connection closed
-    for lack of the token, the server stopping itself after its session.
+  - With the built binary: another session granted the port as a service
+    gets its connection closed, with no token or a wrong one; the server
+    killed and a reattach starts it on the same port, the guest's mount
+    carrying on with a file still open; the server stops itself 60 s after
+    its session.
+  - Next.js's Turbopack doesn't read `WATCHPACK_POLLING`: it needs
+    `watchOptions.pollIntervalMs` in `next.config`. With it, a Mac edit
+    reached the page in 49 s on a 2-vCPU guest; first page 601 s with `.next`
+    in `dev.local`, 779 s without.
 
 - ✅ A faster start (2026-11-02, M4 Pro, small project, `sbox dev <dir> --
   true`): 5.5 s to 3.4 s; before the command, about 4.1 s to about 2.5 s.

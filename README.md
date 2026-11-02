@@ -220,10 +220,13 @@ yours; each refusal is a `BLOCKED live` line in the summary and `sbox
 watch`. What a live mount gives up: copy mode's review before anything
 reaches your files. Anything you run on the Mac in that folder (`npm run`,
 `make`, the tests, an editor task) runs what the agent wrote; `protect`
-narrows that, it can't close it. Dev servers in the guest poll for the
-Mac's edits (sbox sets `WATCHPACK_POLLING` and `CHOKIDAR_USEPOLLING`);
-`dev.local` keeps dependency trees fast and their Linux binaries off the
-Mac. Changing `dev.mount` or `dev.local` needs `sbox dev -restart`.
+narrows that, it can't close it. A dev server in the guest gets no file
+events for the Mac's edits, so it has to poll: sbox sets
+`WATCHPACK_POLLING` and `CHOKIDAR_USEPOLLING` for webpack and chokidar, but
+Next.js's Turbopack needs `watchOptions: { pollIntervalMs: 1000 }` in the
+project's `next.config`. `dev.local` keeps dependency trees fast and their
+Linux binaries off the Mac (add `.next` for Next.js; each path leaves an
+empty folder on the Mac as its mount point). Changing `dev.mount` or `dev.local` needs `sbox dev -restart`.
 
 Egress entries on port 443 (or `:*`) go through an HTTPS proxy that
 tunnels to the listed hosts only; the guest's `HTTPS_PROXY` points at it,
