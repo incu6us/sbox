@@ -15,6 +15,7 @@ same machinery; new work goes into dev mode first.
 | 4 | Report hardening, items 3 and 4 only (redaction, fingerprint) | [hardening.md](hardening.md) | Redaction before real secrets enter the guest; the rest is scan-only |
 | 5 | Firecracker snapshots | [snapshots.md](snapshots.md) | Sessions are long, so boot time matters less than before; measure first still applies |
 | 6 | Workspaces: what a project may reach (mounts, secrets, egress, services) | [workspaces.md](workspaces.md) | Closes a hole: a downloaded repo's `sbox.yaml` grants itself your files and the network |
+| 7 | Live mount: the project folder itself instead of a copy | [live-mount.md](live-mount.md) | Editor and agent on the same files; opt-in per workspace, `.git` read-only |
 
 ## Shelved (scan mode)
 
@@ -67,3 +68,4 @@ Conventions shared by every plan:
 - [x] 4. Hardening ([hardening.md](hardening.md)): items 3 and 4 (redaction for sessions; hostname, but not the work directory name)
 - [x] 5. Snapshots ([snapshots.md](snapshots.md)): measured (boot and init 1.8 s of a 2.4 s start); deferred, since a start happens once per dev session
 - [x] 6. Workspaces ([workspaces.md](workspaces.md)): every commit, verified on the real VM
+- [ ] 7. Live mount ([live-mount.md](live-mount.md)): spike first
