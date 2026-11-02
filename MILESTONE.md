@@ -728,19 +728,45 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   reads, writes, git through the read-only `.git`, seven refusals, the
   Mac's `.git` byte-identical (`TestLiveMountOnVM`,
   `TestLiveMountWritesOnVM`).
-  - Next.js app, 2 vCPUs, copy against live: `npm ci` 164 s and 226 s;
-    `git status` 0.21 s and 0.90 s (again: 0.013 s and 0.105 s); `next
-    dev`'s first page 683 s in copy mode, slow from nested virtualization
-    either way.
+  - Next.js app, 2 vCPUs, copy against live, with huge pages: `npm ci` 12 s
+    and 9.5 s; `git status` 0.06 s and 0.15 s (again: 0.001 s and 0.05 s);
+    `next dev`'s first page 2.5 s and 2.4 s; an edit on the page 0.11 s (in
+    the guest) and 0.85 s (on the Mac).
   - With the built binary: another session granted the port as a service
     gets its connection closed, with no token or a wrong one; the server
     killed and a reattach starts it on the same port, the guest's mount
     carrying on with a file still open; the server stops itself 60 s after
     its session.
   - Next.js's Turbopack doesn't read `WATCHPACK_POLLING`: it needs
-    `watchOptions.pollIntervalMs` in `next.config`. With it, a Mac edit
-    reached the page in 49 s on a 2-vCPU guest; first page 601 s with `.next`
-    in `dev.local`, 779 s without.
+    `watchOptions.pollIntervalMs` in `next.config`.
+
+- ✅ A faster guest (2026-11-03, M4 Pro): transparent huge pages in the Lima
+  VM. The guest's raw CPU speed was fine; the first touch of each 4 KiB page
+  faulted through two layers of virtualization, about 180 µs, 250 times the
+  Lima VM's cost, and a compiler or a dev server is made of fresh memory.
+  With `enabled` and `defrag` at `always` guest memory comes in 2 MiB pages.
+  `sbox setup` sets it, in tmpfiles so a VM restart keeps it, and doctor
+  checks it.
+  - 512 MiB first touched: 22.6 s to 0.21 s. 5000 small files: 1.5 s to
+    0.06 s. 200 processes: 195 ms to 43 ms.
+  - A Next.js app, 2 vCPUs: `npm ci` 164 s to 12 s; `next dev`'s first page
+    683 s to 2.5 s; an edit on the page 37 s to 0.11 s. Live mount: `npm ci`
+    226 s to 9.5 s, first page 779 s to 2.4 s, a Mac edit on the page 49 s to
+    0.85 s.
+  - The Lima VM stays at 4 CPUs and 6 GiB: CPU count was never the problem.
+- ✅ A faster start (2026-11-03, small project, `sbox dev <dir> -- true`): 5.5 s
+  to 1.1 s, most of it huge pages. Also: a boot skips the Python merge of
+  Claude Code's settings when nothing changed (on a mark keyed with what only
+  guest root reads, so the runner can't forge one to keep settings it
+  weakened); `pushOnBoot` doesn't read the guest's project when the Mac's files
+  match the base, which grew with the project; one SSH connection per session,
+  gone 10 s after its last user so idle pause still sees an idle guest; the
+  exit summary's calls run together, and the tool-denial check starts Python
+  only when a transcript was written; the kept home is mounted from its device
+  with `noatime`.
+  - Firecracker snapshots were built and dropped: restored guests get no huge
+    pages, so 3.2 s to start and 22 s on that memory test
+    ([docs/snapshots.md](docs/snapshots.md)).
 
 ## Prerequisites ✅
 

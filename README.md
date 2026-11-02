@@ -72,9 +72,11 @@ Creates, provisions and checks everything; safe to run again at any time.
 2. Creates the Lima VM `sbox` if it doesn't exist (vz, nested virtualization,
    4 CPUs, 6 GiB RAM, 30 GiB disk, no host folders mounted), or starts it if
    it's stopped.
-3. Provisions it as root (`scripts/provision.sh`): packages, the `sbox-vm`
-   user the jailer runs Firecracker as, and into `/opt/sbox` Firecracker,
-   the jailer, the guest kernel and the guest image (`rootfs.ext4`, ~830 MB).
+3. Provisions it as root (`scripts/provision.sh`): transparent huge pages
+   (without them a guest runs about 100 times slower on fresh memory, and
+   `sbox doctor` says so), packages, the `sbox-vm` user the jailer runs
+   Firecracker as, and into `/opt/sbox` Firecracker, the jailer, the guest
+   kernel and the guest image (`rootfs.ext4`, ~830 MB).
 4. Installs `/opt/sbox/bin/sbox-run`, which runs one microVM per call.
 5. Runs `sbox doctor`.
 

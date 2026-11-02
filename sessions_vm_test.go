@@ -1702,3 +1702,30 @@ func TestWorkDriveMountOnVM(t *testing.T) {
 		t.Errorf("the console complains about a drive:\n%s", console.String())
 	}
 }
+
+// TestGuestMemorySpeedOnVM: a guest's first touch of its memory is fast,
+// which takes huge pages in the Lima VM: without them this takes over 10 s.
+func TestGuestMemorySpeedOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	const touch = `import mmap, time
+s = time.perf_counter()
+m = mmap.mmap(-1, 256 << 20)
+for i in range(0, 256 << 20, 4096): m[i] = 1
+print(int((time.perf_counter() - s) * 1000))`
+	var out, errOut bytes.Buffer
+	id, _, code := startSession(ctx, t.TempDir(), "", guestJob{command: []string{"sleep", "infinity"}}, &errOut, sboxRun)
+	if code != exitOK {
+		t.Fatalf("start: exit %d: %s", code, errOut.String())
+	}
+	t.Cleanup(func() { _ = sessionMain(ctx, "stop", []string{id}, io.Discard, io.Discard, sboxRun) })
+	if code := attachMain(ctx, []string{id, "--", "python3", "-c", touch}, strings.NewReader(""), &out, &errOut, sboxRun); code != exitOK {
+		t.Fatalf("touch: exit %d: %s", code, errOut.String())
+	}
+	ms, err := strconv.Atoi(strings.TrimSpace(out.String()))
+	if err != nil || ms > 3000 {
+		t.Errorf("touching 256 MiB took %q ms, want under 3000: huge pages off? %v", out.String(), err)
+	}
+}

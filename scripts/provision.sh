@@ -32,6 +32,18 @@ fetch() { # name url sha256
 	mv "$out.tmp" "$out"
 }
 
+# Guests' memory in 2 MiB pages. Firecracker can't ask for them, so it takes
+# "always". With 4 KiB pages a guest's first touch of each page faults through
+# two layers of virtualization: about 100 times slower on fresh memory, which
+# a compiler or a dev server is made of. Written to tmpfiles to survive a
+# restart of this VM.
+step "huge pages"
+cat >/etc/tmpfiles.d/sbox-hugepages.conf <<'EOF'
+w /sys/kernel/mm/transparent_hugepage/enabled - - - - always
+w /sys/kernel/mm/transparent_hugepage/defrag - - - - always
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/sbox-hugepages.conf
+
 step "packages"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq mmdebstrap e2fsprogs acl iproute2 nftables >/dev/null

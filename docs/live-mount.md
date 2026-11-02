@@ -163,9 +163,8 @@ The guest gets no inotify events for edits made on the Mac. A live session
 sets `WATCHPACK_POLLING=true` and `CHOKIDAR_USEPOLLING=1` (the project's
 `dev.env` wins). Those reach webpack and chokidar only: Next 16's default
 bundler, Turbopack, reads `watchOptions.pollIntervalMs` from `next.config`,
-which is the project's to set. With it, a Mac edit reached the page in 49 s on
-a 2-vCPU guest, most of that the guest compiling (37 s for an edit inside a
-copy-mode guest).
+which is the project's to set. With it, a Mac edit reached the page in 0.85 s
+(0.11 s for an edit inside a copy-mode guest).
 
 ### Git in the guest
 
@@ -306,7 +305,7 @@ branch isn't merged before the workspace gating lands.
 
 - [x] An edit in the guest is in the Mac's folder within a second, and an
   edit on the Mac is in the guest within seconds; `next dev` reloads on a
-  Mac edit with Turbopack's polling on (49 s, on a slow guest).
+  Mac edit with Turbopack's polling on (0.85 s).
 - [ ] `touch .git/x`, `echo >> .git/config` and writing `.git/hooks/pre-commit`
   fail in the guest, as runner and as root; the same for `.envrc` and a
   project `protect` path. The Mac's `.git` is byte-identical afterwards.

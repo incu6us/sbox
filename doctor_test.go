@@ -51,6 +51,7 @@ SBOX firecracker-sha=`+pinnedSHA("FIRECRACKER")+`
 SBOX kernel-sha=`+pinnedSHA("KERNEL")+`
 SBOX rootfs=present
 SBOX runner=present
+SBOX hugepages=always
 SBOX boot-exit=0
 SBOX boot-ms=2600
   SBOX node=`+_nodeVersion+`
@@ -127,5 +128,21 @@ func TestJudgeProbe(t *testing.T) {
 				t.Errorf("failed checks %v, want %q", fails, tt.wantFail)
 			}
 		})
+	}
+}
+
+// TestJudgeHugePages: without transparent huge pages a guest's first touch
+// of each 4 KiB page faults through two layers of virtualization, and it
+// runs about 100 times slower; doctor says so, and what to do.
+func TestJudgeHugePages(t *testing.T) {
+	t.Parallel()
+	got := judge(parseKV("SBOX provisioned=yes\nSBOX hugepages=madvise", "SBOX "))
+	i := slices.IndexFunc(got, func(c check) bool { return c.name == "huge pages" })
+	if i < 0 || got[i].ok || !strings.Contains(got[i].detail, "sbox setup") {
+		t.Errorf("checks %+v, want huge pages failing and naming sbox setup", got)
+	}
+	got = judge(parseKV("SBOX provisioned=yes\nSBOX hugepages=always", "SBOX "))
+	if i := slices.IndexFunc(got, func(c check) bool { return c.name == "huge pages" }); i < 0 || !got[i].ok {
+		t.Errorf("checks %+v, want huge pages passing", got)
 	}
 }

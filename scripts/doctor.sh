@@ -13,6 +13,7 @@ echo "SBOX firecracker-sha=$(sum cache/firecracker.tgz)"
 echo "SBOX kernel-sha=$(sum vmlinux)"
 [[ -f rootfs.ext4 ]] && echo "SBOX rootfs=present" || echo "SBOX rootfs=missing"
 [[ -x bin/sbox-run && -x bin/sbox-dns.py && -x bin/sbox-proxy.py ]] && id -u sbox-vm >/dev/null 2>&1 && echo "SBOX runner=present" || echo "SBOX runner=missing"
+echo "SBOX hugepages=$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 [[ -f rootfs.ext4 && -e /dev/kvm ]] || exit 0
 
 # Boot test: a read-only microVM reporting its toolchain. Networking and the

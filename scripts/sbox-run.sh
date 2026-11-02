@@ -213,7 +213,7 @@ session_start() {
 	echo running >"$dir/state"
 	SBOX_SESSION=1 SBOX_WORK=$work setsid "${BASH:-bash}" "$0" "$id" 0 <"$dir/run.tar" >"$dir/console.log" 2>&1 &
 	echo $! >"$dir/pid"
-	for ((i = 0; i < 1200; i++)); do # 120 s
+	for ((i = 0; i < 6000; i++)); do # 120 s
 		if grep -q "SBOX-$nonce START" "$dir/console.log"; then
 			rm -f "$dir/run.tar"
 			[[ -z $new ]] || echo "NEW $id"
@@ -221,7 +221,7 @@ session_start() {
 			return 0
 		fi
 		kill -0 "$(cat "$dir/pid")" 2>/dev/null || break
-		sleep 0.1
+		sleep 0.02
 	done
 	echo "sbox-run: session $id did not start" >&2
 	tail -n 20 "$dir/console.log" >&2

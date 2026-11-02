@@ -280,6 +280,7 @@ func judge(kv map[string]string) []check {
 		want("kernel checksum", "kernel-sha", pinnedSHA("KERNEL"), "run sbox setup"),
 		want("rootfs", "rootfs", "present", "run sbox setup"),
 		want("runner", "runner", "present", "run sbox setup"),
+		want("huge pages", "hugepages", "always", "guests run about 100 times slower on fresh memory: run sbox setup"),
 	}
 	if _, booted := kv["boot-exit"]; !booted {
 		return checks
