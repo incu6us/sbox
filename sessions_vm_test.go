@@ -1600,6 +1600,252 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 	}
 }
 
+// liveOnTheMac is a devHost.startLive running the server in this test; a
+// project's later sessions find it running, as sbox live-serve is found.
+func liveOnTheMac(t *testing.T, state string) func(project, folder string) (*liveRelay, error) {
+	t.Helper()
+	running := map[string]bool{}
+	return func(project, folder string) (*liveRelay, error) {
+		if !running[project] {
+			ln, err := serveLive(state, project, folder)
+			if err != nil {
+				return nil, err
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			running[project] = true
+		}
+		st, err := liveState(state, project)
+		return &liveRelay{port: st.port, token: st.token}, err
+	}
+}
+
+// _hostileClient speaks NFS to the relay directly, as anything in the guest
+// can, claiming uid 0 and printing each call's status.
+const _hostileClient = `
+import socket, struct
+s = socket.create_connection(("172.16.0.1", 2049))
+u32 = lambda v: struct.pack(">I", v)
+def xstr(b):
+    return u32(len(b)) + b + b"\0" * (-len(b) % 4)
+xid = 0
+def call(*ops):
+    global xid
+    xid += 1
+    cred = u32(0) + xstr(b"guest") + u32(0) + u32(0) + u32(0)
+    body = b"".join(u32(v) for v in (xid, 0, 2, 100003, 4, 1, 1)) + xstr(cred) + u32(0) + u32(0)
+    body += xstr(b"") + u32(0) + u32(len(ops)) + b"".join(ops)
+    s.sendall(u32(0x80000000 | len(body)) + body)
+    size = struct.unpack(">I", s.recv(4, socket.MSG_WAITALL))[0] & 0x7fffffff
+    return s.recv(size, socket.MSG_WAITALL)
+def status(*ops):
+    return struct.unpack(">I", call(*ops)[24:28])[0]
+root, getfh, lookupp = u32(24), u32(10), u32(16)
+lookup = lambda n: u32(15) + xstr(n.encode())
+putfh = lambda h: u32(22) + xstr(h)
+read = u32(25) + b"\0" * 16 + b"\0" * 8 + u32(4096)
+def open_for(name, access, create=False):
+    how = u32(1) + u32(0) + u32(0) + xstr(b"") if create else u32(0)
+    return u32(18) + u32(1) + u32(access) + u32(0) + b"\0" * 8 + xstr(b"owner") + how + u32(0) + xstr(name.encode())
+def symlink(name, target):
+    return u32(6) + u32(5) + xstr(target.encode()) + xstr(name.encode()) + u32(0) + xstr(b"")
+reply = call(root, getfh)
+# xid, reply, accepted, verifier (2), accept, status, tag, count, PUTROOTFH (2), GETFH (2), the handle
+n = struct.unpack(">I", reply[52:56])[0]
+handle = bytearray(reply[56:56 + n])
+handle[-1] ^= 1
+for name, ops in [
+    ("forged handle", [putfh(bytes(handle))]),
+    ("dot dot", [root, lookup("..")]),
+    ("up from the root", [root, lookupp]),
+    ("through a symlink", [root, lookup("ssh"), lookup("id_ed25519")]),
+    ("open a symlink", [root, open_for("key", 1)]),
+    ("read a symlink", [root, lookup("key"), read]),
+    ("write .git/config", [root, lookup(".git"), open_for("config", 3)]),
+    ("create a hook", [root, lookup(".git"), lookup("hooks"), open_for("pre-commit", 3, True)]),
+    ("write a protect path", [root, lookup("config"), open_for("prod.env", 3)]),
+    ("an absolute symlink", [root, symlink("zshrc", "/Users/you/.zshrc")]),
+]:
+    print("raw", name, status(*ops))
+`
+
+// TestLiveMountAttacksOnVM: a guest attacking the live mount, through its
+// kernel's mount and straight at the server claiming to be root, changes
+// nothing protected and reaches nothing outside the folder.
+func TestLiveMountAttacksOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, outside, state := t.TempDir(), t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\nprotect: [config/prod.env]\n")
+	writeTestFile(t, filepath.Join(dir, "attack.py"), _hostileClient)
+	for _, d := range []string{".git", ".git/hooks", ".vscode", "config", "sub"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(dir, ".git", "config"), "[core]\n")
+	writeTestFile(t, filepath.Join(dir, ".vscode", "tasks.json"), "{}\n")
+	writeTestFile(t, filepath.Join(dir, "config", "prod.env"), "SECRET=1\n")
+	writeTestFile(t, filepath.Join(outside, "id_ed25519"), "the Mac's private key\n")
+	if err := os.Symlink(outside, filepath.Join(dir, "ssh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "id_ed25519"), filepath.Join(dir, "key")); err != nil {
+		t.Fatal(err)
+	}
+	before := func() string {
+		return treeDigest(t, filepath.Join(dir, ".git")) + treeDigest(t, filepath.Join(dir, ".vscode")) +
+			treeDigest(t, filepath.Join(dir, "config")) + treeDigest(t, outside)
+	}
+	was := before()
+	try := func(name, cmd string) string {
+		return cmd + " 2>/dev/null && echo '" + name + ": allowed' || echo '" + name + ": refused'; "
+	}
+	script := "cd ~/work; " +
+		try("protect path", "echo x > config/prod.env") + try("protect path, other case", "echo x > CONFIG/PROD.ENV") +
+		try("long s", "echo x > .v\u017fcode/tasks.json") + try("long s, new", "mkdir -p .hu\u017fky/x") +
+		"mkdir -p sub/objects sub/refs; echo '[core]' > sub/config; " +
+		try("planted HEAD", "echo 'ref: refs/heads/main' > sub/HEAD") + try("planted head", "echo 'ref: refs/heads/main' > sub/head") +
+		try("a folder named Head", "mkdir -p other/Head && echo x > other/Head/index.tsx") +
+		try("a link to the folder", "ln -s .. sub/up") + try("a link climbing past it", "ln -s up/.. sub/esc") +
+		"cat ssh/id_ed25519 key 2>&1 | grep -c 'private key'; python3 -I attack.py"
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: liveOnTheMac(t, state)}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &stderr, sboxRun, host); code != exitOK {
+		t.Fatalf("devMain: exit %d\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"protect path: refused", "protect path, other case: refused", "long s: refused", "long s, new: refused",
+		"planted HEAD: refused", "planted head: refused", "a folder named Head: allowed",
+		"a link to the folder: allowed", "a link climbing past it: refused", "\n0\n",
+		"raw forged handle 10001", "raw dot dot 10041", "raw up from the root 2", "raw through a symlink 10029",
+		"raw open a symlink 10029", "raw read a symlink 22", "raw write .git/config 13", "raw create a hook 13",
+		"raw write a protect path 13", "raw an absolute symlink 13",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, stderr.String())
+		}
+	}
+	if before() != was {
+		t.Error("a protected path, or a file outside the folder, changed on the Mac")
+	}
+	for _, p := range []string{"sub/HEAD", "sub/esc", "zshrc", ".git/hooks/pre-commit"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists on the Mac: %v", p, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "BLOCKED live    sub/HEAD") {
+		t.Errorf("the summary lacks the planted HEAD:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "BLOCKED port") {
+		t.Errorf("the NFS client's own sockets are reported as the project's:\n%s", stderr.String())
+	}
+}
+
+// TestLiveLocalKeptOnVM: npm in a live session writes its project files to
+// the Mac and node_modules to the guest's disk, which the next session has.
+func TestLiveLocalKeptOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\negress: [registry.npmjs.org]\n")
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: liveOnTheMac(t, state)}
+	dev := func(script string) string {
+		t.Helper()
+		var out, notes bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev %q: exit %d\n%s\n%s", script, code, out.String(), notes.String())
+		}
+		return out.String()
+	}
+	dev("npm init -y >/dev/null && npm install --no-audit --no-fund left-pad@1.3.0")
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
+		t.Errorf("the lock file isn't on the Mac: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "node_modules")); err != nil || len(entries) != 0 {
+		t.Errorf("the Mac's node_modules: %v, %v; want an empty mount point", entries, err)
+	}
+	if out := dev(`node -e "console.log('[' + require('left-pad')('x', 3) + ']')"`); !strings.Contains(out, "[  x]") {
+		t.Errorf("the next session's node_modules: %q", out)
+	}
+	if out := dev(`npm ci --no-audit --no-fund >/dev/null && node -e "console.log('[' + require('left-pad')('y', 3) + ']')"`); !strings.Contains(out, "[  y]") {
+		t.Errorf("npm ci on the kept node_modules: %q", out)
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "node_modules")); err != nil || len(entries) != 0 {
+		t.Errorf("the Mac's node_modules after npm ci: %v, %v", entries, err)
+	}
+}
+
+// TestLiveGatingOnVM: a project in the default workspace asking for live
+// gets the BLOCKED line and nothing boots; approving starts it, for good.
+func TestLiveGatingOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\n")
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, "egress: []\n")
+	servers := 0
+	serve := liveOnTheMac(t, state)
+	host := func(approve func([]string) bool) devHost {
+		return devHost{stateDir: state, userConfig: user, approve: approve, startLive: func(project, folder string) (*liveRelay, error) {
+			servers++
+			return serve(project, folder)
+		}}
+	}
+	dev := func(h devHost) (string, string, int) {
+		var out, notes bytes.Buffer
+		code := devMain(ctx, []string{dir, "--", "sh", "-c", "mount | grep -c 'work type nfs4'"}, strings.NewReader(""), &out, &notes, sboxRun, h)
+		return out.String(), notes.String(), code
+	}
+
+	_, notes, code := dev(host(nil))
+	if want := "BLOCKED mount   live"; code != exitFail || !strings.Contains(notes, want) || servers != 0 {
+		t.Errorf("not approved: exit %d, %d servers, want %q:\n%s", code, servers, want, notes)
+	}
+	var ps bytes.Buffer
+	_ = sboxRun(ctx, nil, &ps, io.Discard, "ps")
+	if strings.Contains(ps.String(), project) {
+		t.Errorf("a session booted for the refused project:\n%s", ps.String())
+	}
+
+	_, _, code = dev(host(func([]string) bool { return false }))
+	if code != exitFail || servers != 0 {
+		t.Errorf("approval declined: exit %d, %d servers", code, servers)
+	}
+
+	asked := 0
+	out, notes, code := dev(host(func(lines []string) bool { asked++; return true }))
+	if code != exitOK || asked != 1 || servers != 1 || !strings.Contains(out, "1") {
+		t.Errorf("approved: exit %d, asked %d, %d servers, %q\n%s", code, asked, servers, out, notes)
+	}
+	out, notes, code = dev(host(func([]string) bool { t.Error("asked again"); return false }))
+	if code != exitOK || servers != 2 || !strings.Contains(out, "1") {
+		t.Errorf("the approval kept: exit %d, %d servers, %q\n%s", code, servers, out, notes)
+	}
+}
+
 // treeDigest is every path, mode and content under dir, for comparing.
 func treeDigest(t *testing.T, dir string) string {
 	t.Helper()

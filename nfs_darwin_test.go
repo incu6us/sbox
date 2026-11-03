@@ -1201,3 +1201,205 @@ func TestNFSProtectFile(t *testing.T) {
 		t.Errorf("after the change: a.env %d, b.env %d; want b.env refused", a, b)
 	}
 }
+
+// TestNFSProtectedAliases: names APFS takes for a protected one are refused
+// like it. strings.ToLower leaves ſ alone; APFS folds it to s.
+func TestNFSProtectedAliases(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	for _, d := range []string{".vscode", ".husky", "config"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(dir, ".vscode", "tasks.json"), "{}\n")
+	writeTestFile(t, filepath.Join(dir, "config", "aws.env"), "x\n")
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.protect = []string{"config/aws.env"}
+	for _, tt := range []struct{ name, folder, file string }{
+		{"long s", ".vſcode", "tasks.json"},
+		{"long s in .husky", ".huſky", "pre-commit"},
+		{"Kelvin sign", ".husKy", "pre-commit"},
+		{"long s in a protect path", "config", "awſ.env"},
+	} {
+		var c compoundArgs
+		c.add(_opPutRootFH)
+		c.add(_opLookup).str(tt.folder)
+		openWrite(&c, tt.file, 0, "")
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+			t.Errorf("%s: %d, want ACCESS", tt.name, status)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, ".vscode", "tasks.json")); string(got) != "{}\n" {
+		t.Errorf("tasks.json: %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".husky", "pre-commit")); !os.IsNotExist(err) {
+		t.Errorf("a hook exists: %v", err)
+	}
+}
+
+// TestNFSNoPlantedRepository: objects/, refs/, config and a HEAD file make
+// a repository git on the Mac finds, and its config runs code at the next
+// git status there. No file may be named HEAD; a folder may (components/Head).
+func TestNFSNoPlantedRepository(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	if err := os.Mkdir(filepath.Join(dir, "components"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "components", "ref"), "ref: refs/heads/main\n")
+	writeTestFile(t, filepath.Join(dir, "HEAD"), "on the Mac\n")
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	root, components := lookupHandle(t, s), lookupHandle(t, s, "components")
+	make := func(typ uint32, name, link string) func(c *compoundArgs) {
+		return func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(components)
+			w := c.add(_opCreate)
+			w.u32(typ)
+			if typ == _nf4Lnk {
+				w.str(link)
+			}
+			w.str(name)
+			modeAttrs(w, 0o755)
+		}
+	}
+	for _, tt := range []struct {
+		name  string
+		build func(c *compoundArgs)
+	}{
+		{"open HEAD", func(c *compoundArgs) { c.add(_opPutFH).opaque(components); openWrite(c, "HEAD", 0, "") }},
+		{"open head", func(c *compoundArgs) { c.add(_opPutFH).opaque(components); openWrite(c, "head", 0, "") }},
+		{"a symlink HEAD", make(_nf4Lnk, "HEAD", "ref")},
+		{"a FIFO HEAD", make(_nf4FIFO, "HEAD", "")},
+		{"rename a file to HEAD", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(components)
+			c.add(_opSaveFH)
+			w := c.add(_opRename)
+			w.str("ref")
+			w.str("HEAD")
+		}},
+		{"link a file to HEAD", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, "components", "ref"))
+			c.add(_opSaveFH)
+			c.add(_opPutFH).opaque(components)
+			c.add(_opLink).str("HEAD")
+		}},
+		{"write the Mac's HEAD", func(c *compoundArgs) { c.add(_opPutFH).opaque(lookupHandle(t, s, "HEAD")); write(c, 0, "ref:", 2) }},
+		{"open the Mac's HEAD for writing", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, "HEAD", -1, "") }},
+	} {
+		var c compoundArgs
+		tt.build(&c)
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+			t.Errorf("%s: %d, want ACCESS", tt.name, status)
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "components")); len(entries) != 1 {
+		t.Errorf("components holds %v, want only ref", entries)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "HEAD")); string(got) != "on the Mac\n" {
+		t.Errorf("the Mac's HEAD: %q", got)
+	}
+
+	// A folder of that name, and files in it, are ordinary.
+	var c compoundArgs
+	make(_nf4Dir, "Head", "")(&c)
+	runWant(t, s, "mkdir Head", _nfsOK, &c)
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(lookupHandle(t, s, "components", "Head"))
+	openWrite(&c, "index.tsx", 0, "")
+	runWant(t, s, "a file in Head", _nfsOK, &c)
+	c = compoundArgs{}
+	c.add(_opPutFH).opaque(components)
+	c.add(_opSaveFH)
+	w := c.add(_opRename)
+	w.str("Head")
+	w.str("HEAD")
+	runWant(t, s, "rename the folder Head to HEAD", _nfsOK, &c)
+}
+
+// TestNFSSymlinksStayInside: however a symlink is built or moved, a Mac
+// tool following it stays in the folder. Each target checked alone looks
+// fine; up/.. is the folder's parent once up is a link to the folder.
+func TestNFSSymlinksStayInside(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	for _, d := range []string{"a", "a/b", "a/b/c", "low", "low/deep"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	link := func(in []byte, name, target string) uint32 {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(in)
+		w := c.add(_opCreate)
+		w.u32(_nf4Lnk)
+		w.str(target)
+		w.str(name)
+		modeAttrs(w, 0o755)
+		status, _ := compound(t, s, 0, &c)
+		return status
+	}
+	rename := func(from []byte, old string, to []byte, name string) uint32 {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(from)
+		c.add(_opSaveFH)
+		c.add(_opPutFH).opaque(to)
+		w := c.add(_opRename)
+		w.str(old)
+		w.str(name)
+		status, _ := compound(t, s, 0, &c)
+		return status
+	}
+	root, deep, c := lookupHandle(t, s), lookupHandle(t, s, "low", "deep"), lookupHandle(t, s, "a", "b", "c")
+
+	for _, tt := range []struct {
+		name, target string
+		want         uint32
+	}{
+		{"up", "..", _nfsOK},
+		{"past-a-link", "up/..", _nfs4errAccess},
+		{"past-a-folder", "../up/../..", _nfs4errAccess},
+		{"dotted", "./up/./..", _nfs4errAccess},
+		{"inward", "../up", _nfsOK},
+		{"plain", "../README.md", _nfsOK},
+	} {
+		if got := link(lookupHandle(t, s, "low"), tt.name, tt.target); got != tt.want {
+			t.Errorf("low/%s -> %s: %d, want %d", tt.name, tt.target, got, tt.want)
+		}
+	}
+
+	// Moving the link, or a folder holding it, closer to the root.
+	if got := link(c, "far", "../../../README.md"); got != _nfsOK {
+		t.Fatalf("a/b/c/far: %d", got)
+	}
+	if got := rename(c, "far", root, "far"); got != _nfs4errAccess {
+		t.Errorf("moving far to the root: %d, want ACCESS", got)
+	}
+	if got := rename(lookupHandle(t, s, "a", "b"), "c", root, "c"); got != _nfs4errAccess {
+		t.Errorf("moving the folder holding far to the root: %d, want ACCESS", got)
+	}
+	if got := rename(root, "a", root, "a2"); got != _nfsOK {
+		t.Errorf("a move keeping its depth: %d", got)
+	}
+	if got := rename(lookupHandle(t, s, "a2", "b"), "c", deep, "c"); got != _nfsOK {
+		t.Errorf("a move leaving the link inside: %d", got)
+	}
+}
+
+// TestNFSProtectFileWithASpace: a protect path may hold a space.
+func TestNFSProtectFileWithASpace(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	writeTestFile(t, filepath.Join(dir, "my secrets.env"), "x\n")
+	list := filepath.Join(t.TempDir(), "protect")
+	writeTestFile(t, list, "my secrets.env\n")
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.protectFile = list
+	var c compoundArgs
+	c.add(_opPutRootFH)
+	openWrite(&c, "my secrets.env", -1, "")
+	if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+		t.Errorf("my secrets.env: %d, want ACCESS", status)
+	}
+}

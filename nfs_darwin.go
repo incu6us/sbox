@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -306,7 +307,7 @@ func (s *nfsServer) reloadProtect() {
 	if err != nil {
 		return
 	}
-	s.protect, s.protectStamp = strings.Fields(string(data)), fi.ModTime()
+	s.protect, s.protectStamp = slices.DeleteFunc(strings.Split(string(data), "\n"), func(q string) bool { return q == "" }), fi.ModTime()
 }
 
 // rel is p from the root, "" for the root itself.
@@ -318,39 +319,60 @@ func (s *nfsServer) rel(p string) string {
 }
 
 // protected reports whether p may not be changed: a protected name at any
-// depth, a protect path, or anything under either. Case-insensitive, as
-// APFS is. ponytail: no Unicode normalisation; the default names are ASCII.
+// depth, a protect path, or anything under either. Names compare as APFS
+// does, ſ and K included. ponytail: EqualFold, no Unicode normalisation; a
+// non-ASCII protect path must be written as the file's own name is.
 func (s *nfsServer) protected(p string) bool {
-	rel := strings.ToLower(s.rel(p))
+	rel := s.rel(p)
 	if rel == "" {
 		return false
 	}
-	for _, c := range strings.Split(rel, "/") {
-		for _, n := range _protectedNames {
-			if c == n {
-				return true
-			}
-		}
-	}
-	for _, q := range s.protect {
-		q = strings.ToLower(q)
-		if rel == q || strings.HasPrefix(rel, q+"/") {
+	parts := strings.Split(rel, "/")
+	for _, c := range parts {
+		if slices.ContainsFunc(_protectedNames, func(n string) bool { return strings.EqualFold(c, n) }) {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(s.protect, func(q string) bool { return startsWithFold(parts, strings.Split(q, "/")) })
+}
+
+// protectedFile is protected, or p is, or would be, a file named HEAD: with
+// objects/ and refs/ beside it, that is a repository git on the Mac finds,
+// and its config runs code at the next git status there. A folder of that
+// name is ordinary, and git doesn't take one for a HEAD.
+func (s *nfsServer) protectedFile(p string) bool {
+	if s.protected(p) {
+		return true
+	}
+	if !strings.EqualFold(filepath.Base(p), "HEAD") {
+		return false
+	}
+	var sys syscall.Stat_t
+	return syscall.Lstat(p, &sys) != nil || fileType(sys.Mode) != _nf4Dir
+}
+
+// startsWithFold reports whether parts begins with prefix's components.
+func startsWithFold(parts, prefix []string) bool {
+	if len(prefix) > len(parts) {
+		return false
+	}
+	for i, c := range prefix {
+		if !strings.EqualFold(c, parts[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // holdsProtected reports whether a protect path lies under the folder p:
 // moving or removing p would move it out of reach.
 func (s *nfsServer) holdsProtected(p string) bool {
-	rel := strings.ToLower(s.rel(p))
-	for _, q := range s.protect {
-		if q = strings.ToLower(q); rel == "" || strings.HasPrefix(q, rel+"/") {
-			return true
-		}
-	}
-	return false
+	rel := s.rel(p)
+	parts := strings.Split(rel, "/")
+	return slices.ContainsFunc(s.protect, func(q string) bool {
+		path := strings.Split(q, "/")
+		return rel == "" || len(path) > len(parts) && startsWithFold(path, parts)
+	})
 }
 
 // refuse answers a refused change to p.
@@ -363,13 +385,48 @@ func (s *nfsServer) refuse(op, p string) uint32 {
 
 // symlinkTarget reports whether a new symlink in dir may point at target:
 // relative, inside the folder, and not into a protected path. Tools on
-// the Mac follow symlinks even though this server doesn't.
+// the Mac follow symlinks even though this server doesn't. A .. is only
+// allowed first: after a name it is lexically harmless but, when that name
+// is a link (now or later), it climbs from wherever the link led.
 func (s *nfsServer) symlinkTarget(dir, target string) bool {
 	if target == "" || filepath.IsAbs(target) {
 		return false
 	}
+	named := false
+	for _, c := range strings.Split(target, "/") {
+		switch c {
+		case "", ".":
+		case "..":
+			if named {
+				return false
+			}
+		default:
+			named = true
+		}
+	}
 	p := filepath.Join(dir, target)
 	return (p == s.root || strings.HasPrefix(p, s.root+"/")) && !s.protected(p)
+}
+
+// linksStayInside reports whether every relative symlink at or under src
+// still passes symlinkTarget once src is at dst. Links the Mac made with
+// absolute targets aren't the guest's and don't stop a move. ponytail:
+// walks the moved folder under the server's one lock; moves of big folders
+// are rare, and node_modules is on the guest's disk.
+func (s *nfsServer) linksStayInside(src, dst string) bool {
+	inside := true
+	_ = filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		target, err := os.Readlink(p)
+		if err == nil && !filepath.IsAbs(target) && !s.symlinkTarget(filepath.Dir(dst+strings.TrimPrefix(p, src)), target) {
+			inside = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return inside
 }
 
 // fileHandle is a resolved handle: the file's identity and where it is now.
@@ -725,7 +782,7 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		w.u32(_nfsOK)
 		w.u32(ask & (_accessRead | _accessLookup | _accessModify | _accessExtend | _accessDelete | _accessExecute))
 		got := access(st.cur.path, ask)
-		if s.protected(st.cur.path) {
+		if s.protectedFile(st.cur.path) {
 			got &^= _accessModify | _accessExtend | _accessDelete
 		}
 		w.u32(got)
@@ -902,6 +959,13 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 				return fail(s.refuse("rename", p))
 			}
 		}
+		var moved syscall.Stat_t
+		if err := syscall.Lstat(src, &moved); err == nil && fileType(moved.Mode) != _nf4Dir && s.protectedFile(dst) {
+			return fail(s.refuse("rename", dst))
+		}
+		if !s.linksStayInside(src, dst) {
+			return fail(s.refuse("rename", dst))
+		}
 		srcBefore, dstBefore := dirChange(from.path), dirChange(to.path)
 		if err := os.Rename(src, dst); err != nil {
 			return fail(errnoStatus(err))
@@ -936,10 +1000,11 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		case _nf4Lnk:
 			return fail(_nfs4errNotSupp) // which link(2) makes of a symlink varies; no need for one
 		}
-		for _, p := range []string{src, dst} {
-			if s.protected(p) {
-				return fail(s.refuse("link", p))
-			}
+		if s.protected(src) {
+			return fail(s.refuse("link", src))
+		}
+		if s.protectedFile(dst) {
+			return fail(s.refuse("link", dst))
 		}
 		before := dirChange(dir.path)
 		if err := os.Link(src, dst); err != nil {
@@ -958,7 +1023,7 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 			status = _nfs4errBadXDR
 		case st.cur == nil:
 			status = _nfs4errNoFileHandle
-		case s.protected(st.cur.path):
+		case s.protectedFile(st.cur.path):
 			status = s.refuse("setattr", st.cur.path)
 		}
 		var set []int
@@ -1077,7 +1142,7 @@ func (s *nfsServer) write(r *xdrReader, w *xdrWriter, st *compoundState) uint32 
 	if st.cur == nil {
 		return fail(_nfs4errNoFileHandle)
 	}
-	if s.protected(st.cur.path) {
+	if s.protectedFile(st.cur.path) {
 		return fail(s.refuse("write", st.cur.path))
 	}
 	f, err := os.OpenFile(st.cur.path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
@@ -1131,7 +1196,7 @@ func (s *nfsServer) create(r *xdrReader, w *xdrWriter, st *compoundState) uint32
 		return fail(status)
 	}
 	p := dir.path + "/" + name
-	if s.protected(p) || typ == _nf4Lnk && !s.symlinkTarget(dir.path, target) {
+	if s.protected(p) || typ != _nf4Dir && s.protectedFile(p) || typ == _nf4Lnk && !s.symlinkTarget(dir.path, target) {
 		return fail(s.refuse("create", p))
 	}
 	mode := createMode(mask, vals, 0o755)
@@ -1541,7 +1606,7 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	} else {
 		p, dirPath, create = st.cur.path, filepath.Dir(st.cur.path), false
 	}
-	if (create || shareAccess&2 != 0) && s.protected(p) {
+	if (create || shareAccess&2 != 0) && s.protectedFile(p) {
 		return fail(s.refuse("open", p))
 	}
 	before := dirChange(dirPath)

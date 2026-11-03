@@ -62,6 +62,23 @@ func liveState(stateDir, project string) (liveFiles, error) {
 
 // liveAccept serves srv on each connection from ln that starts with token,
 // closing the rest unanswered, until ln is closed.
+// liveRoot is dir as the file system names it: APFS takes ~/WORK for ~/work,
+// and handles resolve to its own spelling.
+func liveRoot(dir string) (string, error) {
+	root, err := filepath.Abs(dir)
+	if err == nil {
+		root, err = filepath.EvalSymlinks(root)
+	}
+	if err != nil {
+		return "", err
+	}
+	f, _, err := lstatHandle(root)
+	if err != nil {
+		return "", err
+	}
+	return fsgetpath(f.dev, f.ino)
+}
+
 func liveAccept(ln net.Listener, srv *nfsServer, token []byte) error {
 	for {
 		c, err := ln.Accept()
@@ -138,10 +155,7 @@ func answers(port int) bool {
 // serveLive starts dir's server on project's port in this process and
 // returns its listener; closing it stops the server.
 func serveLive(stateDir, project, dir string) (net.Listener, error) {
-	root, err := filepath.Abs(dir)
-	if err == nil {
-		root, err = filepath.EvalSymlinks(root)
-	}
+	root, err := liveRoot(dir)
 	if err != nil {
 		return nil, err
 	}

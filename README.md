@@ -210,12 +210,16 @@ on your Mac, as you; the Lima VM still mounts nothing of yours). It never
 follows a symlink on the Mac, keeps the guest inside the folder, and
 refuses, whatever the guest's user, any change to `.git`, `.envrc`,
 `.vscode`, `.idea` and `.husky` at any depth and to your `protect` paths,
-including a hard link to one and a new symlink that is absolute, leaves
-the folder or points into one (your tools follow symlinks even though sbox
-doesn't). The agent reads history and diffs but commits on the Mac are
+including a hard link to one and a symlink that is absolute, leaves the
+folder or points into one (your tools follow symlinks even though sbox
+doesn't). It also refuses any file named `HEAD`: with `objects/` and `refs/`
+beside it, that's a repository whose config runs code at your next `git
+status` in that folder. The agent reads history and diffs but commits on the Mac are
 yours; each refusal is a `BLOCKED live` line in the summary and `sbox
 watch`. What a live mount gives up: copy mode's review before anything
-reaches your files. Anything you run on the Mac in that folder (`npm run`,
+reaches your files, and copy mode's leaving out what `.gitignore` names: the
+guest reads the whole folder, an `.env` included, and `protect` stops writes,
+not reads. Anything you run on the Mac in that folder (`npm run`,
 `make`, the tests, an editor task) runs what the agent wrote; `protect`
 narrows that, it can't close it. A dev server in the guest gets no file
 events for the Mac's edits, so it has to poll: sbox sets

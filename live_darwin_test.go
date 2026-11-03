@@ -79,3 +79,29 @@ func TestLiveStateIsKept(t *testing.T) {
 		t.Errorf("another project: %v, same token %v", err, bytes.Equal(c.token, a.token))
 	}
 }
+
+// TestServeLiveFolderInAnotherCase: APFS takes ~/WORK for ~/work, and every
+// handle must still resolve inside the folder.
+func TestServeLiveFolderInAnotherCase(t *testing.T) {
+	t.Parallel()
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(real, "Project")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello\n")
+	root, err := liveRoot(filepath.Join(real, "PROJECT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != dir {
+		t.Fatalf("liveRoot: %q, want %q", root, dir)
+	}
+	s := newNFSServer(root, bytes.Repeat([]byte{1}, 32))
+	if status := fhStatus(t, s, lookupHandle(t, s, "README.md"), func(*compoundArgs) {}); status != _nfsOK {
+		t.Errorf("a handle under the folder: %d", status)
+	}
+}

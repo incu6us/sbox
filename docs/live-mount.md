@@ -49,6 +49,11 @@ you've looked at it. What stays:
 - **`protect` paths are read-only too.** Defaults: `.git`, `.envrc`
   (direnv runs it), `.vscode`, `.idea`, `.husky`. The project's `protect`
   adds to them; nothing removes the defaults.
+- **No planted repository.** A file named `HEAD` beside `objects/`, `refs/`
+  and a `config` is a repository git on the Mac finds in that folder, and
+  its `core.fsmonitor` runs at the next `git status` there, your prompt's
+  included. So the guest can't make or change a file named `HEAD`, in any
+  case, at any depth. A folder of that name is ordinary.
 - **Read-only is enforced on the Mac**, by sbox's own file server, which
   checks every write against the protected paths by path. It holds against
   root in the guest too: the guest only ever speaks NFS to that server.
@@ -58,7 +63,11 @@ you've looked at it. What stays:
 
 What doesn't stay, and the docs say so: anything you run on the Mac in that
 folder (`npm run`, `make`, the tests, an IDE task) runs what the agent
-wrote. `protect` narrows that; it can't close it.
+wrote. `protect` narrows that; it can't close it. And the guest reads the
+whole folder: `.gitignore` doesn't apply, so an `.env` copy mode leaves out
+is there for the agent, and so is a token in `.git/config`'s remote URL.
+`protect` stops writes, not reads. Keep such files out of a live project,
+or use a copy.
 
 ## What exists
 
@@ -128,13 +137,19 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
   protected at any depth, so a nested repository's `.git` is too; a
   project's `protect` entries are paths from the root, and moving or
   removing a folder that holds one is refused. Names compare
-  case-insensitively, as APFS does (`.ENVRC` is `.envrc`).
+  case-insensitively, as APFS does (`.ENVRC` is `.envrc`, and `.huſky`,
+  with a long s, is `.husky`).
+- A file named `HEAD` (see above): making one by `OPEN`, `CREATE`, `LINK`
+  or `RENAME`, and changing one that is there.
 - A hard link to a protected file (`LINK .git/config notes` would be a
   writable second name for it).
 - A new symlink whose target is absolute, leaves the folder, or points
   into a protected path. The server never follows symlinks, but tools on
   the Mac do: `src/config.json -> /Users/you/.zshrc` would have the next
-  build on the Mac write your `.zshrc`.
+  build on the Mac write your `.zshrc`. A `..` is allowed only at the start
+  of a target (`sub/up -> ..` makes `sub/esc -> up/..` the folder's parent),
+  and moving a link, or a folder holding one, is refused when it would then
+  leave the folder.
 - Refusals are `NFS4ERR_ACCESS` (Permission denied) in the guest, and
   `ACCESS` already reports a protected path as read-only. The caller's
   uid doesn't matter: the server acts as the Mac user, so root in the
@@ -306,25 +321,39 @@ branch isn't merged before the workspace gating lands.
 - [x] An edit in the guest is in the Mac's folder within a second, and an
   edit on the Mac is in the guest within seconds; `next dev` reloads on a
   Mac edit with Turbopack's polling on (0.85 s).
-- [ ] `touch .git/x`, `echo >> .git/config` and writing `.git/hooks/pre-commit`
-  fail in the guest, as runner and as root; the same for `.envrc` and a
-  project `protect` path. The Mac's `.git` is byte-identical afterwards.
-- [ ] `npm ci` puts nothing in the Mac's `node_modules`; the guest's is
+- [x] `touch .git/x`, `echo >> .git/config` and writing `.git/hooks/pre-commit`
+  fail in the guest as runner; the same for `.envrc` and a project `protect`
+  path. As root is tested from the wire: a client in the guest speaking NFS
+  straight to the relay, claiming uid 0, is refused the same, and root has
+  no other way to the Mac. No test has a root shell: root's key only runs
+  `sync`. The Mac's `.git` is byte-identical afterwards.
+- [x] `npm ci` puts nothing in the Mac's `node_modules`; the guest's is
   there at the next session.
-- [ ] Files written in the guest are owned by you on the Mac.
-- [ ] A project in `default` asking for `live` gets the BLOCKED line and
-  nothing boots; approve-once lets it start.
-- [ ] A symlink in the folder to `~/.ssh` gives the guest nothing of the
+- [x] Files written in the guest are owned by you on the Mac.
+- [x] A project in `default` asking for `live` gets the BLOCKED line and
+  nothing boots; approving lets it start, and isn't asked again.
+- [x] A symlink in the folder to `~/.ssh` gives the guest nothing of the
   Mac's `~/.ssh`; `..` from the root stays at the root; a forged handle is
-  refused.
+  refused. From the kernel's mount and from the raw client.
+- [x] Names APFS folds to a protected one, a planted repository and symlinks
+  that climb out by chaining or moving are refused.
 - [x] Another session granted this session's port as a service gets its
   connection closed; the server listens on the Mac's loopback only.
 - [x] Killing `sbox live-serve` and reattaching: the guest's mount carries
   on with the same files open.
 - [x] `sbox sync` on a live session says so; `sbox stop` leaves no server,
   relay or token behind.
-- [ ] Copy-mode sessions behave exactly as before; the full VM suite
+- [x] Copy-mode sessions behave exactly as before; the full VM suite
   passes.
+
+## Known limits
+
+- `protect` compares with `strings.EqualFold`, with no Unicode
+  normalisation, so a non-ASCII `protect` path holds only for the file's own
+  spelling: the guest writing the other form of `й` gets past it.
+- A symlink can reach a `protect` path through another link (`c -> config`,
+  then `l -> c/prod.env`). The default names can't be reached so: a target
+  holding one is refused and a folder can't be renamed to one.
 
 ## Considered and left out
 

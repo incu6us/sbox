@@ -780,6 +780,20 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     live output is what the program printed, so a token a command prints in
     the guest reaches whatever captures that terminal.
 
+- ✅ Live mount's remaining checks (2026-11-03): three new VM tests, one a
+  client in the guest speaking NFS straight to the relay as uid 0.
+  - The checks found holes, all fixed. `.huſky` and `.vſcode` (long s) got past
+    the protected names, which APFS takes for `.husky` and `.vscode`. A planted
+    `HEAD`, `objects/`, `refs/` and `config` ran code at the Mac's next `git
+    status` there (confirmed with fsmonitor). `up/..` through a link to the
+    folder, or moving a link closer to the root, left the folder. A `protect`
+    path with a space wasn't protected. A folder given in another case
+    (`~/WORK`) made every handle stale.
+  - False `BLOCKED port` lines in live sessions were the kernel's NFS callback
+    socket; it now sits below 1024.
+  - The guest reads the whole folder, `.gitignore`d files included: now said in
+    the docs. Limits in [docs/live-mount.md](docs/live-mount.md).
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

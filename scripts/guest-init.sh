@@ -97,6 +97,9 @@ chown runner:runner /home/runner
 if [ -s /drive/sbox/live ]; then
 	mkdir -p /home/runner/work
 	i=0
+	# The client's callback socket, unused: the server never delegates. Below
+	# 1024 so the summary doesn't report it as the project's port.
+	echo 1023 >/sys/module/nfs/parameters/callback_tcpport 2>/dev/null
 	until mount -t nfs4 -o vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,hard,timeo=600 172.16.0.1:/ /home/runner/work 2>/dev/null; do
 		i=$((i + 1))
 		if [ "$i" -ge 30 ]; then
