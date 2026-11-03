@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -266,6 +267,11 @@ type nfsServer struct {
 	protect      []string
 	protectFile  string
 	protectStamp time.Time
+	// hide are rules for what the guest can't see or change, folded; read
+	// from hideFile as protect is from protectFile.
+	hide      ignoreRules
+	hideFile  string
+	hideStamp time.Time
 	// refused, when set, hears each refused change: the operation and the
 	// path from the root.
 	refused func(op, rel string)
@@ -296,18 +302,33 @@ func newNFSServer(root string, key []byte) *nfsServer {
 // reloadProtect reads protectFile again when it changed. A file that
 // can't be read keeps the last list.
 func (s *nfsServer) reloadProtect() {
-	if s.protectFile == "" {
-		return
+	if list, ok := reloadList(s.protectFile, &s.protectStamp); ok {
+		s.protect = list
 	}
-	fi, err := os.Stat(s.protectFile)
-	if err != nil || fi.ModTime().Equal(s.protectStamp) {
-		return
+	if list, ok := reloadList(s.hideFile, &s.hideStamp); ok {
+		for i := range list {
+			list[i] = foldName(list[i])
+		}
+		s.hide = list
 	}
-	data, err := os.ReadFile(s.protectFile)
+}
+
+// reloadList reads file's lines when it changed since stamp. A file that
+// can't be read keeps the last list.
+func reloadList(file string, stamp *time.Time) ([]string, bool) {
+	if file == "" {
+		return nil, false
+	}
+	fi, err := os.Stat(file)
+	if err != nil || fi.ModTime().Equal(*stamp) {
+		return nil, false
+	}
+	data, err := os.ReadFile(file)
 	if err != nil {
-		return
+		return nil, false
 	}
-	s.protect, s.protectStamp = slices.DeleteFunc(strings.Split(string(data), "\n"), func(q string) bool { return q == "" }), fi.ModTime()
+	*stamp = fi.ModTime()
+	return slices.DeleteFunc(strings.Split(string(data), "\n"), func(q string) bool { return q == "" }), true
 }
 
 // rel is p from the root, "" for the root itself.
@@ -318,14 +339,77 @@ func (s *nfsServer) rel(p string) string {
 	return strings.TrimPrefix(p, s.root+"/")
 }
 
-// protected reports whether p may not be changed: a protected name at any
-// depth, a protect path, or anything under either. Names compare as APFS
+// foldName is name as hide's rules compare it, the case folded as APFS does.
+func foldName(name string) string { return strings.ReplaceAll(strings.ToLower(name), "\u017f", "s") }
+
+// hideMatches reports whether a hide rule matches rel or a folder it is in.
+func (s *nfsServer) hideMatches(rel string) bool {
+	for rel = foldName(rel); rel != "." && rel != "/"; rel = path.Dir(rel) {
+		if s.hide.skip(rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// hidden reports whether the guest may not see p. A path is looked at as
+// asked for and as the file system names it, so any spelling APFS takes
+// for a hidden file (the other form of an é) is that file. ponytail: a hard
+// link the Mac made under another name is that name's.
+func (s *nfsServer) hidden(p string) bool {
+	if len(s.hide) == 0 || p == s.root {
+		return false
+	}
+	if s.hideMatches(s.rel(p)) {
+		return true
+	}
+	f, _, err := lstatHandle(p)
+	if err != nil {
+		return false
+	}
+	real, err := fsgetpath(f.dev, f.ino)
+	return err == nil && s.hideMatches(s.rel(real))
+}
+
+// missing answers the guest's looking for the hidden path p, which is there
+// or not: the same to the guest, and only one that's there is reported.
+func (s *nfsServer) missing(p string) uint32 {
+	var sys syscall.Stat_t
+	if s.refused != nil && syscall.Lstat(p, &sys) == nil {
+		s.refused("hide", s.rel(p))
+	}
+	return _nfs4errNoEnt
+}
+
+// unhides reports whether moving src to dst would bring a hidden path at
+// or under src into view. ponytail: walks the folder under the one lock,
+// as linksStayInside does.
+func (s *nfsServer) unhides(src, dst string) bool {
+	if len(s.hide) == 0 {
+		return false
+	}
+	found := false
+	_ = filepath.WalkDir(src, func(p string, _ fs.DirEntry, err error) error {
+		if err == nil && s.hidden(p) && !s.hidden(dst+strings.TrimPrefix(p, src)) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// protected reports whether p may not be changed: a hidden path, a
+// protected name at any depth, a protect path, or anything under them. Names compare as APFS
 // does, ſ and K included. ponytail: EqualFold, no Unicode normalisation; a
 // non-ASCII protect path must be written as the file's own name is.
 func (s *nfsServer) protected(p string) bool {
 	rel := s.rel(p)
 	if rel == "" {
 		return false
+	}
+	if s.hidden(p) {
+		return true
 	}
 	parts := strings.Split(rel, "/")
 	for _, c := range parts {
@@ -378,6 +462,9 @@ func (s *nfsServer) holdsProtected(p string) bool {
 // refuse answers a refused change to p.
 func (s *nfsServer) refuse(op, p string) uint32 {
 	if s.refused != nil {
+		if s.hidden(p) {
+			op = "hide"
+		}
 		s.refused(op, s.rel(p))
 	}
 	return _nfs4errAccess
@@ -461,7 +548,7 @@ func (s *nfsServer) resolve(h []byte) (fileHandle, uint32) {
 	}
 	f := fileHandle{dev: int32(binary.BigEndian.Uint32(h[1:5])), ino: binary.BigEndian.Uint64(h[5:13])}
 	p, err := fsgetpath(f.dev, f.ino)
-	if err != nil || (p != s.root && !strings.HasPrefix(p, s.root+"/")) {
+	if err != nil || (p != s.root && !strings.HasPrefix(p, s.root+"/")) || s.hidden(p) {
 		return fileHandle{}, _nfs4errStale
 	}
 	f.path = p
@@ -717,6 +804,9 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		if status != _nfsOK {
 			return fail(status)
 		}
+		if p := dir.path + "/" + name; s.hidden(p) {
+			return fail(s.missing(p))
+		}
 		f, _, err := lstatHandle(dir.path + "/" + name)
 		if err != nil {
 			return fail(errnoStatus(err))
@@ -728,7 +818,7 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		if status != _nfsOK {
 			return fail(status)
 		}
-		if dir.path == s.root {
+		if dir.path == s.root || s.hidden(filepath.Dir(dir.path)) {
 			return fail(_nfs4errNoEnt)
 		}
 		f, _, err := lstatHandle(filepath.Dir(dir.path))
@@ -832,6 +922,9 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		}
 		if status != _nfsOK {
 			return fail(status)
+		}
+		if p := dir.path + "/" + name; s.hidden(p) {
+			return fail(s.missing(p))
 		}
 		if _, _, err := lstatHandle(dir.path + "/" + name); err != nil {
 			return fail(errnoStatus(err))
@@ -965,6 +1058,9 @@ func (s *nfsServer) op(op uint32, r *xdrReader, w *xdrWriter, st *compoundState)
 		}
 		if !s.linksStayInside(src, dst) {
 			return fail(s.refuse("rename", dst))
+		}
+		if s.unhides(src, dst) {
+			return fail(s.refuse("rename", src))
 		}
 		srcBefore, dstBefore := dirChange(from.path), dirChange(to.path)
 		if err := os.Rename(src, dst); err != nil {
@@ -1499,6 +1595,7 @@ func (s *nfsServer) readdir(r *xdrReader, w *xdrWriter, st *compoundState) uint3
 		if entries, err = os.ReadDir(dir.path); err != nil {
 			status = errnoStatus(err)
 		}
+		entries = slices.DeleteFunc(entries, func(e os.DirEntry) bool { return s.hidden(dir.path + "/" + e.Name()) })
 	}
 	if status != _nfsOK {
 		w.u32(status)
@@ -1608,6 +1705,9 @@ func (s *nfsServer) open(r *xdrReader, w *xdrWriter, st *compoundState) uint32 {
 	}
 	if (create || shareAccess&2 != 0) && s.protectedFile(p) {
 		return fail(s.refuse("open", p))
+	}
+	if s.hidden(p) {
+		return fail(s.missing(p))
 	}
 	before := dirChange(dirPath)
 	var set []int

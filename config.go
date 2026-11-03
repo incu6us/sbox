@@ -81,6 +81,7 @@ type config struct {
 		ReviewOn        string            `yaml:"review_on,omitempty"`        // REVIEW from this severity; MEDIUM when unset
 	} `yaml:"rules,omitempty"`
 	Push       []string             `yaml:"push,omitempty"`       // host/owner/repo sbox run -push may push the folder's branch to
+	Hide       []string             `yaml:"hide,omitempty"`       // what the guest doesn't see, nor can it change: names, globs, paths from the root
 	Protect    []string             `yaml:"protect,omitempty"`    // live: paths from the root the guest may not change, besides the defaults
 	Workspaces map[string]workspace `yaml:"workspaces,omitempty"` // the user's own file only: see workspace
 	Report     struct {
@@ -153,6 +154,9 @@ func (c config) bootKeys() map[string]string {
 	}
 	if len(c.Dev.Local) > 0 {
 		keys["dev.local"] = c.Dev.Local
+	}
+	if len(c.Hide) > 0 {
+		keys["hide"] = c.Hide
 	}
 	out := make(map[string]string, len(keys))
 	for k, v := range keys {
@@ -389,6 +393,7 @@ func (cfg *config) merge(c config) {
 	cfg.Report.FailOn = cmp.Or(c.Report.FailOn, cfg.Report.FailOn)
 	cfg.Push = append(cfg.Push, c.Push...)
 	cfg.Protect = append(cfg.Protect, c.Protect...)
+	cfg.Hide = append(cfg.Hide, c.Hide...)
 	cfg.Dev.Local = append(cfg.Dev.Local, c.Dev.Local...)
 	if c.Dev.VCPUs != 0 {
 		cfg.Dev.VCPUs = c.Dev.VCPUs
@@ -506,6 +511,13 @@ func (c *config) check() error {
 			if p == "" || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "../") || p == ".." || p == "." {
 				return fmt.Errorf("%s: %q: want a clean path from the project root (node_modules, config/prod.env)", list.key, p)
 			}
+		}
+	}
+	for _, rule := range c.Hide { // no !: a project couldn't then take back what the user hid
+		pat := strings.TrimPrefix(rule, "/")
+		_, err := path.Match(pat, "")
+		if pat == "" || err != nil || path.IsAbs(pat) || path.Clean(pat) != pat || strings.HasPrefix(pat, "../") || pat == ".." || pat == "." || strings.HasPrefix(pat, "!") {
+			return fmt.Errorf("hide: %q: want a name or glob (.env, *.pem), or a clean path from the project root (config/prod.env, /secrets), with no ! to take one back", rule)
 		}
 	}
 	for _, rule := range c.Dev.Ignore {

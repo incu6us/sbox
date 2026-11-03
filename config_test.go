@@ -303,10 +303,37 @@ func TestLoadConfigLiveKeys(t *testing.T) {
 		{"dev: {local: [\"\"]}\n", "dev.local"},
 		{"protect: [../x]\n", "protect"},
 		{"protect: [a//b]\n", "protect"},
+		{"hide: [../x]\n", "hide"},
+		{"hide: [\"!.env.example\"]\n", "hide"},
+		{"hide: [\"[\"]\n", "hide"},
 	} {
 		if _, err := loadConfig(none, write(t, tt.body)); err == nil || !strings.Contains(err.Error(), tt.key) {
 			t.Errorf("%q: %v, want a refusal naming %s", tt.body, err, tt.key)
 		}
+	}
+}
+
+// TestLoadConfigHide: every layer's hide adds up; a project can't take back
+// what the user hid, and a change needs a new session, since the guest's
+// kernel may hold the file already.
+func TestLoadConfigHide(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "sbox.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := loadConfig(write(t, "hide: [.env]\n"), write(t, "hide: [.env.*, /secrets, config/*.pem]\n"))
+	if want := []string{".env", ".env.*", "/secrets", "config/*.pem"}; err != nil || !slices.Equal(cfg.Hide, want) {
+		t.Errorf("hide %v, %v; want %v", cfg.Hide, err, want)
+	}
+	if keys := cfg.bootKeys(); keys["hide"] != `[".env",".env.*","/secrets","config/*.pem"]` {
+		t.Errorf("bootKeys hide %s", keys["hide"])
+	}
+	if _, ok := (config{}).bootKeys()["hide"]; ok {
+		t.Error("bootKeys has hide unset: sessions recorded before it wouldn't match")
 	}
 }
 

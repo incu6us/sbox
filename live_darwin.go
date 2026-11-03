@@ -169,6 +169,7 @@ func serveLive(stateDir, project, dir string) (net.Listener, error) {
 	}
 	srv := newNFSServer(root, st.key)
 	srv.protectFile = liveProtectFile(stateDir, project)
+	srv.hideFile = liveHideFile(stateDir, project)
 	refused := liveRefusedFile(stateDir, project)
 	srv.refused = func(op, rel string) {
 		if f, err := os.OpenFile(refused, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {

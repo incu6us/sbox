@@ -107,10 +107,11 @@ func TestLiveRefusals(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(liveRefusedFile(state, project)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, liveRefusedFile(state, project), "open .git/config\nwrite .git/config\nopen .git/config\ncreate .envrc\n")
+	writeTestFile(t, liveRefusedFile(state, project), "open .git/config\nwrite .git/config\nopen .git/config\ncreate .envrc\nhide .env\nhide .env\n")
 	want := []string{
 		"BLOCKED live    .git/config  read-only in a live session (open ×2, write ×1)",
 		"BLOCKED live    .envrc  read-only in a live session (create ×1)",
+		"BLOCKED live    .env  hidden from the guest by hide (×2)",
 	}
 	if got := liveRefusals(state, project); !slices.Equal(got, want) {
 		t.Errorf("liveRefusals =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

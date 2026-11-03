@@ -1403,3 +1403,195 @@ func TestNFSProtectFileWithASpace(t *testing.T) {
 		t.Errorf("my secrets.env: %d, want ACCESS", status)
 	}
 }
+
+// hideFolder is a project with things to hide, its server reading list.
+func hideFolder(t *testing.T, list string) (string, *nfsServer) {
+	t.Helper()
+	dir := testFolder(t)
+	for _, d := range []string{"apps", "secrets", "config"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".env", ".env.example", "apps/.env", "secrets/key.pem", "config/prod.env", "config/dev.env", "other.txt"} {
+		writeTestFile(t, filepath.Join(dir, f), "SECRET in "+f+"\n")
+	}
+	file := filepath.Join(t.TempDir(), "hide")
+	writeTestFile(t, file, list)
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.hideFile = file
+	return dir, s
+}
+
+// TestNFSHide: a hidden path looks missing however the guest asks, even
+// with a handle from before it was hidden, and can't be changed or moved
+// into view. What's next to it is ordinary.
+func TestNFSHide(t *testing.T) {
+	t.Parallel()
+	dir, s := hideFolder(t, ".env\nsecrets\nconfig/prod.env\n")
+	var refused []string
+	s.refused = func(op, rel string) { refused = append(refused, op+" "+rel) }
+	before := newNFSServer(dir, s.key)
+	oldEnv, oldKey := lookupHandle(t, before, ".env"), lookupHandle(t, before, "secrets", "key.pem")
+	root, apps := lookupHandle(t, s), lookupHandle(t, s, "apps")
+
+	lookup := func(h []byte, name string) uint32 {
+		return fhStatus(t, s, h, func(c *compoundArgs) { c.add(_opLookup).str(name) })
+	}
+	for _, tt := range []struct {
+		name string
+		h    []byte
+		arg  string
+		want uint32
+	}{
+		{"LOOKUP .env", root, ".env", _nfs4errNoEnt},
+		{"LOOKUP .ENV", root, ".ENV", _nfs4errNoEnt},
+		{"LOOKUP .env at any depth", apps, ".env", _nfs4errNoEnt},
+		{"LOOKUP a hidden folder", root, "secrets", _nfs4errNoEnt},
+		{"LOOKUP .env.example", root, ".env.example", _nfsOK},
+		{"LOOKUP a missing hidden name", root, ".env", _nfs4errNoEnt},
+	} {
+		if got := lookup(tt.h, tt.arg); got != tt.want {
+			t.Errorf("%s: %d, want %d", tt.name, got, tt.want)
+		}
+	}
+	if got := lookup(lookupHandle(t, s, "config"), "prod.env"); got != _nfs4errNoEnt {
+		t.Errorf("LOOKUP a hidden path: %d, want NOENT", got)
+	}
+	if got := lookup(lookupHandle(t, s, "config"), "dev.env"); got != _nfsOK {
+		t.Errorf("LOOKUP beside a hidden path: %d", got)
+	}
+	for name, h := range map[string][]byte{".env's old handle": oldEnv, "the old handle of a file in a hidden folder": oldKey} {
+		if status := fhStatus(t, s, h, func(*compoundArgs) {}); status != _nfs4errStale {
+			t.Errorf("%s: %d, want STALE", name, status)
+		}
+	}
+	if status := fhStatus(t, s, root, func(c *compoundArgs) { c.add(_opSecInfo).str(".env") }); status != _nfs4errNoEnt {
+		t.Errorf("SECINFO .env: %d, want NOENT", status)
+	}
+	_, names, _, _ := readdir(t, s, root, 0, 1<<16)
+	if want := []string{".env.example", "README.md", "apps", "config", "other.txt"}; !slices.Equal(names, want) {
+		t.Errorf("READDIR: %v, want %v", names, want)
+	}
+
+	read := func(h []byte, name string) uint32 {
+		return fhStatus(t, s, h, func(c *compoundArgs) {
+			w := c.add(_opOpen)
+			w.u32(1)
+			w.u32(1) // share_access READ
+			w.u32(0)
+			w.u64(7)
+			w.opaque([]byte("owner"))
+			w.u32(0)
+			w.u32(0)
+			w.str(name)
+		})
+	}
+	if got := read(root, ".env"); got != _nfs4errNoEnt {
+		t.Errorf("OPEN .env for reading: %d, want NOENT", got)
+	}
+	for _, tt := range []struct {
+		name  string
+		build func(c *compoundArgs)
+	}{
+		{"open .env for writing", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, ".env", -1, "") }},
+		{"create over .env", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, ".env", 0, "") }},
+		{"create over .ENV", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, ".ENV", 0, "") }},
+		{"a new file of a hidden name", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(lookupHandle(t, s, "config"))
+			openWrite(c, ".env", 0, "")
+		}},
+		{"remove .env", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); c.add(_opRemove).str(".env") }},
+		{"rename .env away", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(root)
+			c.add(_opSaveFH)
+			w := c.add(_opRename)
+			w.str(".env")
+			w.str("visible")
+		}},
+		{"rename onto .env", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(root)
+			c.add(_opSaveFH)
+			w := c.add(_opRename)
+			w.str("other.txt")
+			w.str(".env")
+		}},
+		{"rename a folder bringing a hidden path into view", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(root)
+			c.add(_opSaveFH)
+			w := c.add(_opRename)
+			w.str("config")
+			w.str("cfg")
+		}},
+		{"a symlink to .env", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(root)
+			w := c.add(_opCreate)
+			w.u32(_nf4Lnk)
+			w.str(".env")
+			w.str("l")
+			modeAttrs(w, 0o755)
+		}},
+	} {
+		var c compoundArgs
+		tt.build(&c)
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+			t.Errorf("%s: %d, want ACCESS", tt.name, status)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, ".env")); string(got) != "SECRET in .env\n" {
+		t.Errorf(".env: %q", got)
+	}
+
+	// A name hidden anywhere stays hidden where it's moved: the folder may go.
+	var c compoundArgs
+	c.add(_opPutFH).opaque(root)
+	c.add(_opSaveFH)
+	w := c.add(_opRename)
+	w.str("apps")
+	w.str("apps2")
+	runWant(t, s, "rename a folder holding a hidden name", _nfsOK, &c)
+	if got := lookup(lookupHandle(t, s, "apps2"), ".env"); got != _nfs4errNoEnt {
+		t.Errorf("apps2/.env: %d, want NOENT", got)
+	}
+
+	if !slices.Contains(refused, "hide .env") || !slices.Contains(refused, "hide secrets") {
+		t.Errorf("refusals %v lack what the guest looked for", refused)
+	}
+	if strings.Contains(strings.Join(refused, "\n"), "read-only") {
+		t.Errorf("refusals: %v", refused)
+	}
+}
+
+// TestNFSHideQuietOnMissing: a tool probing for a hidden name that doesn't
+// exist (Next.js tries four .env files) is no refusal to report.
+func TestNFSHideQuietOnMissing(t *testing.T) {
+	t.Parallel()
+	_, s := hideFolder(t, ".env.local\n")
+	var refused []string
+	s.refused = func(op, rel string) { refused = append(refused, op+" "+rel) }
+	if got := fhStatus(t, s, lookupHandle(t, s), func(c *compoundArgs) { c.add(_opLookup).str(".env.local") }); got != _nfs4errNoEnt {
+		t.Errorf("LOOKUP: %d", got)
+	}
+	if len(refused) != 0 {
+		t.Errorf("refusals: %v", refused)
+	}
+}
+
+// TestNFSHideFileReloads: the list is read again when it changes.
+func TestNFSHideFileReloads(t *testing.T) {
+	t.Parallel()
+	_, s := hideFolder(t, "")
+	lookup := func() uint32 {
+		return fhStatus(t, s, lookupHandle(t, s), func(c *compoundArgs) { c.add(_opLookup).str("other.txt") })
+	}
+	if got := lookup(); got != _nfsOK {
+		t.Errorf("not hidden yet: %d", got)
+	}
+	writeTestFile(t, s.hideFile, "other.txt\n")
+	if err := os.Chtimes(s.hideFile, time.Now().Add(time.Second), time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := lookup(); got != _nfs4errNoEnt {
+		t.Errorf("hidden: %d, want NOENT", got)
+	}
+}

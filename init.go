@@ -166,7 +166,7 @@ func configMain(args []string, stdout, stderr io.Writer, host devHost) int {
 	for _, line := range devPreflight(cfg, secrets, readMCPJSON(dir)) {
 		b.WriteString("# " + line + "\n")
 	}
-	if note := gitignoreNote(dir, syncRules(append(gitignoreRules(dir), cfg.Dev.Ignore...))); note != "" {
+	if note := gitignoreNote(dir, syncRules(cfg.leftOut(dir))); note != "" {
 		b.WriteString("# " + note + "\n")
 	}
 	if blocked != nil {

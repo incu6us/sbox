@@ -26,6 +26,7 @@ dev:
   mount: live                       # copy (the default) or live
   local: [node_modules, .next]      # kept on the guest's disk, not on the Mac
 protect: [.env.production]          # read-only in the guest, added to the defaults
+hide: [.env, /secrets]              # the guest doesn't see these at all
 ```
 
 ## Why
@@ -64,10 +65,11 @@ you've looked at it. What stays:
 What doesn't stay, and the docs say so: anything you run on the Mac in that
 folder (`npm run`, `make`, the tests, an IDE task) runs what the agent
 wrote. `protect` narrows that; it can't close it. And the guest reads the
-whole folder: `.gitignore` doesn't apply, so an `.env` copy mode leaves out
-is there for the agent, and so is a token in `.git/config`'s remote URL.
-`protect` stops writes, not reads. Keep such files out of a live project,
-or use a copy.
+whole folder but for what `hide` names: `.gitignore` doesn't apply, so an
+`.env` copy mode leaves out is there for the agent unless you hide it, and
+so is a token in `.git/config`'s remote URL. `protect` stops writes, not
+reads. There's no default list: name your secrets, in your own config if
+they should stay hidden everywhere.
 
 ## What exists
 
@@ -141,6 +143,14 @@ guest /home/runner/work ──NFSv4.0──▶ 172.16.0.1:2049 (relay in the ses
   with a long s, is `.husky`).
 - A file named `HEAD` (see above): making one by `OPEN`, `CREATE`, `LINK`
   or `RENAME`, and changing one that is there.
+- Anything `hide` names, and anything in a folder it names, looks missing:
+  `LOOKUP`, `SECINFO` and `OPEN` for reading say `NOENT` whether or not it
+  exists, `READDIR` leaves it out, a handle minted before it was hidden is
+  `STALE`, and any spelling APFS takes for the file is that file. It can't
+  be changed either, and a folder can't be moved when that would bring it
+  into view. Rules are `ignoreRules` without `!`, so a project can't take
+  back what the user hid; each layer's add up. A hidden file that exists
+  is reported as `BLOCKED live`; a tool probing for one that doesn't isn't.
 - A hard link to a protected file (`LINK .git/config notes` would be a
   writable second name for it).
 - A new symlink whose target is absolute, leaves the folder, or points
@@ -348,6 +358,14 @@ branch isn't merged before the workspace gating lands.
 
 ## Known limits
 
+- `hide` limits what the guest sees from now on. A change to it needs a new
+  session, since the guest's kernel may hold the file already, and a kept
+  copy-mode home keeps what was copied in before (`sbox dev -fresh`).
+- A hard link the Mac made to a hidden file under another name is visible
+  under that name. A hidden file still counts in its folder: `rmdir` on one
+  that holds only hidden files says it isn't empty.
+- In copy mode `hide` joins `.gitignore` and `dev.ignore` in one list, so a
+  `!` in either takes back what it names. A live mount checks `hide` alone.
 - `protect` compares with `strings.EqualFold`, with no Unicode
   normalisation, so a non-ASCII `protect` path holds only for the file's own
   spelling: the guest writing the other form of `й` gets past it.

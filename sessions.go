@@ -441,16 +441,17 @@ type devHost struct {
 // liveServer writes project's protect list for its live server, starts or
 // finds the server, and returns where the guest's relay goes.
 func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error) {
-	var list strings.Builder
-	for _, p := range cfg.Protect {
-		list.WriteString(p + "\n")
-	}
-	p := liveProtectFile(h.stateDir, project)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(p, []byte(list.String()), 0o600); err != nil {
-		return nil, err
+	for p, list := range map[string][]string{liveProtectFile(h.stateDir, project): cfg.Protect, liveHideFile(h.stateDir, project): cfg.Hide} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return nil, err
+		}
+		var lines strings.Builder
+		for _, l := range list {
+			lines.WriteString(l + "\n")
+		}
+		if err := os.WriteFile(p, []byte(lines.String()), 0o600); err != nil {
+			return nil, err
+		}
 	}
 	start := h.startLive
 	if start == nil {
@@ -502,6 +503,11 @@ func claudeKey(stateDir, project string) string {
 // whenever it changes.
 func liveProtectFile(stateDir, project string) string {
 	return filepath.Join(stateDir, "live", project, "protect")
+}
+
+// liveHideFile is the same for what the guest doesn't see.
+func liveHideFile(stateDir, project string) string {
+	return filepath.Join(stateDir, "live", project, "hide")
 }
 
 // watchChanges puts the count of the guest's unsynced changes in the
@@ -648,7 +654,7 @@ func (h devHost) devConfig(dir string) (config, guestJob, error) {
 
 // devConfigFrom is devConfig's second half, for a config already loaded.
 func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error) {
-	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
+	cfg.Dev.Ignore = cfg.leftOut(dir)
 	lookup := h.lookupEnv
 	if lookup == nil {
 		lookup = os.LookupEnv

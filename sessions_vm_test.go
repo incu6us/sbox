@@ -1664,6 +1664,11 @@ for name, ops in [
     ("create a hook", [root, lookup(".git"), lookup("hooks"), open_for("pre-commit", 3, True)]),
     ("write a protect path", [root, lookup("config"), open_for("prod.env", 3)]),
     ("an absolute symlink", [root, symlink("zshrc", "/Users/you/.zshrc")]),
+    ("look up .env", [root, lookup(".env")]),
+    ("look up .ENV", [root, lookup(".ENV")]),
+    ("read .env", [root, open_for(".env", 1)]),
+    ("write .env", [root, open_for(".env", 3)]),
+    ("look in a hidden folder", [root, lookup("private"), lookup("key.pem")]),
 ]:
     print("raw", name, status(*ops))
 `
@@ -1682,9 +1687,9 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
-	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\nprotect: [config/prod.env]\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\nprotect: [config/prod.env]\nhide: [.env, private]\n")
 	writeTestFile(t, filepath.Join(dir, "attack.py"), _hostileClient)
-	for _, d := range []string{".git", ".git/hooks", ".vscode", "config", "sub"} {
+	for _, d := range []string{".git", ".git/hooks", ".vscode", "config", "sub", "private"} {
 		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -1692,6 +1697,8 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, ".git", "config"), "[core]\n")
 	writeTestFile(t, filepath.Join(dir, ".vscode", "tasks.json"), "{}\n")
 	writeTestFile(t, filepath.Join(dir, "config", "prod.env"), "SECRET=1\n")
+	writeTestFile(t, filepath.Join(dir, ".env"), "the Mac's hidden secret\n")
+	writeTestFile(t, filepath.Join(dir, "private", "key.pem"), "the Mac's hidden secret\n")
 	writeTestFile(t, filepath.Join(outside, "id_ed25519"), "the Mac's private key\n")
 	if err := os.Symlink(outside, filepath.Join(dir, "ssh")); err != nil {
 		t.Fatal(err)
@@ -1701,7 +1708,7 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 	}
 	before := func() string {
 		return treeDigest(t, filepath.Join(dir, ".git")) + treeDigest(t, filepath.Join(dir, ".vscode")) +
-			treeDigest(t, filepath.Join(dir, "config")) + treeDigest(t, outside)
+			treeDigest(t, filepath.Join(dir, "config")) + treeDigest(t, filepath.Join(dir, "private")) + treeDigest(t, outside) + treeDigest(t, filepath.Join(dir, ".env"))
 	}
 	was := before()
 	try := func(name, cmd string) string {
@@ -1714,6 +1721,8 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 		try("planted HEAD", "echo 'ref: refs/heads/main' > sub/HEAD") + try("planted head", "echo 'ref: refs/heads/main' > sub/head") +
 		try("a folder named Head", "mkdir -p other/Head && echo x > other/Head/index.tsx") +
 		try("a link to the folder", "ln -s .. sub/up") + try("a link climbing past it", "ln -s up/.. sub/esc") +
+		try("read .env", "cat .env") + try("read .ENV", "cat .ENV") + try("overwrite .env", "echo x > .env") + try("a hidden folder", "ls private") +
+		"ls -a | grep -c -e '^.env$' -e '^private$'; " +
 		"cat ssh/id_ed25519 key 2>&1 | grep -c 'private key'; python3 -I attack.py"
 	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: liveOnTheMac(t, state)}
 	var stdout, stderr bytes.Buffer
@@ -1724,7 +1733,9 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 	for _, want := range []string{
 		"protect path: refused", "protect path, other case: refused", "long s: refused", "long s, new: refused",
 		"planted HEAD: refused", "planted head: refused", "a folder named Head: allowed",
-		"a link to the folder: allowed", "a link climbing past it: refused", "\n0\n",
+		"a link to the folder: allowed", "a link climbing past it: refused", "\n0\n0\n",
+		"read .env: refused", "read .ENV: refused", "overwrite .env: refused", "a hidden folder: refused",
+		"raw look up .env 2", "raw look up .ENV 2", "raw read .env 2", "raw write .env 13", "raw look in a hidden folder 2",
 		"raw forged handle 10001", "raw dot dot 10041", "raw up from the root 2", "raw through a symlink 10029",
 		"raw open a symlink 10029", "raw read a symlink 22", "raw write .git/config 13", "raw create a hook 13",
 		"raw write a protect path 13", "raw an absolute symlink 13",
@@ -1735,6 +1746,12 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 	}
 	if before() != was {
 		t.Error("a protected path, or a file outside the folder, changed on the Mac")
+	}
+	if strings.Contains(out, "hidden secret") {
+		t.Errorf("the guest read a hidden file:\n%s", out)
+	}
+	if !strings.Contains(stderr.String(), "BLOCKED live    .env  hidden from the guest by hide") {
+		t.Errorf("the summary lacks .env:\n%s", stderr.String())
 	}
 	for _, p := range []string{"sub/HEAD", "sub/esc", "zshrc", ".git/hooks/pre-commit"} {
 		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {

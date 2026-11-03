@@ -794,6 +794,11 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   - The guest reads the whole folder, `.gitignore`d files included: now said in
     the docs. Limits in [docs/live-mount.md](docs/live-mount.md).
 
+- ✅ `hide` (2026-11-03): what a live session's guest doesn't see at all, however
+  it asks, and can't change or move into view. No default list and no `!`, so
+  a project can't take back what the user hid. In copy mode it joins what a
+  copy leaves out.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

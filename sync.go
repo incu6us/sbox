@@ -40,6 +40,14 @@ func syncRules(extra []string) ignoreRules {
 	return append(ignoreRules{".git"}, copyRules(extra)...)
 }
 
+// leftOut is what a copy of the project at dir leaves out, besides
+// copyRules. ponytail: one flat list, so a ! in .gitignore or dev.ignore can
+// take back what hide names; a live mount doesn't have that, hide being
+// checked alone there.
+func (c config) leftOut(dir string) []string {
+	return slices.Concat(gitignoreRules(dir), c.Dev.Ignore, c.Hide)
+}
+
 // gitignoreRules turns the project's root .gitignore into rules: git's
 // trailing / and leading **/ dropped, a slash before the end anchoring to
 // the root. ponytail: root file only, and a ** in the middle drops the
@@ -488,7 +496,7 @@ func syncMain(ctx context.Context, args []string, stdout, stderr io.Writer, vm s
 		_, _ = fmt.Fprintln(stdout, "live: the guest works on the folder itself, nothing to sync")
 		return exitOK
 	}
-	cfg.Dev.Ignore = append(gitignoreRules(dir), cfg.Dev.Ignore...)
+	cfg.Dev.Ignore = cfg.leftOut(dir)
 	if _, err := loadBase(stateDir, project); err != nil {
 		_, _ = fmt.Fprintf(stderr, "sbox: no sync base for %s: sbox dev records one when it first copies the project in (sbox dev -fresh starts over)\n", dir)
 		return exitFail

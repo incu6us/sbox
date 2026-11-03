@@ -203,6 +203,7 @@ dev:
   mount: live                       # or copy, the default
   local: [node_modules, .next]      # kept on the guest's own disk (default: node_modules, .venv)
 protect: [config/prod.env]          # read-only in the guest, besides the defaults
+hide: [.env, .env.local, /secrets]  # the guest doesn't see these at all
 ```
 
 sbox serves the folder to the guest itself (an NFS server inside `sbox`,
@@ -218,8 +219,13 @@ status` in that folder. The agent reads history and diffs but commits on the Mac
 yours; each refusal is a `BLOCKED live` line in the summary and `sbox
 watch`. What a live mount gives up: copy mode's review before anything
 reaches your files, and copy mode's leaving out what `.gitignore` names: the
-guest reads the whole folder, an `.env` included, and `protect` stops writes,
-not reads. Anything you run on the Mac in that folder (`npm run`,
+guest reads the whole folder, an `.env` included, unless you `hide` it. A
+hidden path looks missing to the guest, however it asks, and can't be changed
+or moved into view. Rules are names and globs at any depth (`.env`, `*.pem`)
+or paths from the root (`config/prod.env`, `/secrets`), add up across your
+config, the workspace and the project, and have no `!`, so a project can't
+take back what you hid. `hide` leaves the same paths out of a copy-mode
+session too. Anything you run on the Mac in that folder (`npm run`,
 `make`, the tests, an editor task) runs what the agent wrote; `protect`
 narrows that, it can't close it. A dev server in the guest gets no file
 events for the Mac's edits, so it has to poll: sbox sets

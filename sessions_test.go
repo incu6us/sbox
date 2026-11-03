@@ -549,7 +549,7 @@ func TestDevMainRecordsTheSyncBase(t *testing.T) {
 func TestDevMainLive(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {mount: live, local: [node_modules]}\nprotect: [config/prod.env]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "sbox.yaml"), []byte("dev: {mount: live, local: [node_modules]}\nprotect: [config/prod.env]\nhide: [.env]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var started []string
@@ -588,6 +588,9 @@ func TestDevMainLive(t *testing.T) {
 	if got, err := os.ReadFile(liveProtectFile(host.stateDir, mustProjectID(t, dir))); string(got) != "config/prod.env\n" {
 		t.Errorf("the server's protect file: %q, %v", got, err)
 	}
+	if got, err := os.ReadFile(liveHideFile(host.stateDir, mustProjectID(t, dir))); string(got) != ".env\n" {
+		t.Errorf("the server's hide file: %q, %v", got, err)
+	}
 	for _, c := range vm.calls {
 		if c[0] == "attach" && len(c) > 2 && strings.Contains(strings.Join(c, " "), "tar") {
 			t.Errorf("a live session synced at boot: %q", c)
@@ -601,7 +604,7 @@ func TestDevMainLive(t *testing.T) {
 			t.Errorf("sbox/env lacks %s:\n%s", kv, files["sbox/env"])
 		}
 	}
-	for _, want := range []string{"live: the changes are on the Mac already", "BLOCKED live    .git/config  read-only in a live session (write ×1)"} {
+	for _, want := range []string{"hidden: .env", "live: the changes are on the Mac already", "BLOCKED live    .git/config  read-only in a live session (write ×1)"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
 		}

@@ -501,6 +501,33 @@ func TestIgnoreRules(t *testing.T) {
 	}
 }
 
+// TestHideInCopyMode: hide leaves its paths out of a copy too, so the same
+// list holds in either mode.
+func TestHideInCopyMode(t *testing.T) {
+	t.Parallel()
+	dir, state := t.TempDir(), t.TempDir()
+	for p, body := range map[string]string{"sbox.yaml": "hide: [.env, /private]\n", "index.js": "home\n", ".env": "SECRET=1\n", "private/key": "k\n", "lib/.env": "SECRET=2\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, p), body)
+	}
+	guest := &fakeSyncGuest{t: t, project: mustProjectID(t, dir), files: map[string]string{}, rules: syncRules([]string{".env", "/private"}), newDrive: true}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, guest.run, devHost{stateDir: state}); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	files := tarFiles(t, guest.started)
+	if files["skill/index.js"] != "home\n" {
+		t.Errorf("copy-in lacks the project: %v", slices.Sorted(maps.Keys(files)))
+	}
+	for _, p := range []string{"skill/.env", "skill/lib/.env", "skill/private/key"} {
+		if _, ok := files[p]; ok {
+			t.Errorf("copy-in carries %s", p)
+		}
+	}
+}
+
 // TestGitignoreInCopyAndSync: the project's .gitignore joins dev.ignore,
 // for the copy-in, the base and sync alike.
 func TestGitignoreInCopyAndSync(t *testing.T) {
