@@ -16,6 +16,7 @@ same machinery; new work goes into dev mode first.
 | 5 | Firecracker snapshots | [snapshots.md](snapshots.md) | Built, measured, dropped: slower than a cold boot once guests have huge pages |
 | 6 | Workspaces: what a project may reach (mounts, secrets, egress, services) | [workspaces.md](workspaces.md) | Closes a hole: a downloaded repo's `sbox.yaml` grants itself your files and the network |
 | 7 | Live mount: the project folder itself instead of a copy | [live-mount.md](live-mount.md) | Editor and agent on the same files; opt-in per workspace, `.git` read-only |
+| 8 | Repos and URLs: which repositories and paths, not only hosts | [repos.md](repos.md) | Allowing `github.com` lets the guest push anywhere with a planted token |
 
 ## Shelved (scan mode)
 
@@ -69,3 +70,4 @@ Conventions shared by every plan:
 - [x] 5. Snapshots ([snapshots.md](snapshots.md)): built, measured, dropped: a restored guest gets no huge pages, 3.2 s against 1.1 s to start
 - [x] 6. Workspaces ([workspaces.md](workspaces.md)): every commit, verified on the real VM
 - [x] 7. Live mount ([live-mount.md](live-mount.md)): every commit, verified on the real VM
+- [ ] 8. Repos and URLs ([repos.md](repos.md)): planned, spike first
