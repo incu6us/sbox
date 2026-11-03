@@ -828,7 +828,7 @@ func TestDevMainRunsHooks(t *testing.T) {
 	if !slices.EqualFunc(withoutSummary(vm.calls), want, slices.Equal) {
 		t.Errorf("fresh boot: calls %q, want the hooks before the terminal", withoutSummary(vm.calls))
 	}
-	if env := tarFiles(t, vm.stdins[1])["sbox/env"]; env != "A=1 2\nNODE_ENV=development\n" {
+	if env := tarFiles(t, vm.stdins[1])["sbox/env"]; env != "A=1 2\nCLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\nNODE_ENV=development\n" {
 		t.Errorf("sbox/env = %q, want the variables, sorted, one per line", env)
 	}
 
@@ -877,7 +877,7 @@ func TestSetupEnvMain(t *testing.T) {
 
 	none := vmWith("")
 	if code := setupEnvMain(context.Background(), []string{dir}, &stdout, &stderr, none.run, devHost{stateDir: t.TempDir(), userConfig: ""}); code != 2 || len(none.calls) != 4 ||
-		none.calls[1][0] != "start" || none.calls[3][0] != "stop" || tarFiles(t, none.stdins[1])["sbox/env"] != "A=b\n" {
+		none.calls[1][0] != "start" || none.calls[3][0] != "stop" || tarFiles(t, none.stdins[1])["sbox/env"] != "A=b\nCLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n" {
 		t.Errorf("no session: exit %d, calls %q; want one started with the config, then stopped", code, none.calls)
 	}
 
@@ -965,6 +965,11 @@ func TestDevMainAgentSettings(t *testing.T) {
 	files := tarFiles(t, vm.stdins[1])
 	if files["sbox/claude.json"] != string(cfg.claudeSettings()) || files["sbox/claude.py"] != _claudeScript {
 		t.Errorf("run tar: claude.json %q, claude.py %d bytes; want the settings and the helper", files["sbox/claude.json"], len(files["sbox/claude.py"]))
+	}
+
+	// Claude Code's telemetry would be a BLOCKED line in every summary.
+	if !strings.Contains(files["sbox/env"], "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n") {
+		t.Errorf("sbox/env %q, want Claude Code's non-essential traffic off", files["sbox/env"])
 	}
 
 	// The key that signs the guest's merge mark: one per project, kept.

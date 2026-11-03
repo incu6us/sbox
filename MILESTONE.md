@@ -768,6 +768,18 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
     pages, so 3.2 s to start and 22 s on that memory test
     ([docs/snapshots.md](docs/snapshots.md)).
 
+- ✅ Dev mode's checks with a real token (2026-11-03): Claude Code in the
+  guest, a push with a scoped GitHub token, `sbox watch` and a project's
+  `.mcp.json` (the list in [docs/dev-mode.md](docs/dev-mode.md)). A one-line
+  agent reply takes 4 s, session included.
+  - Found and fixed: `permissions: skip` never worked for an agent using tools.
+    With no rules sbox wrote `"allow": null`, and Claude Code drops a settings
+    file with null lists, `bypassPermissions` with it. Claude Code's telemetry
+    was a BLOCKED line in every summary; its non-essential traffic is off now.
+  - Only the summary, `sbox log` and `sbox watch` are redacted. A terminal's
+    live output is what the program printed, so a token a command prints in
+    the guest reaches whatever captures that terminal.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

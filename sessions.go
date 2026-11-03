@@ -825,13 +825,15 @@ func markApplied(stateDir, project, id string, cfg config, keys []string) error 
 // devJob is what a dev session runs: nothing but the guest's sshd, with
 // the config's network and environment, and the secrets' values.
 func devJob(cfg config, secrets map[string]string) guestJob {
-	env := cfg.Dev.Env
+	// Claude Code's telemetry goes nowhere from here, as a BLOCKED line in
+	// every summary. dev.env wins over these.
+	env := map[string]string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 	if cfg.live() {
 		// Watchers poll (no inotify for the Mac's edits over NFS), and git
-		// doesn't try to write the read-only .git's index. dev.env wins.
-		env = map[string]string{"WATCHPACK_POLLING": "true", "CHOKIDAR_USEPOLLING": "1", "GIT_OPTIONAL_LOCKS": "0"}
-		maps.Copy(env, cfg.Dev.Env)
+		// doesn't try to write the read-only .git's index.
+		maps.Copy(env, map[string]string{"WATCHPACK_POLLING": "true", "CHOKIDAR_USEPOLLING": "1", "GIT_OPTIONAL_LOCKS": "0"})
 	}
+	maps.Copy(env, cfg.Dev.Env)
 	return guestJob{command: []string{"sleep", "infinity"}, ports: cfg.Ports, services: cfg.Services, egress: cfg.Egress, env: env, secrets: secrets,
 		vcpus: cmp.Or(cfg.Dev.VCPUs, cfg.VM.VCPUs), memoryMiB: cmp.Or(cfg.Dev.MemoryMiB, cfg.VM.MemoryMiB), claude: cfg.claudeSettings(), ignore: copyRules(cfg.Dev.Ignore), pauseAfter: cfg.Dev.PauseAfter}
 }
