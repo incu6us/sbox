@@ -17,6 +17,7 @@ same machinery; new work goes into dev mode first.
 | 6 | Workspaces: what a project may reach (mounts, secrets, egress, services) | [workspaces.md](workspaces.md) | Closes a hole: a downloaded repo's `sbox.yaml` grants itself your files and the network |
 | 7 | Live mount: the project folder itself instead of a copy | [live-mount.md](live-mount.md) | Editor and agent on the same files; opt-in per workspace, `.git` read-only |
 | 8 | Repos and URLs: which repositories and paths, not only hosts | [repos.md](repos.md) | Allowing `github.com` lets the guest push anywhere with a planted token |
+| 9 | Live links: the project, other folders and files, read-only or read-write | [live-links.md](live-links.md) | `mounts` are stale copies, in `sbox dev` nothing comes back, and a live project can only be read-write |
 
 ## Shelved (scan mode)
 
@@ -71,3 +72,4 @@ Conventions shared by every plan:
 - [x] 6. Workspaces ([workspaces.md](workspaces.md)): every commit, verified on the real VM
 - [x] 7. Live mount ([live-mount.md](live-mount.md)): every commit, verified on the real VM
 - [ ] 8. Repos and URLs ([repos.md](repos.md)): planned, spike first
+- [ ] 9. Live links ([live-links.md](live-links.md)): planned, spike first
