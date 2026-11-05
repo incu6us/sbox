@@ -130,10 +130,66 @@ func TestServeLiveReadOnly(t *testing.T) {
 	}
 }
 
-// TestLiveServeMainUsage: the flag doesn't take the place of the arguments.
+// TestLinkServer: a link's server has its own state, in its own folder, refuses
+// as its mode says, and reports a refusal by its path in the guest, as the
+// project's one log holds them all.
+func TestLinkServer(t *testing.T) {
+	t.Parallel()
+	state, dir := t.TempDir(), testFolder(t)
+	id := linkID(dir, "", true)
+	l := liveLink{id: id, src: dir, guest: "/home/runner/shared", readOnly: true}
+	srv, st, err := liveServerFor(state, "0123456789abcdef", l.spec("0123456789abcdef", state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.readOnly || srv.root == "" {
+		t.Errorf("the server: read-only %v, root %q", srv.readOnly, srv.root)
+	}
+	if fi, err := os.Stat(filepath.Join(state, "live", "0123456789abcdef", "links", id, "token")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("its token: %v, %v", fi, err)
+	}
+	project, err := liveState(liveFolder(state, "0123456789abcdef", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(project.token, st.token) || bytes.Equal(project.key, st.key) || project.port == st.port {
+		t.Error("a link shares state with its project's server")
+	}
+	srv.refused("write", "sub/a.txt")
+	srv.refused("setattr", "")
+	want := []string{
+		"BLOCKED live    /home/runner/shared/sub/a.txt  read-only in a live session (write ×1)",
+		"BLOCKED live    /home/runner/shared  read-only in a live session (setattr ×1)",
+	}
+	if got := liveRefusals(state, "0123456789abcdef"); !slices.Equal(got, want) {
+		t.Errorf("liveRefusals = %q, want %q", got, want)
+	}
+	rw := liveLink{id: linkID(dir, "", false), src: dir, guest: "/home/runner/out"}
+	if rw.id == id {
+		t.Error("a mode doesn't change the id, so a running server could keep the old mode")
+	}
+	if srv, _, err := liveServerFor(state, "0123456789abcdef", rw.spec("0123456789abcdef", state)); err != nil || srv.readOnly {
+		t.Errorf("read-write: read-only %v, %v", srv.readOnly, err)
+	}
+	if got, want := l.serveArgs("0123456789abcdef"), []string{"live-serve", "-link", id, "-guest", "/home/runner/shared", "-ro", "0123456789abcdef", dir}; !slices.Equal(got, want) {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if got, want := rw.serveArgs("0123456789abcdef"), []string{"live-serve", "-link", rw.id, "-guest", "/home/runner/out", "0123456789abcdef", dir}; !slices.Equal(got, want) {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+}
+
+// TestLiveServeMainUsage: the flag doesn't take the place of the arguments, and
+// a link's id has to be the one its path and mode make.
 func TestLiveServeMainUsage(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{{}, {"-ro"}, {"-ro", "project"}, {"-nope", "project", "dir"}} {
+	dir := t.TempDir()
+	for _, args := range [][]string{{}, {"-ro"}, {"-ro", "project"}, {"-nope", "project", "dir"},
+		{"-link", "wrong", "-guest", "/home/runner/x", "project", dir},
+		{"-link", linkID(dir, "", false), "-guest", "/home/runner/x", "-ro", "project", dir},
+		{"-link", linkID(dir, "", true), "-guest", "/home/runner/x", "project", dir},
+		{"-link", linkID(dir, "", true), "-ro", "project", dir},
+	} {
 		if code := liveServeMain(context.Background(), args, io.Discard, t.TempDir(), nil); code != exitUsage {
 			t.Errorf("%q: exit %d, want usage", args, code)
 		}

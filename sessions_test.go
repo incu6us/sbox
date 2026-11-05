@@ -1566,3 +1566,98 @@ func TestLiveMountIsNeverCopied(t *testing.T) {
 		t.Error("a link to a path that isn't there: no error before anything starts")
 	}
 }
+
+// TestDevLinks: a copy-mode session with links starts a server for each, and the
+// guest's drive says what to mount, while the tokens stay outside sbox/, for
+// sbox-run to keep off the drive.
+func TestDevLinks(t *testing.T) {
+	t.Parallel()
+	dir, home := t.TempDir(), t.TempDir()
+	home, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"shared", "out", "copied"} {
+		if err := os.Mkdir(filepath.Join(home, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), `hide: [.env]
+mounts:
+  - {host: ~/copied, guest: /home/runner/copied}
+  - {host: ~/shared, guest: /home/runner/shared, live: true}
+  - {host: ~/out, guest: /home/runner/out dir, live: true, mode: rw}
+`)
+	var started []liveLink
+	state := t.TempDir()
+	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLink: func(project string, l liveLink) (*liveRelay, error) {
+		started = append(started, l)
+		return &liveRelay{port: 5000 + len(started), token: []byte("token-" + l.guest)}, nil
+	}}
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if len(started) != 2 {
+		t.Fatalf("started %+v, want two", started)
+	}
+	shared, out := started[0], started[1]
+	if shared.src != filepath.Join(home, "shared") || !shared.readOnly || shared.guest != "/home/runner/shared" || shared.id != linkID(shared.src, "", true) {
+		t.Errorf("the read-only link: %+v", shared)
+	}
+	if out.src != filepath.Join(home, "out") || out.readOnly || out.guest != "/home/runner/out dir" || out.id != linkID(out.src, "", false) {
+		t.Errorf("the read-write link: %+v", out)
+	}
+	files := tarFiles(t, vm.stdins[1])
+	want := shared.id + "\t20490\t5001\tro\tdir\t-\t/home/runner/shared\n" + out.id + "\t20491\t5002\trw\tdir\t-\t/home/runner/out dir\n"
+	if files["sbox/links"] != want {
+		t.Errorf("sbox/links = %q, want %q", files["sbox/links"], want)
+	}
+	if files["links/20490.token"] != "token-/home/runner/shared" || files["links/20491.token"] != "token-/home/runner/out dir" {
+		t.Errorf("the tokens: %q, %q", files["links/20490.token"], files["links/20491.token"])
+	}
+	for name, body := range files {
+		if strings.HasPrefix(name, "sbox/") && strings.Contains(body, "token-") {
+			t.Errorf("a token in %s, on the guest's side of the drive", name)
+		}
+	}
+	if files["sbox/mounts"] != "0 /home/runner/copied\n" {
+		t.Errorf("sbox/mounts = %q, want the copy alone", files["sbox/mounts"])
+	}
+	if got, err := os.ReadFile(liveHideFile(state, mustProjectID(t, dir))); string(got) != ".env\n" {
+		t.Errorf("a link's server has no hide list in a copy session: %q, %v", got, err)
+	}
+	if files["sbox/live"] != "" {
+		t.Errorf("a copy session with links says it's live: %q", files["sbox/live"])
+	}
+}
+
+// TestDevLinkServerFails: a link that can't start stops the session; a guest
+// with an empty folder at that path would look like a Mac folder emptied.
+func TestDevLinkServerFails(t *testing.T) {
+	t.Parallel()
+	dir, home := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/shared, guest: /home/runner/shared, live: true}]\n")
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), home: home, startLink: func(string, liveLink) (*liveRelay, error) {
+		return nil, errors.New("no port")
+	}}
+	vm := fakeVM{answer: func([]string) string { return "" }}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code == exitOK {
+		t.Errorf("exit 0\n%s", stderr.String())
+	}
+	for _, c := range vm.calls {
+		if c[0] == "start" {
+			t.Errorf("a session started: %q", vm.calls)
+		}
+	}
+}

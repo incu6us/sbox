@@ -371,7 +371,7 @@ as a link is ungated until then.
   doesn't carry; BLOCKED lines. The read-write refusals as a table, with symlinks,
   case, `$CLAUDE_CONFIG_DIR` and `$PATH`, and that approve-once can't pass them.
   The project overlap check, both directions.
-- [ ] **5. A server per link.** `liveState` by folder, `live-serve -link`, `startLink`,
+- [x] **5. A server per link.** `liveState` by folder, `live-serve -link`, `startLink`,
   an id that doesn't match refused, `job.links`, `sbox/links` and the token files
   written. Tests with a fake `startLive`.
 - [ ] **6. The path in the VM: folders.** `fwd_pair`'s `link` kind, tokens moved off

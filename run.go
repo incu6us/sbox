@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -143,6 +144,40 @@ type guestJob struct {
 	pauseAfter time.Duration
 	canary     string     // the fake credentials' marker; a random one when empty
 	live       *liveRelay // a live mount: the guest mounts the Mac's folder instead of a copy
+	links      []liveLink // other Mac folders and files the guest mounts (docs/live-links.md)
+}
+
+// liveLink is one link: what its server serves, where the guest puts it, and
+// the relay between them once its server is started.
+type liveLink struct {
+	id        string
+	src       string // the resolved Mac folder: a file's parent for a file link
+	file      string // the file's name in src; "" for a folder
+	guest     string
+	readOnly  bool
+	guestPort int
+	port      int
+	token     []byte
+}
+
+// linkID names a link's server and its state, from what it serves: a change of
+// mode is another server, so a running one's mode never changes.
+func linkID(src, file string, readOnly bool) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%t", src, file, readOnly))
+	return hex.EncodeToString(sum[:8])
+}
+
+// driveLine is the link's line in sbox/links, tab-separated, as both sbox-run
+// and the guest read it. validate keeps tabs and newlines out of the paths.
+func (l liveLink) driveLine() string {
+	mode, kind, name := "rw", "dir", "-"
+	if l.readOnly {
+		mode = "ro"
+	}
+	if l.file != "" {
+		kind, name = "file", l.file
+	}
+	return fmt.Sprintf("%s\t%d\t%d\t%s\t%s\t%s\t%s\n", l.id, l.guestPort, l.port, mode, kind, name, l.guest)
 }
 
 // liveRelay is where a live session's NFS goes: the Mac's server port, and
@@ -608,6 +643,15 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 	}
 	for _, name := range slices.Sorted(maps.Keys(job.files)) {
 		files = append(files, file{"sbox/in/" + name, job.files[name], 0o644})
+	}
+	if len(job.links) > 0 {
+		var lines strings.Builder
+		for _, l := range job.links {
+			lines.WriteString(l.driveLine())
+			// Outside sbox/, as live.token is: sbox-run keeps it off the guest's drive.
+			files = append(files, file{fmt.Sprintf("links/%d.token", l.guestPort), string(l.token), 0o400})
+		}
+		files = append(files, file{"sbox/links", lines.String(), 0o644})
 	}
 	for _, f := range files {
 		hdr := &tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.body)), Typeflag: tar.TypeReg}

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -112,7 +113,17 @@ func liveAccept(ln net.Listener, srv *nfsServer, token []byte) error {
 // startLiveServer finds project's server running, or starts sbox
 // live-serve in the background, and returns where the relay goes.
 func startLiveServer(stateDir, project, dir string, readOnly bool) (*liveRelay, error) {
-	sdir := liveFolder(stateDir, project, readOnly)
+	return startServer(liveFolder(stateDir, project, readOnly), liveServeArgs(project, dir, readOnly))
+}
+
+// startLinkServer does so for one of project's links.
+func startLinkServer(stateDir, project string, l liveLink) (*liveRelay, error) {
+	return startServer(l.spec(project, stateDir).folder, l.serveArgs(project))
+}
+
+// startServer finds the server whose state is in sdir running, or starts it
+// with args.
+func startServer(sdir string, args []string) (*liveRelay, error) {
 	st, err := liveState(sdir)
 	if err != nil {
 		return nil, err
@@ -133,7 +144,7 @@ func startLiveServer(stateDir, project, dir string, readOnly bool) (*liveRelay, 
 		return nil, err
 	}
 	defer func() { _ = logFile.Close() }()
-	cmd := exec.Command(exe, liveServeArgs(project, dir, readOnly)...)
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlives the terminal, like the session
 	if err := cmd.Start(); err != nil {
@@ -162,6 +173,22 @@ func liveServeArgs(project, dir string, readOnly bool) []string {
 	return []string{"live-serve", project, dir}
 }
 
+// serveArgs is the command line of the link's server. ponytail: a process per
+// link, so a ps into the VM per link every 30 s; one process with many listeners
+// if that shows up in limactl's load.
+func (l liveLink) serveArgs(project string) []string {
+	args := []string{"live-serve", "-link", l.id, "-guest", l.guest}
+	if l.readOnly {
+		args = append(args, "-ro")
+	}
+	return append(args, project, l.src)
+}
+
+// spec is what the link's server serves and where it keeps its state.
+func (l liveLink) spec(project, stateDir string) liveSpec {
+	return liveSpec{folder: filepath.Join(stateDir, "live", project, "links", l.id), dir: l.src, guest: l.guest, readOnly: l.readOnly}
+}
+
 func answers(port int) bool {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
 	if err != nil {
@@ -174,14 +201,50 @@ func answers(port int) bool {
 // refusedLine is one refusal in a project's log; the root's path is ".".
 func refusedLine(op, rel string) string { return op + " " + cmp.Or(rel, ".") + "\n" }
 
+// liveSpec is one server of project's: its state folder and what it serves.
+// guest is a link's path in the guest, which its refusals are logged under.
+type liveSpec struct {
+	folder, dir, guest string
+	readOnly           bool
+}
+
+// liveServerFor makes the server spec asks for, with its state, as project's
+// lists and log say.
+func liveServerFor(stateDir, project string, spec liveSpec) (*nfsServer, liveFiles, error) {
+	root, err := liveRoot(spec.dir)
+	if err != nil {
+		return nil, liveFiles{}, err
+	}
+	st, err := liveState(spec.folder)
+	if err != nil {
+		return nil, liveFiles{}, err
+	}
+	srv := newNFSServer(root, st.key)
+	srv.readOnly = spec.readOnly
+	srv.protectFile = liveProtectFile(stateDir, project)
+	srv.hideFile = liveHideFile(stateDir, project)
+	refused := liveRefusedFile(stateDir, project)
+	srv.refused = func(op, rel string) {
+		if spec.guest != "" {
+			rel = path.Join(spec.guest, rel)
+		}
+		if f, err := os.OpenFile(refused, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
+			_, _ = f.WriteString(refusedLine(op, rel))
+			_ = f.Close()
+		}
+	}
+	return srv, st, nil
+}
+
 // serveLive starts dir's server on project's port in this process and
 // returns its listener; closing it stops the server.
 func serveLive(stateDir, project, dir string, readOnly bool) (net.Listener, error) {
-	root, err := liveRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	st, err := liveState(liveFolder(stateDir, project, readOnly))
+	return serveSpec(stateDir, project, liveSpec{folder: liveFolder(stateDir, project, readOnly), dir: dir, readOnly: readOnly})
+}
+
+// serveSpec starts spec's server in this process and returns its listener.
+func serveSpec(stateDir, project string, spec liveSpec) (net.Listener, error) {
+	srv, st, err := liveServerFor(stateDir, project, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -189,44 +252,43 @@ func serveLive(stateDir, project, dir string, readOnly bool) (net.Listener, erro
 	if err != nil {
 		return nil, err
 	}
-	srv := newNFSServer(root, st.key)
-	srv.readOnly = readOnly
-	srv.protectFile = liveProtectFile(stateDir, project)
-	srv.hideFile = liveHideFile(stateDir, project)
-	refused := liveRefusedFile(stateDir, project)
-	srv.refused = func(op, rel string) {
-		if f, err := os.OpenFile(refused, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
-			_, _ = f.WriteString(refusedLine(op, rel))
-			_ = f.Close()
-		}
-	}
 	go func() { _ = liveAccept(ln, srv, st.token) }()
 	return ln, nil
 }
 
-// liveServeMain implements the hidden `sbox live-serve [-ro] <project> <dir>`:
-// the NFS server for dir, until project has had no session for two
+// liveServeMain implements the hidden `sbox live-serve [-ro] <project> <dir>`
+// and, for a link, `sbox live-serve -link <id> -guest <path> [-ro] <project>
+// <dir>`: the NFS server for dir, until project has had no session for two
 // checks in a row.
 func liveServeMain(ctx context.Context, args []string, stderr io.Writer, stateDir string, vm sboxRunFunc) int {
 	flags := flag.NewFlagSet("sbox live-serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	readOnly := flags.Bool("ro", false, "refuse every change")
-	if flags.Parse(args) != nil || flags.NArg() != 2 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve [-ro] <project> <dir>")
+	link := flags.String("link", "", "the link's `id`")
+	guest := flags.String("guest", "", "the link's `path` in the guest")
+	if flags.Parse(args) != nil || flags.NArg() != 2 || (*link == "") != (*guest == "") {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve [-link <id> -guest <path>] [-ro] <project> <dir>")
 		return exitUsage
 	}
 	args = flags.Args()
-	if id, err := projectID(args[1]); err != nil || id != args[0] {
+	spec := liveSpec{folder: liveFolder(stateDir, args[0], *readOnly), dir: args[1], readOnly: *readOnly}
+	if *link != "" {
+		if *link != linkID(args[1], "", *readOnly) {
+			_, _ = fmt.Fprintf(stderr, "sbox live-serve: %s is not link %s\n", args[1], *link)
+			return exitUsage
+		}
+		spec = liveLink{id: *link, src: args[1], guest: *guest, readOnly: *readOnly}.spec(args[0], stateDir)
+	} else if id, err := projectID(args[1]); err != nil || id != args[0] {
 		_, _ = fmt.Fprintf(stderr, "sbox live-serve: %s is not project %s's folder\n", args[1], args[0])
 		return exitUsage
 	}
-	ln, err := serveLive(stateDir, args[0], args[1], *readOnly)
+	ln, err := serveSpec(stateDir, args[0], spec)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox live-serve:", err)
 		return exitFail
 	}
 	defer func() { _ = ln.Close() }()
-	pidFile := filepath.Join(liveFolder(stateDir, args[0], *readOnly), "pid")
+	pidFile := filepath.Join(spec.folder, "pid")
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox live-serve:", err)
 		return exitFail

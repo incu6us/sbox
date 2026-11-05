@@ -293,8 +293,16 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 			_, _ = fmt.Fprintln(stderr, "sbox:", err)
 			return exitFail
 		}
-		if cfg.live() {
+		if cfg.live() || len(job.links) > 0 {
 			_ = os.Remove(liveRefusedFile(host.stateDir, project)) // a new session's summary is its own
+		}
+		if len(job.links) > 0 {
+			if job.links, err = host.linkServers(project, cfg, job.links); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: a link's server:", err)
+				return exitFail
+			}
+		}
+		if cfg.live() {
 			if job.live, err = host.liveServer(project, args[0], cfg); err != nil {
 				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
 				return exitFail
@@ -436,22 +444,15 @@ type devHost struct {
 	// startLive starts a live session's server, or finds it running, and
 	// returns where the guest's relay goes; startLiveServer when nil.
 	startLive func(project, dir string, readOnly bool) (*liveRelay, error)
+	// startLink does so for a link; startLinkServer when nil.
+	startLink func(project string, l liveLink) (*liveRelay, error)
 }
 
 // liveServer writes project's protect list for its live server, starts or
 // finds the server, and returns where the guest's relay goes.
 func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error) {
-	for p, list := range map[string][]string{liveProtectFile(h.stateDir, project): cfg.Protect, liveHideFile(h.stateDir, project): cfg.Hide} {
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			return nil, err
-		}
-		var lines strings.Builder
-		for _, l := range list {
-			lines.WriteString(l + "\n")
-		}
-		if err := os.WriteFile(p, []byte(lines.String()), 0o600); err != nil {
-			return nil, err
-		}
+	if err := h.writeLiveLists(project, cfg); err != nil {
+		return nil, err
 	}
 	local := cfg.liveLocal()
 	if cfg.liveRO() {
@@ -471,6 +472,46 @@ func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error)
 		relay.local = local
 	}
 	return relay, err
+}
+
+// writeLiveLists writes the protect and hide lists every server of project's
+// reads again when they change. Each applies them from its own root: hiding or
+// protecting too much is the safe direction, and it needs no per-link keys.
+func (h devHost) writeLiveLists(project string, cfg config) error {
+	for p, list := range map[string][]string{liveProtectFile(h.stateDir, project): cfg.Protect, liveHideFile(h.stateDir, project): cfg.Hide} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		var lines strings.Builder
+		for _, l := range list {
+			lines.WriteString(l + "\n")
+		}
+		if err := os.WriteFile(p, []byte(lines.String()), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkServers starts or finds each link's server and returns the links with
+// where the guest's relays go.
+func (h devHost) linkServers(project string, cfg config, links []liveLink) ([]liveLink, error) {
+	if err := h.writeLiveLists(project, cfg); err != nil {
+		return nil, err
+	}
+	start := h.startLink
+	if start == nil {
+		start = func(project string, l liveLink) (*liveRelay, error) { return startLinkServer(h.stateDir, project, l) }
+	}
+	links = slices.Clone(links)
+	for i, l := range links {
+		relay, err := start(project, l)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", l.guest, err)
+		}
+		links[i].port, links[i].token = relay.port, relay.token
+	}
+	return links, nil
 }
 
 // readOnlyLocal is what a read-only session keeps on the guest's disk. The
@@ -719,9 +760,16 @@ func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error)
 	}
 	job := devJob(cfg, secrets)
 	for i, src := range srcs {
-		if !cfg.Mounts[i].Live { // a copy's guest path gets rm -rf: never a link's
-			job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+		m := cfg.Mounts[i]
+		if !m.Live { // a copy's guest path gets rm -rf: never a link's
+			job.mounts = append(job.mounts, mountCopy{src: src, guest: m.Guest})
+			continue
 		}
+		if fi, err := os.Stat(src); err != nil || !fi.IsDir() { // ponytail: until file links land
+			return config{}, guestJob{}, fmt.Errorf("mounts: %s: a link is a folder", m.Host)
+		}
+		readOnly := m.Mode != "rw"
+		job.links = append(job.links, liveLink{id: linkID(src, "", readOnly), src: src, guest: m.Guest, readOnly: readOnly, guestPort: _linkPort + len(job.links)})
 	}
 	return cfg, job, nil
 }

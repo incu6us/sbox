@@ -14,6 +14,8 @@ var errLiveMacOnly = errors.New("live mounts need macOS")
 
 func startLiveServer(string, string, string, bool) (*liveRelay, error) { return nil, errLiveMacOnly }
 
+func startLinkServer(string, string, liveLink) (*liveRelay, error) { return nil, errLiveMacOnly }
+
 func liveServeMain(_ context.Context, _ []string, stderr io.Writer, _ string, _ sboxRunFunc) int {
 	_, _ = fmt.Fprintln(stderr, "sbox live-serve:", errLiveMacOnly)
 	return exitFail
