@@ -352,7 +352,7 @@ Strict TDD, each behaviour's test first. On a branch: no merge before commit 4,
 as a link is ungated until then.
 
 - [x] **0. Spike, no product code.** Done 2026-11-05; results above.
-- [ ] **1. Read-only server.** `readOnly`. A table test: every changing operation
+- [x] **1. Read-only server.** `readOnly`. A table test: every changing operation
   (`OPEN` for writing or creating, `WRITE`, `SETATTR`, `CREATE`, `REMOVE`,
   `RENAME`, `LINK`) refused at the root and at depth, `ACCESS` read-only, reads
   and `READDIR` unchanged.

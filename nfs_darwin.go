@@ -272,6 +272,8 @@ type nfsServer struct {
 	hide      ignoreRules
 	hideFile  string
 	hideStamp time.Time
+	// readOnly refuses every change, the root included: a read-only link.
+	readOnly bool
 	// refused, when set, hears each refused change: the operation and the
 	// path from the root.
 	refused func(op, rel string)
@@ -404,6 +406,9 @@ func (s *nfsServer) unhides(src, dst string) bool {
 // does, ſ and K included. ponytail: EqualFold, no Unicode normalisation; a
 // non-ASCII protect path must be written as the file's own name is.
 func (s *nfsServer) protected(p string) bool {
+	if s.readOnly {
+		return true
+	}
 	rel := s.rel(p)
 	if rel == "" {
 		return false

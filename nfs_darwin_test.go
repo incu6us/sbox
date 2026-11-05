@@ -911,6 +911,131 @@ func TestNFSWrites(t *testing.T) {
 
 // TestNFSProtected: every way to change a protected path is refused, by
 // path, case-insensitively, and the Mac's files stay as they were.
+// setattr, create and rename build the changing operations the refusal
+// tables share.
+func setattr(h []byte) func(c *compoundArgs) {
+	return func(c *compoundArgs) {
+		c.add(_opPutFH).opaque(h)
+		w := c.add(_opSetAttr)
+		w.b = append(w.b, make([]byte, 16)...)
+		modeAttrs(w, 0o777)
+	}
+}
+
+func create(h []byte, typ uint32, name, link string) func(c *compoundArgs) {
+	return func(c *compoundArgs) {
+		c.add(_opPutFH).opaque(h)
+		w := c.add(_opCreate)
+		w.u32(typ)
+		if typ == _nf4Lnk {
+			w.str(link)
+		}
+		w.str(name)
+		modeAttrs(w, 0o755)
+	}
+}
+
+func rename(from []byte, old string, to []byte, name string) func(c *compoundArgs) {
+	return func(c *compoundArgs) {
+		c.add(_opPutFH).opaque(from)
+		c.add(_opSaveFH)
+		c.add(_opPutFH).opaque(to)
+		w := c.add(_opRename)
+		w.str(old)
+		w.str(name)
+	}
+}
+
+// TestNFSReadOnly: a read-only server refuses every change, at the root
+// and at depth, whatever the path, tells the client so, and still reads.
+func TestNFSReadOnly(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t)
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sub", "deep.txt"), "deep\n")
+	var seen []string
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	s.readOnly = true
+	s.refused = func(op, rel string) { seen = append(seen, rel) }
+	root, sub, deep := lookupHandle(t, s), lookupHandle(t, s, "sub"), lookupHandle(t, s, "sub", "deep.txt")
+	readme := lookupHandle(t, s, "README.md")
+	link := func(from, to []byte, name string) func(c *compoundArgs) {
+		return func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(from)
+			c.add(_opSaveFH)
+			c.add(_opPutFH).opaque(to)
+			c.add(_opLink).str(name)
+		}
+	}
+	for _, tt := range []struct {
+		name  string
+		build func(c *compoundArgs)
+	}{
+		{"open at the root for writing", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, "README.md", -1, "") }},
+		{"open at depth for writing", func(c *compoundArgs) { c.add(_opPutFH).opaque(sub); openWrite(c, "deep.txt", -1, "") }},
+		{"create at the root", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, "new", 0, "") }},
+		{"create at depth", func(c *compoundArgs) { c.add(_opPutFH).opaque(sub); openWrite(c, "new", 0, "") }},
+		{"write at the root", func(c *compoundArgs) { c.add(_opPutFH).opaque(readme); write(c, 0, "x", 2) }},
+		{"write at depth", func(c *compoundArgs) { c.add(_opPutFH).opaque(deep); write(c, 0, "x", 2) }},
+		{"chmod the root", setattr(root)},
+		{"chmod a file at the root", setattr(readme)},
+		{"chmod at depth", setattr(deep)},
+		{"mkdir at the root", create(root, _nf4Dir, "d", "")},
+		{"mkdir at depth", create(sub, _nf4Dir, "d", "")},
+		{"a symlink at the root", create(root, _nf4Lnk, "l", "README.md")},
+		{"remove at the root", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); c.add(_opRemove).str("README.md") }},
+		{"remove at depth", func(c *compoundArgs) { c.add(_opPutFH).opaque(sub); c.add(_opRemove).str("deep.txt") }},
+		{"rename at the root", rename(root, "README.md", root, "moved")},
+		{"rename out of a folder", rename(sub, "deep.txt", root, "moved")},
+		{"link at the root", link(readme, root, "hard")},
+		{"link at depth", link(deep, sub, "hard")},
+	} {
+		var c compoundArgs
+		tt.build(&c)
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errAccess {
+			t.Errorf("%s: %d, want ACCESS", tt.name, status)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "README.md")); string(got) == "x" {
+		t.Error("README.md was written")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "sub", "deep.txt")); string(got) != "deep\n" {
+		t.Errorf("deep.txt changed: %q", got)
+	}
+	for _, p := range []string{"new", "sub/new", "d", "sub/d", "l", "moved", "hard", "sub/hard"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists: %v", p, err)
+		}
+	}
+	if len(seen) == 0 {
+		t.Error("no refusal was reported")
+	}
+
+	// ACCESS tells the client first, and at the root too.
+	for name, h := range map[string][]byte{"root": root, "file": deep} {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(h)
+		c.add(_opAccess).u32(_accessRead | _accessModify | _accessExtend | _accessDelete)
+		r := runWant(t, s, "ACCESS "+name, _nfsOK, &c)
+		result(t, r, _opPutFH)
+		result(t, r, _opAccess)
+		if r.u32(); r.u32() != _accessRead {
+			t.Errorf("ACCESS on the %s grants more than reading", name)
+		}
+	}
+
+	// Reads go on as before.
+	var c compoundArgs
+	c.add(_opPutFH).opaque(sub)
+	openRead(&c, "deep.txt")
+	runWant(t, s, "open for reading", _nfsOK, &c)
+	if status, names, _, _ := readdir(t, s, root, 0, 4096); status != _nfsOK || !slices.Contains(names, "sub") {
+		t.Errorf("READDIR: %d, %v", status, names)
+	}
+}
+
 func TestNFSProtected(t *testing.T) {
 	t.Parallel()
 	dir := testFolder(t)
@@ -936,36 +1061,6 @@ func TestNFSProtected(t *testing.T) {
 	root := lookupHandle(t, s)
 	git := lookupHandle(t, s, ".git")
 
-	setattr := func(h []byte) func(c *compoundArgs) {
-		return func(c *compoundArgs) {
-			c.add(_opPutFH).opaque(h)
-			w := c.add(_opSetAttr)
-			w.b = append(w.b, make([]byte, 16)...)
-			modeAttrs(w, 0o777)
-		}
-	}
-	create := func(h []byte, typ uint32, name, link string) func(c *compoundArgs) {
-		return func(c *compoundArgs) {
-			c.add(_opPutFH).opaque(h)
-			w := c.add(_opCreate)
-			w.u32(typ)
-			if typ == _nf4Lnk {
-				w.str(link)
-			}
-			w.str(name)
-			modeAttrs(w, 0o755)
-		}
-	}
-	rename := func(from []byte, old string, to []byte, name string) func(c *compoundArgs) {
-		return func(c *compoundArgs) {
-			c.add(_opPutFH).opaque(from)
-			c.add(_opSaveFH)
-			c.add(_opPutFH).opaque(to)
-			w := c.add(_opRename)
-			w.str(old)
-			w.str(name)
-		}
-	}
 	for _, tt := range []struct {
 		name  string
 		build func(c *compoundArgs)
