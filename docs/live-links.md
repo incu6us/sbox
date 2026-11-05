@@ -374,7 +374,7 @@ as a link is ungated until then.
 - [x] **5. A server per link.** `liveState` by folder, `live-serve -link`, `startLink`,
   an id that doesn't match refused, `job.links`, `sbox/links` and the token files
   written. Tests with a fake `startLive`.
-- [ ] **6. The path in the VM: folders.** `fwd_pair`'s `link` kind, tokens moved off
+- [x] **6. The path in the VM: folders.** `fwd_pair`'s `link` kind, tokens moved off
   the drive, `listening`, tested from Go with fake commands (bash 3.2 and 5).
   `guest-init.sh`'s mounts. VM test: a read-only and a read-write folder in a
   copy-mode session and in a live one.

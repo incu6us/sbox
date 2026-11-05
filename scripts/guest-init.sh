@@ -178,6 +178,31 @@ if [ -f /drive/sbox/mounts ]; then
 	done </drive/sbox/mounts
 fi
 
+# Links: other Mac folders, through their relays, mounted last so that nothing
+# sbox writes lands on the Mac. A path that goes through a link the runner left
+# on the kept home is skipped, or it would steer this mount; what's at the path
+# stays underneath. All wait for their relays together.
+if [ -f /drive/sbox/links ]; then
+	echo 1023 >/sys/module/nfs/parameters/callback_tcpport 2>/dev/null
+	tab=$(printf '\t')
+	i=0
+	while IFS="$tab" read -r _ port _ _ _ _ guest; do
+		setpriv --reuid=runner --regid=runner --init-groups mkdir -p "$guest" 2>/dev/null
+		if [ "$(realpath -m "$guest")" != "$guest" ] || [ ! -d "$guest" ]; then
+			echo "sbox: link $guest isn't a folder here, or goes through a link: skipped"
+			continue
+		fi
+		until mount -t nfs4 -o "vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,port=$port,hard,timeo=600" 172.16.0.1:/ "$guest" 2>/dev/null; do
+			i=$((i + 1))
+			if [ "$i" -ge 30 ]; then
+				echo "sbox: link $guest didn't answer; it is not the Mac's"
+				break
+			fi
+			sleep 1
+		done
+	done </drive/sbox/links
+fi
+
 # Dev sessions: Claude Code's permissions and MCP servers from the config,
 # merged into the runner's files by the runner, keeping Claude Code's own.
 # The merge is a second of Python, so a boot skips it when nothing changed:

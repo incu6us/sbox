@@ -1858,6 +1858,159 @@ for name, ops in [
 	}
 }
 
+// linksOnTheMac is a devHost.startLink running the server in this test, as
+// liveOnTheMac does a project's.
+func linksOnTheMac(t *testing.T, state string) func(project string, l liveLink) (*liveRelay, error) {
+	t.Helper()
+	running := map[string]bool{}
+	return func(project string, l liveLink) (*liveRelay, error) {
+		spec := l.spec(project, state)
+		if !running[l.id] {
+			ln, err := serveSpec(state, project, spec)
+			if err != nil {
+				return nil, err
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			running[l.id] = true
+		}
+		st, err := liveState(spec.folder)
+		return &liveRelay{port: st.port, token: st.token}, err
+	}
+}
+
+// TestLinksOnVM: the guest works on other Mac folders. A read-only one refuses
+// changes, through its kernel's mount or straight at its server claiming to be
+// root, and shows the Mac's edits; a read-write one writes to the Mac, keeping the
+// server's rules; both in a copy session and a live one. The tokens stay off the
+// guest's drive.
+func TestLinksOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, state := filepath.Join(home, "app"), t.TempDir()
+	shared, out := filepath.Join(home, "shared"), filepath.Join(home, "out")
+	for _, d := range []string{dir, shared, filepath.Join(shared, "sub"), out, filepath.Join(out, ".git")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(shared, "a.txt"), "from the Mac\n")
+	writeTestFile(t, filepath.Join(shared, "sub", "deep.txt"), "deep\n")
+	writeTestFile(t, filepath.Join(shared, ".env"), "the Mac's hidden secret\n")
+	writeTestFile(t, filepath.Join(out, ".git", "config"), "[core]\n")
+	prelude, _, _ := strings.Cut(_hostileClient, "reply = call(root, getfh)")
+	writeTestFile(t, filepath.Join(dir, "attack.py"), strings.Replace(prelude, `("172.16.0.1", 2049)`, `("172.16.0.1", 20490)`, 1)+`
+for name, ops in [
+    ("read", [root, open_for("a.txt", 1)]),
+    ("write", [root, open_for("a.txt", 3)]),
+    ("write at depth", [root, lookup("sub"), open_for("deep.txt", 3)]),
+    ("create", [root, open_for("planted", 3, True)]),
+    ("remove", [root, u32(28) + xstr(b"a.txt")]),
+    ("hidden", [root, lookup(".env")]),
+]:
+    print("raw", name, status(*ops))
+`)
+	links := `hide: [.env]
+mounts:
+  - {host: ` + shared + `, guest: /home/runner/shared, live: true}
+  - {host: ` + out + `, guest: /home/runner/out dir, live: true, mode: rw}
+`
+	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLive: liveOnTheMac(t, state), startLink: linksOnTheMac(t, state)}
+	dev := func(config, script string) (string, string) {
+		t.Helper()
+		writeTestFile(t, filepath.Join(dir, "sbox.yaml"), config)
+		var stdout, notes bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &notes, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev: exit %d\n%s\n%s", code, stdout.String(), notes.String())
+		}
+		return stdout.String(), notes.String()
+	}
+	try := func(name, cmd string) string {
+		return cmd + " 2>/dev/null && echo '" + name + ": allowed' || echo '" + name + ": refused'; "
+	}
+	digest := func() string { return treeDigest(t, shared) + treeDigest(t, filepath.Join(out, ".git")) }
+	was := digest()
+
+	go func() {
+		time.Sleep(15 * time.Second) // after the guest is up and waiting for it
+		writeTestFile(t, filepath.Join(shared, "late.txt"), "written on the Mac after boot\n")
+	}()
+	stdout, notes := dev(links, "cat ~/shared/a.txt ~/shared/sub/deep.txt; ls -a ~/shared; "+
+		try("ro overwrite", "echo x > ~/shared/a.txt")+try("ro create", "touch ~/shared/planted")+try("ro remove", "rm ~/shared/a.txt")+
+		try("ro chmod", "chmod 700 ~/shared")+try("read .env", "cat ~/shared/.env")+
+		try("rw create", "echo from-the-guest > ~/'out dir'/new.txt")+try("rw .git", "echo x >> ~/'out dir'/.git/config")+try("rw hook", "touch ~/'out dir'/.git/hook")+
+		"grep -c ' nfs4 ' /proc/mounts; ls /drive/links 2>&1 | grep -c token; "+
+		"python3 -I ~/work/attack.py; "+
+		"for i in $(seq 1 90); do [ -f ~/shared/late.txt ] && cat ~/shared/late.txt && break; sleep 1; done")
+	_ = os.Remove(filepath.Join(shared, "late.txt"))
+	for _, want := range []string{
+		"from the Mac", "deep\n", "ro overwrite: refused", "ro create: refused", "ro remove: refused", "ro chmod: refused", "read .env: refused",
+		"rw create: allowed", "rw .git: refused", "rw hook: refused", "\n2\n0\n",
+		"raw read 0", "raw write 13", "raw write at depth 13", "raw create 13", "raw remove 13", "raw hidden 2",
+		"written on the Mac after boot",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, stdout, notes)
+		}
+	}
+	if strings.Contains(stdout, "hidden secret") || strings.Contains(stdout, ".env\n") {
+		t.Errorf("a link showed what hide names:\n%s", stdout)
+	}
+	if got, err := os.ReadFile(filepath.Join(out, "new.txt")); string(got) != "from-the-guest\n" {
+		t.Errorf("the read-write link's file on the Mac: %q, %v", got, err)
+	}
+	if digest() != was {
+		t.Error("a read-only link, or a read-write link's .git, changed on the Mac")
+	}
+	if _, err := os.Lstat(filepath.Join(shared, "planted")); !os.IsNotExist(err) {
+		t.Errorf("planted exists on the Mac: %v", err)
+	}
+	if strings.Contains(notes, "BLOCKED port") {
+		t.Errorf("a link's socket is reported as the project's:\n%s", notes)
+	}
+
+	// Beside a live project, each with its own server.
+	stdout, notes = dev("dev: {mount: live}\n"+links, "grep -c ' nfs4 ' /proc/mounts; echo from-a-live-session > ~/'out dir'/live.txt; "+try("project", "echo x > ~/work/project.txt"))
+	if !strings.Contains(stdout, "\n3\n") && !strings.HasPrefix(stdout, "3\n") || !strings.Contains(stdout, "project: allowed") {
+		t.Errorf("a live project with links:\n%s\n%s", stdout, notes)
+	}
+	if got, _ := os.ReadFile(filepath.Join(out, "live.txt")); string(got) != "from-a-live-session\n" {
+		t.Errorf("the link beside a live project: %q", got)
+	}
+
+	// A link the runner leaves at a guest path doesn't steer the next mount there.
+	dev("", "mkdir -p /tmp/elsewhere; rm -rf ~/planted; ln -s /tmp/elsewhere ~/planted")
+	stdout, notes = dev("mounts: [{host: "+shared+", guest: /home/runner/planted/into, live: true}]\n",
+		"grep -c ' nfs4 ' /proc/mounts; ls ~/planted/into 2>/dev/null | grep -c a.txt; readlink ~/planted")
+	if !strings.HasPrefix(stdout, "0\n0\n/tmp/elsewhere") {
+		t.Errorf("a link left on the kept home steered a mount:\n%s\n%s", stdout, notes)
+	}
+
+	// sbox run copies: a change stays in the guest.
+	cfg := filepath.Join(t.TempDir(), "run.yaml")
+	writeTestFile(t, cfg, "mounts: [{host: "+shared+", guest: /home/runner/shared, live: true}]\n")
+	var runOut, runNotes bytes.Buffer
+	if code := runMain(ctx, []string{"-config", cfg, dir, "--", "sh", "-c", "cat ~/shared/a.txt; grep -c ' nfs4 ' /proc/mounts; echo changed > ~/shared/a.txt; cat ~/shared/a.txt"}, &runOut, &runNotes, filepath.Join(t.TempDir(), "none")); code != exitOK {
+		t.Errorf("sbox run: exit %d\n%s\n%s", code, runOut.String(), runNotes.String())
+	}
+	if !strings.Contains(runOut.String(), "from the Mac") || !strings.Contains(runOut.String(), "changed") {
+		t.Errorf("sbox run's copy:\n%s\n%s", runOut.String(), runNotes.String())
+	}
+	if digest() != was {
+		t.Error("sbox run's change reached the Mac")
+	}
+}
+
 // TestLiveLocalKeptOnVM: npm in a live session writes its project files to
 // the Mac and node_modules to the guest's disk, which the next session has.
 func TestLiveLocalKeptOnVM(t *testing.T) {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -738,6 +740,125 @@ func TestSboxRunLiveMount(t *testing.T) {
 	if ruleset, _ := os.ReadFile(nft); !strings.Contains(string(ruleset), "172.16.0.1 . 2049") {
 		t.Errorf("2049 isn't in listening:\n%s", ruleset)
 	}
+}
+
+// TestSboxRunLinks: each link has a relay pair of its own, on its guest port, to
+// its server on the Mac, the expose sending its token first; the tokens never reach
+// the guest's drive. What isn't a port in sbox/links starts nothing.
+func TestSboxRunLinks(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee00000000000a"
+	drive := filepath.Join(t.TempDir(), "drive")
+	nft := filepath.Join(t.TempDir(), "ruleset")
+	e.extra = []string{"FAKE_DRIVE_COPY=" + drive, "FAKE_NFT=" + nft}
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, links: []liveLink{
+		{id: "aaaa", guest: "/home/runner/shared", readOnly: true, guestPort: 20490, port: 49001, token: bytes.Repeat([]byte("a"), 32)},
+		{id: "bbbb", guest: "/home/runner/out dir", guestPort: 20491, port: 49002, token: bytes.Repeat([]byte("b"), 32)},
+		{id: "cccc", guest: "/home/runner/no-token", guestPort: 20492, port: 49003},
+	}}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	run := filepath.Join(e.state, "runs", id)
+	asVM := "--reuid=sbox-vm --regid=sbox-vm --clear-groups python3 " + filepath.Join(e.base, "bin", "sbox-proxy.py")
+	for _, want := range []struct{ prog, call string }{
+		{"ip", "netns exec sbox-" + id + " setpriv " + asVM + " relay 172.16.0.1 20490 " + run + "/fwd/link-20490.sock"},
+		{"setpriv", asVM + " expose " + run + "/fwd/link-20490.sock host.lima.internal 49001 " + run + "/links/20490.token"},
+		{"ip", "netns exec sbox-" + id + " setpriv " + asVM + " relay 172.16.0.1 20491 " + run + "/fwd/link-20491.sock"},
+		{"setpriv", asVM + " expose " + run + "/fwd/link-20491.sock host.lima.internal 49002 " + run + "/links/20491.token"},
+		{"chown", "sbox-vm " + run + "/links/20490.token"},
+	} {
+		if !slices.Contains(e.calls(want.prog), want.call) {
+			t.Errorf("%s calls %q lack %q", want.prog, e.calls(want.prog), want.call)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(drive, "links")); !os.IsNotExist(err) {
+		t.Errorf("the tokens are on the guest's drive (%v)", err)
+	}
+	if lines, _ := os.ReadFile(filepath.Join(drive, "sbox", "links")); !strings.Contains(string(lines), "/home/runner/out dir") {
+		t.Errorf("sbox/links = %q, want the guest's copy", lines)
+	}
+	ruleset, _ := os.ReadFile(nft)
+	for _, want := range []string{"172.16.0.1 . 20490", "172.16.0.1 . 20491"} {
+		if !strings.Contains(string(ruleset), want) {
+			t.Errorf("%s isn't in listening:\n%s", want, ruleset)
+		}
+	}
+	for _, c := range append(e.calls("ip"), e.calls("setpriv")...) {
+		if strings.Contains(c, "20492") || strings.Contains(c, "49003") {
+			t.Errorf("a link with no token got a relay: %q", c)
+		}
+	}
+}
+
+// TestSboxRunLinksRefuseAMalformedLine: sbox/links comes from the Mac, and the
+// numbers are checked anyway, as sbox/live's is.
+func TestSboxRunLinksRefuseAMalformedLine(t *testing.T) {
+	t.Parallel()
+	e := newSboxRunEnv(t)
+	const id = "eeee00000000000b"
+	nft := filepath.Join(t.TempDir(), "ruleset")
+	e.extra = []string{"FAKE_NFT=" + nft}
+	var tarBuf bytes.Buffer
+	job := guestJob{command: []string{"true"}, files: nil}
+	if err := writeRunTar(&tarBuf, t.TempDir(), job, "n0nce", "c0ffee"); err != nil {
+		t.Fatal(err)
+	}
+	tarBuf = *bytes.NewBuffer(addTarFile(t, tarBuf.Bytes(), "sbox/links", "aaaa\t2049$(touch /x)\t49001\tro\tdir\t-\t/home/runner/x\nbbbb\t20491\tnope\tro\tdir\t-\t/home/runner/y\n"))
+	tarBuf = *bytes.NewBuffer(addTarFile(t, tarBuf.Bytes(), "links/20491.token", "token"))
+	if stdout, stderr, code := e.run(tarBuf.Bytes(), id, "5"); code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	for _, c := range append(e.calls("ip"), e.calls("setpriv")...) {
+		if strings.Contains(c, "link-") {
+			t.Errorf("a malformed line got a relay: %q", c)
+		}
+	}
+	if ruleset, _ := os.ReadFile(nft); strings.Contains(string(ruleset), "20491") || strings.Contains(string(ruleset), "touch") {
+		t.Errorf("a malformed line reached listening:\n%s", ruleset)
+	}
+}
+
+// addTarFile returns the tar with one more file.
+func addTarFile(t *testing.T, data []byte, name, body string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	tw := tar.NewWriter(&out)
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func TestRunTarCarriesLive(t *testing.T) {

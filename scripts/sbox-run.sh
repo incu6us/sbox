@@ -60,7 +60,8 @@ raw_entries() {
 # service goes from 172.16.0.1 (host.sbox in the guest) to the Mac, as
 # Lima's host.lima.internal; raw TCP egress goes from 172.16.0.1 to its one
 # host; a live mount goes from 172.16.0.1:2049 to the Mac's server on
-# <port>. Their pids go to <kind>-<port>.pids, for fwd_stop and teardown.
+# <port>; a link from 172.16.0.1:<port> to the Mac's server on [host].
+# Their pids go to <kind>-<port>.pids, for fwd_stop and teardown.
 fwd_pair() {
 	local run=$1 kind=$2 port=$3 host=${4:-} netns sock proxy=$base/bin/sbox-proxy.py a b
 	netns=sbox-${run##*/} sock=$run/fwd/$kind-$port.sock
@@ -75,6 +76,12 @@ fwd_pair() {
 		ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 2049 "$sock" </dev/null >/dev/null 2>&1 &
 		a=$!
 		"${as_vm_user[@]}" python3 "$proxy" expose "$sock" host.lima.internal "$port" "$run/live.token" </dev/null >/dev/null 2>&1 &
+		b=$!
+		;;
+	link) # as a live mount, with a guest port and a token of its own
+		ip netns exec "$netns" "${as_vm_user[@]}" python3 "$proxy" relay 172.16.0.1 "$port" "$sock" </dev/null >/dev/null 2>&1 &
+		a=$!
+		"${as_vm_user[@]}" python3 "$proxy" expose "$sock" host.lima.internal "$host" "$run/links/$port.token" </dev/null >/dev/null 2>&1 &
 		b=$!
 		;;
 	svc | raw)
@@ -485,6 +492,20 @@ if [[ -f $run/drive/live.token ]]; then
 	chmod 0400 "$run/live.token"
 fi
 
+# So are the links' tokens. A link is only as good as its line in sbox/links.
+links=()
+if [[ -d $run/drive/links ]]; then
+	install -d -o sbox-vm -m 0700 "$run/links"
+	while IFS=$'\t' read -r _ guest_port mac_port _; do
+		[[ $guest_port =~ ^[0-9]{1,5}$ && $mac_port =~ ^[0-9]{1,5}$ && -s $run/drive/links/$guest_port.token ]] || continue
+		mv "$run/drive/links/$guest_port.token" "$run/links/$guest_port.token"
+		chown sbox-vm "$run/links/$guest_port.token"
+		chmod 0400 "$run/links/$guest_port.token"
+		links+=("$guest_port:$mac_port")
+	done <"$run/drive/sbox/links"
+	rm -rf "$run/drive/links"
+fi
+
 # The run's drive: the skill plus the guest init and job, read-only in the guest.
 size_mb=$(($(du -sm "$run/drive" | cut -f1) * 13 / 10 + 32))
 truncate -s "${size_mb}M" "$run/drive.ext4"
@@ -535,6 +556,7 @@ listening="172.16.0.1 . 53, 172.16.0.1 . 3128"
 for entry in ${raw[@]+"${raw[@]}"}; do listening+=", 172.16.0.1 . ${entry##*:}"; done
 for port in $(cat "$run/drive/sbox/services" 2>/dev/null); do listening+=", 172.16.0.1 . $port"; done
 [[ -s $run/drive/sbox/live ]] && listening+=", 172.16.0.1 . 2049"
+for entry in ${links[@]+"${links[@]}"}; do listening+=", 172.16.0.1 . ${entry%:*}"; done
 in_ns nft -f - <<EOF || echo "sbox-run: refused connections won't be listed (nft failed)" >&2
 table ip sbox {
 	set refused { type ipv4_addr . inet_service; flags dynamic; size 4096; }
@@ -668,13 +690,16 @@ if ((${#egress[@]})); then
 	start_egress "$run/egress.log" --rules "$run/egress.rules"
 fi
 
-# Forwarded ports, services, raw TCP egress and a live mount: a pair each
+# Forwarded ports, services, raw TCP egress, a live mount and links: a pair each
 # (fwd_pair).
-if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services || -s $run/drive/sbox/live || ${#raw[@]} -gt 0 ]]; then
+if [[ -s $run/drive/sbox/ports || -s $run/drive/sbox/services || -s $run/drive/sbox/live || ${#raw[@]} -gt 0 || ${#links[@]} -gt 0 ]]; then
 	install -d -o sbox-vm -m 0700 "$run/fwd"
 fi
 live_port=$(cat "$run/drive/sbox/live" 2>/dev/null || true)
 [[ $live_port =~ ^[0-9]{1,5}$ && -f $run/live.token ]] && fwd_pair "$run" live "$live_port"
+for entry in ${links[@]+"${links[@]}"}; do
+	fwd_pair "$run" link "${entry%:*}" "${entry##*:}"
+done
 for entry in ${raw[@]+"${raw[@]}"}; do
 	fwd_pair "$run" raw "${entry##*:}" "${entry%:*}"
 done
