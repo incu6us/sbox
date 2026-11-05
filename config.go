@@ -111,6 +111,9 @@ const (
 	_maxLinks = 10    // ponytail: a fixed range; an allocator if anyone needs an eleventh
 )
 
+// foldName is name as hide's rules compare it, the case folded as APFS does.
+func foldName(name string) string { return strings.ReplaceAll(strings.ToLower(name), "\u017f", "s") }
+
 // dedup keeps each mount's first appearance: your file and a project may
 // both name one.
 func dedup(mounts []mount) []mount {

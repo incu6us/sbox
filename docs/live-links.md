@@ -382,7 +382,7 @@ as a link is ungated until then.
   `BLOCKED live` lines with the guest path, the `sbox config` line, and stop and
   clean leave nothing behind. Killing a real server and reattaching was run by hand with
   the real binary, as a test can't start one: a descriptor held open read the new content.
-- [ ] **8. Read-only files.** `only`, with table tests; `validate`; the mount and the
+- [x] **8. Read-only files.** `only`, with table tests; `validate`; the mount and the
   symlink. VM test: a rename-over from the Mac shows, no sibling visible, and a guest
   replacing the link leaves the Mac untouched.
 - [ ] **9. Read-write files.** `sbox-links.py` with its `--selftest` (each direction,

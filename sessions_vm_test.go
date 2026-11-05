@@ -2018,6 +2018,70 @@ mounts:
 	}
 }
 
+// TestFileLinkReadOnlyOnVM: a read-only link to a file shows the Mac's file through
+// a rename on the Mac, and nothing beside it. The guest can't change it, directly or
+// by what's beside it; replacing the link changes only its own view.
+func TestFileLinkReadOnlyOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, state, conf := filepath.Join(home, "app"), t.TempDir(), filepath.Join(home, "conf")
+	for _, d := range []string{dir, conf} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(conf, "rules.yaml"), "first\n")
+	writeTestFile(t, filepath.Join(conf, "secret.txt"), "the Mac's sibling secret\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: "+filepath.Join(conf, "rules.yaml")+", guest: /home/runner/nested/rules.yaml, live: true}]\n")
+	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLink: linksOnTheMac(t, state)}
+	go func() {
+		time.Sleep(10 * time.Second) // after the guest is up and waiting for it
+		writeTestFile(t, filepath.Join(conf, "rules.yaml.tmp"), "second, renamed over\n")
+		_ = os.Rename(filepath.Join(conf, "rules.yaml.tmp"), filepath.Join(conf, "rules.yaml"))
+	}()
+	try := func(name, cmd string) string {
+		return cmd + " 2>/dev/null && echo '" + name + ": allowed' || echo '" + name + ": refused'; "
+	}
+	script := "f=~/nested/rules.yaml; cat $f; m=$(dirname $(readlink $f)); ls -a $m; " +
+		try("write", "echo x > $f") + try("a sibling", "cat $m/secret.txt") + try("make a sibling", "touch $m/planted") + try("remove", "rm $m/rules.yaml") +
+		"for i in $(seq 1 60); do grep -q second $f && cat $f && break; sleep 1; done; " +
+		"rm $f && echo mine > $f && cat $f"
+	var stdout, notes bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &notes, sboxRun, host); code != exitOK {
+		t.Fatalf("sbox dev: exit %d\n%s\n%s", code, stdout.String(), notes.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"first\n", "rules.yaml\n", "write: refused", "a sibling: refused", "make a sibling: refused", "remove: refused", "second, renamed over\n", "mine\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, notes.String())
+		}
+	}
+	if strings.Contains(out, "sibling secret") || strings.Contains(out, "secret.txt") {
+		t.Errorf("the guest saw a sibling:\n%s", out)
+	}
+	if got, _ := os.ReadFile(filepath.Join(conf, "rules.yaml")); string(got) != "second, renamed over\n" {
+		t.Errorf("the Mac's file: %q", got)
+	}
+	entries, _ := os.ReadDir(conf)
+	if len(entries) != 2 {
+		t.Errorf("the Mac's folder: %v", entries)
+	}
+	if !strings.Contains(notes.String(), "BLOCKED live    /home/runner/nested/rules.yaml") {
+		t.Errorf("the summary lacks the refusal:\n%s", notes.String())
+	}
+}
+
 // TestLiveLocalKeptOnVM: npm in a live session writes its project files to
 // the Mac and node_modules to the guest's disk, which the next session has.
 func TestLiveLocalKeptOnVM(t *testing.T) {

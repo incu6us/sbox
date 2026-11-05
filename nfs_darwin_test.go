@@ -1690,3 +1690,89 @@ func TestNFSHideFileReloads(t *testing.T) {
 		t.Errorf("hidden: %d, want NOENT", got)
 	}
 }
+
+// TestNFSOnly: a file link serves its folder with one name in it. Whatever else
+// is there looks missing however the guest asks, can't be made or moved into
+// view, and the one name is the Mac's, renamed over or not.
+func TestNFSOnly(t *testing.T) {
+	t.Parallel()
+	dir := testFolder(t) // holds README.md
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "rules.yaml"), "rules\n")
+	writeTestFile(t, filepath.Join(dir, "sub", "deep.txt"), "deep\n")
+	s := newNFSServer(dir, bytes.Repeat([]byte{1}, 32))
+	sibling := lookupHandle(t, s, "README.md") // minted while it could be seen
+	s.only = foldName("rules.yaml")
+	root, file := lookupHandle(t, s), lookupHandle(t, s, "rules.yaml")
+
+	if status, names, _, _ := readdir(t, s, root, 0, 4096); status != _nfsOK || !slices.Equal(names, []string{"rules.yaml"}) {
+		t.Errorf("READDIR: %d, %q; want the one name", status, names)
+	}
+	for _, name := range []string{"README.md", "sub", "planted"} {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(root)
+		c.add(_opLookup).str(name)
+		if status, _ := compound(t, s, 0, &c); status != _nfs4errNoEnt {
+			t.Errorf("LOOKUP %s: %d, want NOENT", name, status)
+		}
+	}
+	if status := fhStatus(t, s, sibling, func(*compoundArgs) {}); status != _nfs4errStale {
+		t.Errorf("a sibling's old handle: %d, want STALE", status)
+	}
+	var c compoundArgs
+	c.add(_opPutFH).opaque(root)
+	openRead(&c, "README.md")
+	if status, _ := compound(t, s, 0, &c); status != _nfs4errNoEnt {
+		t.Errorf("OPEN a sibling: %d, want NOENT", status)
+	}
+	for _, tt := range []struct {
+		name  string
+		build func(c *compoundArgs)
+	}{
+		{"create a sibling", func(c *compoundArgs) { c.add(_opPutFH).opaque(root); openWrite(c, "planted", 0, "") }},
+		{"mkdir a sibling", create(root, _nf4Dir, "planted-dir", "")},
+		{"a symlink sibling", create(root, _nf4Lnk, "planted-link", "rules.yaml")},
+		{"move the file away", rename(root, "rules.yaml", root, "moved")},
+		{"move a sibling over it", rename(root, "README.md", root, "rules.yaml")},
+		{"link it to a sibling", func(c *compoundArgs) {
+			c.add(_opPutFH).opaque(file)
+			c.add(_opSaveFH)
+			c.add(_opPutFH).opaque(root)
+			c.add(_opLink).str("planted-hard")
+		}},
+	} {
+		var c compoundArgs
+		tt.build(&c)
+		if status, _ := compound(t, s, 0, &c); status == _nfsOK {
+			t.Errorf("%s: allowed", tt.name)
+		}
+	}
+	for _, p := range []string{"planted", "planted-dir", "planted-link", "planted-hard", "moved"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists: %v", p, err)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "rules.yaml")); string(got) != "rules\n" {
+		t.Errorf("rules.yaml = %q", got)
+	}
+
+	// The one name, in APFS's other spellings too, is the file.
+	for _, name := range []string{"rules.yaml", "RULES.yaml"} {
+		var c compoundArgs
+		c.add(_opPutFH).opaque(root)
+		c.add(_opLookup).str(name)
+		if status, _ := compound(t, s, 0, &c); status != _nfsOK {
+			t.Errorf("LOOKUP %s: %d", name, status)
+		}
+	}
+	// A rename on the Mac: the next look finds the new file by its name.
+	writeTestFile(t, filepath.Join(dir, ".tmp"), "new\n")
+	if err := os.Rename(filepath.Join(dir, ".tmp"), filepath.Join(dir, "rules.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if status := fhStatus(t, s, lookupHandle(t, s, "rules.yaml"), func(*compoundArgs) {}); status != _nfsOK {
+		t.Errorf("after a rename on the Mac: %d", status)
+	}
+}

@@ -1759,3 +1759,54 @@ func TestPreflightLinks(t *testing.T) {
 		}
 	}
 }
+
+// TestDevFileLinks: a link to a file serves its folder, the real one when the path
+// is a symlink, and says which name. hide wins over a link, so one to a hidden name
+// stops the session rather than show a missing file.
+func TestDevFileLinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "dotfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, "dotfiles", "tool.conf"), "x\n")
+	writeTestFile(t, filepath.Join(home, ".env"), "SECRET\n")
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "tool.conf"), filepath.Join(home, ".toolrc")); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/.toolrc, guest: /home/runner/.toolrc, live: true}]\n")
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), home: home}
+	_, job, err := host.devConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(job.links) != 1 {
+		t.Fatalf("links = %+v", job.links)
+	}
+	l := job.links[0]
+	if l.src != filepath.Join(home, "dotfiles") || l.file != "tool.conf" || l.guest != "/home/runner/.toolrc" || !l.readOnly || l.id != linkID(l.src, "tool.conf", true) {
+		t.Errorf("the link: %+v", l)
+	}
+	l.port, l.guestPort = 5001, 20490
+	if got, want := l.driveLine(), l.id+"\t20490\t5001\tro\tfile\ttool.conf\t/home/runner/.toolrc\n"; got != want {
+		t.Errorf("driveLine = %q, want %q", got, want)
+	}
+
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "hide: [.env]\nmounts: [{host: ~/.env, guest: /home/runner/.env, live: true}]\n")
+	if _, _, err := host.devConfig(dir); err == nil || !strings.Contains(err.Error(), "hide") {
+		t.Errorf("a link to a hidden name: %v", err)
+	}
+	name := "bad\tname"
+	writeTestFile(t, filepath.Join(home, name), "x\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/link-to-bad, guest: /home/runner/b, live: true}]\n")
+	if err := os.Symlink(filepath.Join(home, name), filepath.Join(home, "link-to-bad")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := host.devConfig(dir); err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Errorf("a file whose real name has a tab: %v", err)
+	}
+}

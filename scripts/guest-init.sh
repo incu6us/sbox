@@ -178,28 +178,49 @@ if [ -f /drive/sbox/mounts ]; then
 	done </drive/sbox/mounts
 fi
 
-# Links: other Mac folders, through their relays, mounted last so that nothing
-# sbox writes lands on the Mac. A path that goes through a link the runner left
-# on the kept home is skipped, or it would steer this mount; what's at the path
-# stays underneath. All wait for their relays together.
+# Links: other Mac folders and files, through their relays, mounted last so
+# that nothing sbox writes lands on the Mac. A path that goes through a link the
+# runner left on the kept home is skipped, or it would steer this mount; what's at
+# a folder's path stays underneath. A file's folder shows that one name, and is
+# mounted out of the way: a mount at the path would refuse a rename over it. All
+# wait for their relays together.
 if [ -f /drive/sbox/links ]; then
 	echo 1023 >/sys/module/nfs/parameters/callback_tcpport 2>/dev/null
 	tab=$(printf '\t')
 	i=0
-	while IFS="$tab" read -r _ port _ _ _ _ guest; do
-		setpriv --reuid=runner --regid=runner --init-groups mkdir -p "$guest" 2>/dev/null
-		if [ "$(realpath -m "$guest")" != "$guest" ] || [ ! -d "$guest" ]; then
-			echo "sbox: link $guest isn't a folder here, or goes through a link: skipped"
-			continue
+	while IFS="$tab" read -r _ port _ _ kind name guest; do
+		if [ "$kind" = file ]; then
+			at=/run/sbox/links/$port
+			mkdir -p "$at"
+			setpriv --reuid=runner --regid=runner --init-groups mkdir -p "$(dirname "$guest")" 2>/dev/null
+			if [ "$(realpath -m "$(dirname "$guest")")" != "$(dirname "$guest")" ] || { [ -d "$guest" ] && [ ! -L "$guest" ]; }; then
+				echo "sbox: link $guest is a folder here, or goes through a link: skipped"
+				continue
+			fi
+		else
+			at=$guest
+			setpriv --reuid=runner --regid=runner --init-groups mkdir -p "$guest" 2>/dev/null
+			if [ "$(realpath -m "$guest")" != "$guest" ] || [ ! -d "$guest" ]; then
+				echo "sbox: link $guest isn't a folder here, or goes through a link: skipped"
+				continue
+			fi
 		fi
-		until mount -t nfs4 -o "vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,port=$port,hard,timeo=600" 172.16.0.1:/ "$guest" 2>/dev/null; do
+		mounted=1
+		until mount -t nfs4 -o "vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,port=$port,hard,timeo=600" 172.16.0.1:/ "$at" 2>/dev/null; do
 			i=$((i + 1))
 			if [ "$i" -ge 30 ]; then
 				echo "sbox: link $guest didn't answer; it is not the Mac's"
+				mounted=
 				break
 			fi
 			sleep 1
 		done
+		# Read-only: looked up each time, so a rename on the Mac simply shows. If the
+		# guest replaces the link, only its own view changes.
+		if [ "$kind" = file ] && [ -n "$mounted" ]; then
+			setpriv --reuid=runner --regid=runner --init-groups rm -f "$guest"
+			setpriv --reuid=runner --regid=runner --init-groups ln -s "$at/$name" "$guest"
+		fi
 	done </drive/sbox/links
 fi
 

@@ -181,12 +181,15 @@ func (l liveLink) serveArgs(project string) []string {
 	if l.readOnly {
 		args = append(args, "-ro")
 	}
+	if l.file != "" {
+		args = append(args, "-file", l.file)
+	}
 	return append(args, project, l.src)
 }
 
 // spec is what the link's server serves and where it keeps its state.
 func (l liveLink) spec(project, stateDir string) liveSpec {
-	return liveSpec{folder: filepath.Join(stateDir, "live", project, "links", l.id), dir: l.src, guest: l.guest, readOnly: l.readOnly}
+	return liveSpec{folder: filepath.Join(stateDir, "live", project, "links", l.id), dir: l.src, guest: l.guest, readOnly: l.readOnly, only: foldName(l.file)}
 }
 
 func answers(port int) bool {
@@ -202,10 +205,11 @@ func answers(port int) bool {
 func refusedLine(op, rel string) string { return op + " " + cmp.Or(rel, ".") + "\n" }
 
 // liveSpec is one server of project's: its state folder and what it serves.
-// guest is a link's path in the guest, which its refusals are logged under.
+// guest is a link's path in the guest, which its refusals are logged under;
+// only, for a link to a file, is the name in dir it shows.
 type liveSpec struct {
-	folder, dir, guest string
-	readOnly           bool
+	folder, dir, guest, only string
+	readOnly                 bool
 }
 
 // liveServerFor makes the server spec asks for, with its state, as project's
@@ -220,12 +224,17 @@ func liveServerFor(stateDir, project string, spec liveSpec) (*nfsServer, liveFil
 		return nil, liveFiles{}, err
 	}
 	srv := newNFSServer(root, st.key)
-	srv.readOnly = spec.readOnly
+	srv.readOnly, srv.only = spec.readOnly, spec.only
 	srv.protectFile = liveProtectFile(stateDir, project)
 	srv.hideFile = liveHideFile(stateDir, project)
 	refused := liveRefusedFile(stateDir, project)
 	srv.refused = func(op, rel string) {
-		if spec.guest != "" {
+		switch {
+		case spec.only != "" && op == "hide": // a probe beside the file, which looks missing
+			return
+		case spec.only != "":
+			rel = spec.guest
+		case spec.guest != "":
 			rel = path.Join(spec.guest, rel)
 		}
 		if f, err := os.OpenFile(refused, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
@@ -257,27 +266,28 @@ func serveSpec(stateDir, project string, spec liveSpec) (net.Listener, error) {
 }
 
 // liveServeMain implements the hidden `sbox live-serve [-ro] <project> <dir>`
-// and, for a link, `sbox live-serve -link <id> -guest <path> [-ro] <project>
-// <dir>`: the NFS server for dir, until project has had no session for two
-// checks in a row.
+// and, for a link, `sbox live-serve -link <id> -guest <path> [-ro] [-file <name>]
+// <project> <dir>`: the NFS server for dir, until project has had no session for
+// two checks in a row.
 func liveServeMain(ctx context.Context, args []string, stderr io.Writer, stateDir string, vm sboxRunFunc) int {
 	flags := flag.NewFlagSet("sbox live-serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	readOnly := flags.Bool("ro", false, "refuse every change")
 	link := flags.String("link", "", "the link's `id`")
 	guest := flags.String("guest", "", "the link's `path` in the guest")
-	if flags.Parse(args) != nil || flags.NArg() != 2 || (*link == "") != (*guest == "") {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve [-link <id> -guest <path>] [-ro] <project> <dir>")
+	file := flags.String("file", "", "a file link's `name` in dir")
+	if flags.Parse(args) != nil || flags.NArg() != 2 || (*link == "") != (*guest == "") || *file != "" && *link == "" {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve [-link <id> -guest <path> [-file <name>]] [-ro] <project> <dir>")
 		return exitUsage
 	}
 	args = flags.Args()
 	spec := liveSpec{folder: liveFolder(stateDir, args[0], *readOnly), dir: args[1], readOnly: *readOnly}
 	if *link != "" {
-		if *link != linkID(args[1], "", *readOnly) {
+		if *link != linkID(args[1], *file, *readOnly) {
 			_, _ = fmt.Fprintf(stderr, "sbox live-serve: %s is not link %s\n", args[1], *link)
 			return exitUsage
 		}
-		spec = liveLink{id: *link, src: args[1], guest: *guest, readOnly: *readOnly}.spec(args[0], stateDir)
+		spec = liveLink{id: *link, src: args[1], file: *file, guest: *guest, readOnly: *readOnly}.spec(args[0], stateDir)
 	} else if id, err := projectID(args[1]); err != nil || id != args[0] {
 		_, _ = fmt.Fprintf(stderr, "sbox live-serve: %s is not project %s's folder\n", args[1], args[0])
 		return exitUsage

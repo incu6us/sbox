@@ -27,6 +27,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 	"unsafe"
 )
 
@@ -722,6 +723,35 @@ func configFailed(stderr io.Writer, err error) int {
 	return exitFail
 }
 
+// newLink is mount m as a link to src, its resolved Mac path. A file is served as
+// its folder with one name in it, by its real name, which validate hasn't seen. hide
+// wins over a link, so one to a hidden name is refused, not shown missing.
+func newLink(src string, m mount, hide []string) (liveLink, error) {
+	fi, err := os.Stat(src)
+	if err != nil {
+		return liveLink{}, err
+	}
+	l := liveLink{src: src, guest: m.Guest, readOnly: m.Mode != "rw"}
+	if !fi.IsDir() {
+		l.src, l.file = filepath.Dir(src), filepath.Base(src)
+		if !l.readOnly { // ponytail: until read-write files land
+			return liveLink{}, fmt.Errorf("mounts: %s: a read-write link is a folder", m.Host)
+		}
+		if strings.ContainsFunc(l.file, unicode.IsControl) {
+			return liveLink{}, fmt.Errorf("mounts: %s: its real name, %q, has a control character", m.Host, l.file)
+		}
+		var rules ignoreRules
+		for _, r := range hide {
+			rules = append(rules, foldName(r))
+		}
+		if rules.skip(foldName(l.file)) {
+			return liveLink{}, fmt.Errorf("mounts: %s: hide names it, so the guest wouldn't see it", m.Host)
+		}
+	}
+	l.id = linkID(l.src, l.file, l.readOnly)
+	return l, nil
+}
+
 // devConfig loads the project's config and builds the session's job: the
 // secrets read from the Mac's environment, the mounts' host paths found,
 // the project's .gitignore ahead of dev.ignore. Secrets or mounts missing
@@ -772,11 +802,12 @@ func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error)
 			job.mounts = append(job.mounts, mountCopy{src: src, guest: m.Guest})
 			continue
 		}
-		if fi, err := os.Stat(src); err != nil || !fi.IsDir() { // ponytail: until file links land
-			return config{}, guestJob{}, fmt.Errorf("mounts: %s: a link is a folder", m.Host)
+		l, err := newLink(src, m, cfg.Hide)
+		if err != nil {
+			return config{}, guestJob{}, err
 		}
-		readOnly := m.Mode != "rw"
-		job.links = append(job.links, liveLink{id: linkID(src, "", readOnly), src: src, guest: m.Guest, readOnly: readOnly, guestPort: _linkPort + len(job.links)})
+		l.guestPort = _linkPort + len(job.links)
+		job.links = append(job.links, l)
 	}
 	return cfg, job, nil
 }

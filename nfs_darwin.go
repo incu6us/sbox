@@ -274,6 +274,9 @@ type nfsServer struct {
 	hideStamp time.Time
 	// readOnly refuses every change, the root included: a read-only link.
 	readOnly bool
+	// only, when set, is the one name at the root the guest may see, folded:
+	// a link to a file serves its folder with that alone in it.
+	only string
 	// refused, when set, hears each refused change: the operation and the
 	// path from the root.
 	refused func(op, rel string)
@@ -341,9 +344,6 @@ func (s *nfsServer) rel(p string) string {
 	return strings.TrimPrefix(p, s.root+"/")
 }
 
-// foldName is name as hide's rules compare it, the case folded as APFS does.
-func foldName(name string) string { return strings.ReplaceAll(strings.ToLower(name), "\u017f", "s") }
-
 // hideMatches reports whether a hide rule matches rel or a folder it is in.
 func (s *nfsServer) hideMatches(rel string) bool {
 	for rel = foldName(rel); rel != "." && rel != "/"; rel = path.Dir(rel) {
@@ -359,7 +359,13 @@ func (s *nfsServer) hideMatches(rel string) bool {
 // for a hidden file (the other form of an é) is that file. ponytail: a hard
 // link the Mac made under another name is that name's.
 func (s *nfsServer) hidden(p string) bool {
-	if len(s.hide) == 0 || p == s.root {
+	if p == s.root {
+		return false
+	}
+	if first, _, _ := strings.Cut(s.rel(p), "/"); s.only != "" && foldName(first) != s.only {
+		return true
+	}
+	if len(s.hide) == 0 {
 		return false
 	}
 	if s.hideMatches(s.rel(p)) {

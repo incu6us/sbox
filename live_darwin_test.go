@@ -179,6 +179,34 @@ func TestLinkServer(t *testing.T) {
 	}
 }
 
+// TestFileLinkServer: a file link's server shows its one name, and logs under the
+// link's path in the guest, whatever the file is called on the Mac; a probe of a
+// sibling, which looks missing, isn't news.
+func TestFileLinkServer(t *testing.T) {
+	t.Parallel()
+	state, dir := t.TempDir(), testFolder(t)
+	l := liveLink{id: linkID(dir, "rules.yaml", true), src: dir, file: "rules.yaml", guest: "/home/runner/my.yaml", readOnly: true}
+	if id := linkID(dir, "other.yaml", true); id == l.id {
+		t.Error("another file in the same folder has the same id")
+	}
+	srv, _, err := liveServerFor(state, "0123456789abcdef", l.spec("0123456789abcdef", state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.only != "rules.yaml" {
+		t.Errorf("only = %q", srv.only)
+	}
+	srv.refused("write", "rules.yaml")
+	srv.refused("hide", "README.md")
+	want := []string{"BLOCKED live    /home/runner/my.yaml  read-only in a live session (write ×1)"}
+	if got := liveRefusals(state, "0123456789abcdef"); !slices.Equal(got, want) {
+		t.Errorf("liveRefusals = %q, want %q", got, want)
+	}
+	if got, want := l.serveArgs("0123456789abcdef"), []string{"live-serve", "-link", l.id, "-guest", "/home/runner/my.yaml", "-ro", "-file", "rules.yaml", "0123456789abcdef", dir}; !slices.Equal(got, want) {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+}
+
 // TestLiveServeMainUsage: the flag doesn't take the place of the arguments, and
 // a link's id has to be the one its path and mode make.
 func TestLiveServeMainUsage(t *testing.T) {
@@ -189,6 +217,9 @@ func TestLiveServeMainUsage(t *testing.T) {
 		{"-link", linkID(dir, "", false), "-guest", "/home/runner/x", "-ro", "project", dir},
 		{"-link", linkID(dir, "", true), "-guest", "/home/runner/x", "project", dir},
 		{"-link", linkID(dir, "", true), "-ro", "project", dir},
+		{"-link", linkID(dir, "f", true), "-guest", "/home/runner/x", "-ro", "project", dir},
+		{"-link", linkID(dir, "", true), "-guest", "/home/runner/x", "-ro", "-file", "f", "project", dir},
+		{"-file", "f", "project", dir},
 	} {
 		if code := liveServeMain(context.Background(), args, io.Discard, t.TempDir(), nil); code != exitUsage {
 			t.Errorf("%q: exit %d, want usage", args, code)
