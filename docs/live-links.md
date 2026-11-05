@@ -232,9 +232,11 @@ never bound over its guest path.
   is resolved first, so a dotfile linked from a dotfiles repository exports the
   repository's folder with the one name. A name `hide` covers is refused by
   `validate`, as it would be missing in the guest.
-- **The guest mounts it out of the way**, at `/run/sbox/links/<port>`, with
-  `actimeo=0`: an edit on the Mac has to show at the next look, and a rename on the
-  Mac must be seen as the new file.
+- **The guest mounts it out of the way**, at `/run/sbox/links/<port>`. A read-only
+  link takes the default options: a rename on the Mac showed within 33 ms, with
+  `ESTALE` in 1 round of 80. A read-write link's mount adds `actimeo=0`, so the
+  loop's `lstat` sees a change at once; `ESTALE` is common there (see the spike), and
+  the loop only retries at its next check.
 - **Before either kind**, the parent of the guest path must equal its own `realpath
   -m`. A folder at the guest path prints a line and is skipped, never removed.
 
@@ -260,9 +262,11 @@ Every 0.5 s it compares each side's `lstat`:
   wins, and the guest's version is saved to `~/.sbox/conflicts/<name>.<time>` with a
   line on the console.
 - **Toward the guest** it writes a temp file beside the path and renames, with the
-  Mac's mode bits. **Toward the Mac** it writes in place, so the Mac's inode, mode and
-  any symlink to it stay. ponytail: a reader on the Mac can catch a few ms of a partial
-  file; a server-side temp name if that ever bites.
+  Mac's mode bits. **Toward the Mac** it writes in place, then truncates to the new
+  length, so the Mac's inode, mode and any symlink to it stay. Truncating first left an
+  empty file a reader on the Mac could catch, and a stop at that moment would lose it.
+  ponytail: a reader on the Mac can still catch a few ms of mixed content; a server-side
+  temp name if that ever bites.
 - **It only reads regular files, with `O_NOFOLLOW`.** Anything else at the guest path
   prints one line and the file is left alone until it's regular again.
 - **A deletion isn't passed on, either way.** While a side is missing the loop waits,
@@ -298,23 +302,29 @@ temp file and rename both happen inside the mount.
 - **`-fresh` and `sbox clean`** work on the stopped drive, so they can't reach
   through a link.
 
-## Spike (commit 0): what has to be seen on the real guest kernel
+## Spike results (2026-11-05)
 
-1. Two NFSv4.0 mounts at one IP on different ports: separate clients, each with
-   its own server, with the callback socket on 1023 shared. If the kernel shares
-   a client between them, the design moves to one port with a path for each root.
-2. A file through a mount with `actimeo=0`, from a throwaway `only` server:
-   - a rename-over on the Mac: through a path, the new content with no `ESTALE`, and
-     how long it takes; if it's slow, `lookupcache=none`;
-   - read-only, the same through the symlink.
-3. A prototype of the copy loop. Each of these reaches the Mac within about a second,
-   with no `EBUSY`, and an edit on the Mac comes back: `echo >`, `sed -i`, `git config
-   --file`, Python's `os.replace`, Claude Code's own edit tool. Also the loop's CPU
-   when idle, and a file written slowly isn't sent half-written.
-4. Boot time with no links (must not change) and with two.
+On the real VM, with a throwaway test and `guest-init.sh` patch, and services standing
+in for the relays:
 
-If the loop can't keep to about a second, or costs real CPU when idle, read-write
-files are documented as slower or dropped before commit 9.
+- **Several mounts at one IP work.** Three NFSv4.0 mounts on three ports: three rows in
+  `/proc/fs/nfsfs/servers`, one connection per server, each root its own, the callback
+  socket on 1023 shared. The design stands.
+- **A rename-over on the Mac, through a symlink.** With default options: `ESTALE` in 1
+  round of 80, the new content within 29 ms. With `actimeo=0`: `ESTALE` in 57 rounds of
+  80 (the client asks about the old handle first), within 33 ms. So read-only links
+  take the defaults. An edit in place on the Mac showed within 26 ms. A descriptor held
+  open across a rename gets `ESTALE`, as in any live mount.
+- **The copy loop.** Each save reached the Mac with no `EBUSY` and left a regular file:
+  `echo >` 1.08 s, `sed -i` 1.09 s, `git config --file` 1.02 s, `os.replace` 1.03 s, a
+  temp file and rename in Node 0.77 s after 0.35 s of running, in place 1.01 s. Toward
+  the guest: 1.0 s for a rename on the Mac, 1.02 s for an edit in place. Idle, it used 5
+  CPU ticks of 3000 in 30 s (0.17% of a CPU). A writer adding a line every 0.1 s for 4 s
+  reached the Mac once, whole.
+- **Claude Code's own edit tool wasn't run**: it needs a model call. A regular file on
+  ext4 can't give `EBUSY`, and Node's temp file and rename stood in for it. Commit 9's VM
+  test runs it if a token is there, and says so if not.
+- **Boot**: 1.05 to 1.11 s with no mounts, 1.09 to 1.10 s with two.
 
 ## Code touchpoints
 
@@ -341,8 +351,7 @@ files are documented as slower or dropped before commit 9.
 Strict TDD, each behaviour's test first. On a branch: no merge before commit 4,
 as a link is ungated until then.
 
-- [ ] **0. Spike, no product code.** The four checks above; results go in this
-  file, and the design changes if they say so.
+- [x] **0. Spike, no product code.** Done 2026-11-05; results above.
 - [ ] **1. Read-only server.** `readOnly`. A table test: every changing operation
   (`OPEN` for writing or creating, `WRITE`, `SETATTR`, `CREATE`, `REMOVE`,
   `RENAME`, `LINK`) refused at the root and at depth, `ACCESS` read-only, reads
@@ -393,8 +402,7 @@ as a link is ungated until then.
 - [ ] A read-write link keeps `.git`, `.envrc`, `HEAD`, `hide` and the symlink rules.
 - [ ] A file link shows no sibling, by `ls`, `LOOKUP` or a forged handle, and can't
   make one.
-- [ ] A rename-over on the Mac reaches the guest without `ESTALE`, read-only and
-  read-write.
+- [ ] A rename-over on the Mac reaches the guest, read-only and read-write.
 - [ ] In a read-write file link, `echo >`, `sed -i`, `git config --file`, `os.replace`
   and Claude Code's edit tool all reach the Mac within about a second, with no `EBUSY`.
 - [ ] Both sides changed at once: the Mac's version stays, and the guest's is in
@@ -423,7 +431,9 @@ as a link is ungated until then.
   a hard stop is lost with `-fresh`.
 - A read-write file link is capped at 16 MiB, shares no locks with the Mac (no SQLite),
   and passes on neither deletion nor mode bits. Link the folder for those.
-- A read-only file link is a symlink, so a tool that checks with `lstat` sees one.
+- A read-only file link is a symlink, so a tool that checks with `lstat` sees one, and
+  a read racing a rename on the Mac can rarely get `ESTALE` (1 in 80), as can a
+  descriptor held open across one.
 - A link gets no file events for the Mac's edits, and `WATCHPACK_POLLING` is set
   only for a live project.
 - A link is NFS: a dependency tree in one is slow, and `dev.local` covers the project
