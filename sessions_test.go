@@ -559,7 +559,7 @@ func TestDevMainLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTestFile(t, stale, "write from-an-earlier-session\n")
-	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
 		started = append(started, project+" "+folder)
 		f, err := os.OpenFile(liveRefusedFile(state, project), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 		if err == nil {
@@ -1409,4 +1409,117 @@ func TestCollectSummaryInParallel(t *testing.T) {
 	if unsynced != 2 || !strings.Contains(summary, "the guest has 2 changes: sbox sync ./app") || !strings.Contains(summary, "api.anthropic.com:443") {
 		t.Errorf("unsynced %d, summary %q", unsynced, summary)
 	}
+}
+
+// TestDevLiveReadOnly: a read-only session asks for a read-only server, the
+// guest gets what the project lists on its own disk, and the summary says
+// nothing came back.
+func TestDevLiveReadOnly(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live-ro, local: [build/out, node_modules]}\n")
+	var modes []bool
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
+		modes = append(modes, readOnly)
+		return &liveRelay{port: 4242, token: []byte("token")}, nil
+	}}
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			return "READY " + args[1] + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !slices.Equal(modes, []bool{true}) {
+		t.Errorf("startLive's readOnly: %v", modes)
+	}
+	if got := tarFiles(t, vm.stdins[1])["sbox/local"]; got != "build/out\nnode_modules\n" {
+		t.Errorf("sbox/local = %q", got)
+	}
+	for _, p := range []string{"build/out", "node_modules"} {
+		if fi, err := os.Lstat(filepath.Join(dir, p)); err != nil || !fi.IsDir() {
+			t.Errorf("%s on the Mac: %v, %v", p, fi, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "live, read-only: nothing came back") {
+		t.Errorf("the summary:\n%s", stderr.String())
+	}
+}
+
+// TestReadOnlyLocal: what a read-only session keeps on the guest's disk. A
+// listed path is made on the Mac, but never through a symlink: sbox.yaml is
+// the project's, and it mustn't place a folder elsewhere. The defaults leave
+// nothing on the Mac.
+func TestReadOnlyLocal(t *testing.T) {
+	t.Parallel()
+	listed := func(p ...string) config {
+		var c config
+		c.Dev.Local = p
+		return c
+	}
+	t.Run("defaults only where they exist", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, ".venv"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readOnlyLocal(dir, config{})
+		if err != nil || !slices.Equal(got, []string{".venv"}) {
+			t.Errorf("readOnlyLocal = %q, %v", got, err)
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
+			t.Errorf("node_modules on the Mac: %v", err)
+		}
+	})
+	t.Run("a default that is a link or a file isn't bound", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(dir, "node_modules")); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(dir, ".venv"), "")
+		if got, err := readOnlyLocal(dir, config{}); err != nil || len(got) != 0 {
+			t.Errorf("readOnlyLocal = %q, %v", got, err)
+		}
+	})
+	t.Run("listed paths are made, and may exist", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "dist"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readOnlyLocal(dir, listed("dist", "a/b/c"))
+		if err != nil || !slices.Equal(got, []string{"dist", "a/b/c"}) {
+			t.Errorf("readOnlyLocal = %q, %v", got, err)
+		}
+		if fi, err := os.Lstat(filepath.Join(dir, "a", "b", "c")); err != nil || !fi.IsDir() {
+			t.Errorf("a/b/c: %v, %v", fi, err)
+		}
+	})
+	t.Run("never through a symlink", func(t *testing.T) {
+		t.Parallel()
+		dir, outside := t.TempDir(), t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(dir, "up")); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{"up", "up/planted", "up/planted/deep"} {
+			if _, err := readOnlyLocal(dir, listed(p)); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Errorf("%s: %v, want a refusal", p, err)
+			}
+		}
+		if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+			t.Errorf("made outside the project: %v", entries)
+		}
+	})
+	t.Run("not over a file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeTestFile(t, filepath.Join(dir, "dist"), "")
+		if _, err := readOnlyLocal(dir, listed("dist")); err == nil {
+			t.Error("a file in the way: no error")
+		}
+	})
 }

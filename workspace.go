@@ -25,9 +25,9 @@ type workspace struct {
 	Mounts   []mount           `yaml:"mounts,omitempty"`   // granted
 	Secrets  map[string]string `yaml:"secrets,omitempty"`  // granted
 	Services []int             `yaml:"services,omitempty"` // granted
-	Mount    string            `yaml:"mount,omitempty"`    // live: every project here is mounted live (docs/live-mount.md)
+	Mount    string            `yaml:"mount,omitempty"`    // live or live-ro: every project here is mounted so (docs/live-mount.md)
 	Allow    struct {
-		Live     bool     `yaml:"live,omitempty"`     // a project may ask for dev.mount: live
+		Live     bool     `yaml:"live,omitempty"`     // a project may ask for dev.mount: live or live-ro
 		Egress   []string `yaml:"egress,omitempty"`   // patterns a project may ask for, or *
 		Services []string `yaml:"services,omitempty"` // ports, or *
 		Mounts   []string `yaml:"mounts,omitempty"`   // Mac folders or files a project may mount read-only
@@ -60,8 +60,8 @@ func (w *workspace) check(name string) error {
 	if err := grants.check(); err != nil {
 		return fmt.Errorf("%s: %w", where, err)
 	}
-	if w.Mount != "" && w.Mount != "live" {
-		return fmt.Errorf("%s.mount: %q: want live (copy is the default)", where, w.Mount)
+	if w.Mount != "" && w.Mount != "live" && w.Mount != "live-ro" {
+		return fmt.Errorf("%s.mount: %q: want live or live-ro (copy is the default)", where, w.Mount)
 	}
 	for i, e := range w.Allow.Egress {
 		if e == "*" {
@@ -334,9 +334,14 @@ func layered(userFile, projectFile, dir, override, home string, approved map[str
 		}
 		return !keep(r, allowsMount(ro, rw, m.Host, m.Mode == "rw", home))
 	})
-	// A live mount puts the Mac's folder in reach of the guest's writes.
-	if project.Dev.Mount == "live" && !keep(request{"mount", "live", "live", "true"}, w.Allow.Live || w.Mount == "live" || user.Dev.Mount == "live") {
-		project.Dev.Mount = ""
+	// A live mount puts the Mac's folder in reach of the guest's writes; a
+	// read-only one, of its reads, past what copy mode leaves out.
+	if ask := project.Dev.Mount; ask == "live" || ask == "live-ro" {
+		granted := w.Mount == "live" || user.Dev.Mount == "live" ||
+			ask == "live-ro" && (w.Mount == "live-ro" || user.Dev.Mount == "live-ro")
+		if !keep(request{"mount", ask, "live", "true"}, w.Allow.Live || granted) {
+			project.Dev.Mount = ""
+		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(project.Secrets)) {
 		ref := project.Secrets[name]

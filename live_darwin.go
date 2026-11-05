@@ -3,8 +3,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/subtle"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -28,10 +30,19 @@ type liveFiles struct {
 	port       int
 }
 
-// liveState reads project's key, token and port, making each the first
-// time.
-func liveState(stateDir, project string) (liveFiles, error) {
-	dir := filepath.Join(stateDir, "live", project)
+// liveFolder is where a project's server keeps its state. A read-only server
+// has its own, port and token included, so one left running from a read-write
+// session is never the one a read-only session's relay reaches.
+func liveFolder(stateDir, project string, readOnly bool) string {
+	if readOnly {
+		return filepath.Join(stateDir, "live", project, "ro")
+	}
+	return filepath.Join(stateDir, "live", project)
+}
+
+// liveState reads the key, token and port in a server's folder, making each
+// the first time.
+func liveState(dir string) (liveFiles, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return liveFiles{}, err
 	}
@@ -100,13 +111,13 @@ func liveAccept(ln net.Listener, srv *nfsServer, token []byte) error {
 
 // startLiveServer finds project's server running, or starts sbox
 // live-serve in the background, and returns where the relay goes.
-func startLiveServer(stateDir, project, dir string) (*liveRelay, error) {
-	st, err := liveState(stateDir, project)
+func startLiveServer(stateDir, project, dir string, readOnly bool) (*liveRelay, error) {
+	sdir := liveFolder(stateDir, project, readOnly)
+	st, err := liveState(sdir)
 	if err != nil {
 		return nil, err
 	}
 	relay := &liveRelay{port: st.port, token: st.token}
-	sdir := filepath.Join(stateDir, "live", project)
 	if pid, err := os.ReadFile(filepath.Join(sdir, "pid")); err == nil {
 		if n, err := strconv.Atoi(strings.TrimSpace(string(pid))); err == nil && syscall.Kill(n, 0) == nil && answers(st.port) {
 			return relay, nil
@@ -122,7 +133,7 @@ func startLiveServer(stateDir, project, dir string) (*liveRelay, error) {
 		return nil, err
 	}
 	defer func() { _ = logFile.Close() }()
-	cmd := exec.Command(exe, "live-serve", project, dir)
+	cmd := exec.Command(exe, liveServeArgs(project, dir, readOnly)...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlives the terminal, like the session
 	if err := cmd.Start(); err != nil {
@@ -143,6 +154,14 @@ func startLiveServer(stateDir, project, dir string) (*liveRelay, error) {
 	return nil, fmt.Errorf("sbox live-serve didn't start listening (%s)", filepath.Join(sdir, "log"))
 }
 
+// liveServeArgs is the command line of project's server.
+func liveServeArgs(project, dir string, readOnly bool) []string {
+	if readOnly {
+		return []string{"live-serve", "-ro", project, dir}
+	}
+	return []string{"live-serve", project, dir}
+}
+
 func answers(port int) bool {
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
 	if err != nil {
@@ -152,14 +171,17 @@ func answers(port int) bool {
 	return true
 }
 
+// refusedLine is one refusal in a project's log; the root's path is ".".
+func refusedLine(op, rel string) string { return op + " " + cmp.Or(rel, ".") + "\n" }
+
 // serveLive starts dir's server on project's port in this process and
 // returns its listener; closing it stops the server.
-func serveLive(stateDir, project, dir string) (net.Listener, error) {
+func serveLive(stateDir, project, dir string, readOnly bool) (net.Listener, error) {
 	root, err := liveRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	st, err := liveState(stateDir, project)
+	st, err := liveState(liveFolder(stateDir, project, readOnly))
 	if err != nil {
 		return nil, err
 	}
@@ -168,12 +190,13 @@ func serveLive(stateDir, project, dir string) (net.Listener, error) {
 		return nil, err
 	}
 	srv := newNFSServer(root, st.key)
+	srv.readOnly = readOnly
 	srv.protectFile = liveProtectFile(stateDir, project)
 	srv.hideFile = liveHideFile(stateDir, project)
 	refused := liveRefusedFile(stateDir, project)
 	srv.refused = func(op, rel string) {
 		if f, err := os.OpenFile(refused, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
-			_, _ = fmt.Fprintf(f, "%s %s\n", op, rel)
+			_, _ = f.WriteString(refusedLine(op, rel))
 			_ = f.Close()
 		}
 	}
@@ -181,25 +204,29 @@ func serveLive(stateDir, project, dir string) (net.Listener, error) {
 	return ln, nil
 }
 
-// liveServeMain implements the hidden `sbox live-serve <project> <dir>`:
+// liveServeMain implements the hidden `sbox live-serve [-ro] <project> <dir>`:
 // the NFS server for dir, until project has had no session for two
 // checks in a row.
 func liveServeMain(ctx context.Context, args []string, stderr io.Writer, stateDir string, vm sboxRunFunc) int {
-	if len(args) != 2 {
-		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve <project> <dir>")
+	flags := flag.NewFlagSet("sbox live-serve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	readOnly := flags.Bool("ro", false, "refuse every change")
+	if flags.Parse(args) != nil || flags.NArg() != 2 {
+		_, _ = fmt.Fprintln(stderr, "usage: sbox live-serve [-ro] <project> <dir>")
 		return exitUsage
 	}
+	args = flags.Args()
 	if id, err := projectID(args[1]); err != nil || id != args[0] {
 		_, _ = fmt.Fprintf(stderr, "sbox live-serve: %s is not project %s's folder\n", args[1], args[0])
 		return exitUsage
 	}
-	ln, err := serveLive(stateDir, args[0], args[1])
+	ln, err := serveLive(stateDir, args[0], args[1], *readOnly)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox live-serve:", err)
 		return exitFail
 	}
 	defer func() { _ = ln.Close() }()
-	pidFile := filepath.Join(stateDir, "live", args[0], "pid")
+	pidFile := filepath.Join(liveFolder(stateDir, args[0], *readOnly), "pid")
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		_, _ = fmt.Fprintln(stderr, "sbox live-serve:", err)
 		return exitFail

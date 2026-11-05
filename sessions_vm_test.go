@@ -1486,13 +1486,13 @@ func TestLiveMountOnVM(t *testing.T) {
 		}
 	}
 	state := t.TempDir()
-	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
-		ln, err := serveLive(state, project, folder)
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
+		ln, err := serveLive(state, project, folder, readOnly)
 		if err != nil {
 			return nil, err
 		}
 		t.Cleanup(func() { _ = ln.Close() })
-		st, err := liveState(state, project)
+		st, err := liveState(liveFolder(state, project, readOnly))
 		return &liveRelay{port: st.port, token: st.token}, err
 	}}
 	go func() {
@@ -1539,13 +1539,13 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, ".git", "config"), "[core]\n")
 	gitBefore := treeDigest(t, filepath.Join(dir, ".git"))
 	state := t.TempDir()
-	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string) (*liveRelay, error) {
-		ln, err := serveLive(state, project, folder)
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
+		ln, err := serveLive(state, project, folder, readOnly)
 		if err != nil {
 			return nil, err
 		}
 		t.Cleanup(func() { _ = ln.Close() })
-		st, err := liveState(state, project)
+		st, err := liveState(liveFolder(state, project, readOnly))
 		return &liveRelay{port: st.port, token: st.token}, err
 	}}
 	try := func(name, cmd string) string {
@@ -1602,19 +1602,20 @@ func TestLiveMountWritesOnVM(t *testing.T) {
 
 // liveOnTheMac is a devHost.startLive running the server in this test; a
 // project's later sessions find it running, as sbox live-serve is found.
-func liveOnTheMac(t *testing.T, state string) func(project, folder string) (*liveRelay, error) {
+func liveOnTheMac(t *testing.T, state string) func(project, folder string, readOnly bool) (*liveRelay, error) {
 	t.Helper()
 	running := map[string]bool{}
-	return func(project, folder string) (*liveRelay, error) {
-		if !running[project] {
-			ln, err := serveLive(state, project, folder)
+	return func(project, folder string, readOnly bool) (*liveRelay, error) {
+		key := fmt.Sprint(project, readOnly)
+		if !running[key] {
+			ln, err := serveLive(state, project, folder, readOnly)
 			if err != nil {
 				return nil, err
 			}
 			t.Cleanup(func() { _ = ln.Close() })
-			running[project] = true
+			running[key] = true
 		}
-		st, err := liveState(state, project)
+		st, err := liveState(liveFolder(state, project, readOnly))
 		return &liveRelay{port: st.port, token: st.token}, err
 	}
 }
@@ -1766,6 +1767,97 @@ func TestLiveMountAttacksOnVM(t *testing.T) {
 	}
 }
 
+// TestLiveReadOnlyOnVM: a read-only session reads the Mac's folder and changes
+// nothing in it, through its kernel's mount or straight at the server claiming
+// to be root; what dev.local lists stays writable on the guest's disk. A session
+// before it that could write leaves no way to through its server.
+func TestLiveReadOnlyOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dir, "README.md"), "hello from the Mac\n")
+	writeTestFile(t, filepath.Join(dir, "sub", "deep.txt"), "deep\n")
+	prelude, _, _ := strings.Cut(_hostileClient, "reply = call(root, getfh)")
+	writeTestFile(t, filepath.Join(dir, "attack.py"), prelude+`
+for name, ops in [
+    ("read", [root, open_for("README.md", 1)]),
+    ("write", [root, open_for("README.md", 3)]),
+    ("write at depth", [root, lookup("sub"), open_for("deep.txt", 3)]),
+    ("create", [root, open_for("planted", 3, True)]),
+    ("remove", [root, u32(28) + xstr(b"README.md")]),
+    ("symlink", [root, symlink("planted", "README.md")]),
+]:
+    print("raw", name, status(*ops))
+`)
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: liveOnTheMac(t, state)}
+	dev := func(mount, script string) (string, string) {
+		t.Helper()
+		writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: "+mount+", local: [build]}\n")
+		var out, notes bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev %s: exit %d\n%s\n%s", mount, code, out.String(), notes.String())
+		}
+		return out.String(), notes.String()
+	}
+	if out, _ := dev("live", "cd ~/work && echo written-while-live > live.txt && cat live.txt"); !strings.Contains(out, "written-while-live") {
+		t.Fatalf("the read-write session: %q", out)
+	}
+	if err := os.Remove(filepath.Join(dir, "live.txt")); err != nil {
+		t.Fatalf("the read-write session's file isn't on the Mac: %v", err)
+	}
+	digest := func() string {
+		var b strings.Builder
+		for _, p := range []string{"README.md", "sub", "attack.py"} {
+			b.WriteString(treeDigest(t, filepath.Join(dir, p)))
+		}
+		return b.String()
+	}
+	was := digest()
+	try := func(name, cmd string) string {
+		return cmd + " 2>/dev/null && echo '" + name + ": allowed' || echo '" + name + ": refused'; "
+	}
+	out, notes := dev("live-ro", "cd ~/work; cat README.md sub/deep.txt; "+
+		try("overwrite", "echo x > README.md")+try("append at depth", "echo x >> sub/deep.txt")+try("create", "touch planted")+
+		try("mkdir", "mkdir planted-dir")+try("remove", "rm README.md")+try("rename", "mv sub moved")+try("chmod the root", "chmod 700 .")+
+		try("a symlink", "ln -s README.md planted-link")+
+		try("dev.local", "echo built > build/out && cat build/out")+"python3 -I attack.py")
+	for _, want := range []string{
+		"hello from the Mac", "deep\n", "overwrite: refused", "append at depth: refused", "create: refused", "mkdir: refused", "remove: refused",
+		"rename: refused", "chmod the root: refused", "a symlink: refused", "built\ndev.local: allowed",
+		"raw read 0", "raw write 13", "raw write at depth 13", "raw create 13", "raw remove 13", "raw symlink 13",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, notes)
+		}
+	}
+	if digest() != was {
+		t.Error("the Mac's files changed")
+	}
+	for _, p := range []string{"planted", "planted-dir", "planted-link", "moved", "build/out"} {
+		if _, err := os.Lstat(filepath.Join(dir, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists on the Mac: %v", p, err)
+		}
+	}
+	for _, want := range []string{"live, read-only: nothing came back", "BLOCKED live    README.md  read-only in a live session"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("the summary lacks %q:\n%s", want, notes)
+		}
+	}
+	if strings.Contains(notes, "BLOCKED live    build") {
+		t.Errorf("sbox's own mount point is reported as the guest's:\n%s", notes)
+	}
+}
+
 // TestLiveLocalKeptOnVM: npm in a live session writes its project files to
 // the Mac and node_modules to the guest's disk, which the next session has.
 func TestLiveLocalKeptOnVM(t *testing.T) {
@@ -1826,9 +1918,9 @@ func TestLiveGatingOnVM(t *testing.T) {
 	servers := 0
 	serve := liveOnTheMac(t, state)
 	host := func(approve func([]string) bool) devHost {
-		return devHost{stateDir: state, userConfig: user, approve: approve, startLive: func(project, folder string) (*liveRelay, error) {
+		return devHost{stateDir: state, userConfig: user, approve: approve, startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
 			servers++
-			return serve(project, folder)
+			return serve(project, folder, readOnly)
 		}}
 	}
 	dev := func(h devHost) (string, string, int) {

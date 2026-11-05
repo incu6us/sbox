@@ -411,7 +411,7 @@ func TestDevMainLiveGating(t *testing.T) {
 			}
 			return ""
 		}}
-		host := devHost{stateDir: t.TempDir(), userConfig: user, home: home, startLive: func(project, folder string) (*liveRelay, error) {
+		host := devHost{stateDir: t.TempDir(), userConfig: user, home: home, startLive: func(project, folder string, readOnly bool) (*liveRelay, error) {
 			started = append(started, folder)
 			return &liveRelay{port: 4242, token: []byte("t")}, nil
 		}}
@@ -454,5 +454,70 @@ func TestDevMainLiveGating(t *testing.T) {
 	if vm, started, _, code := dev(t, project("copy", "dev: {mount: copy}\n")); code != exitOK || len(started) != 0 ||
 		tarFiles(t, vm.stdins[slices.IndexFunc(vm.calls, func(c []string) bool { return c[0] == "start" })])["skill/sbox.yaml"] == "" {
 		t.Errorf("granted, the project asks for a copy: exit %d, started %q", code, started)
+	}
+}
+
+// TestLiveReadOnlyGate: read-only still needs permission, since the guest
+// reads what copy mode leaves out, and permission for it isn't permission to
+// write.
+func TestLiveReadOnlyGate(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	dir := filepath.Join(home, "work", "app")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, user, project string
+		approved            string
+		want, miss          string
+	}{
+		{name: "not allowed", project: "live-ro", miss: "mount live-ro"},
+		{name: "allow.live", user: "allow: {live: true}", project: "live-ro", want: "live-ro"},
+		{name: "granted", user: "mount: live-ro", want: "live-ro"},
+		{name: "granted, and asked", user: "mount: live-ro", project: "live-ro", want: "live-ro"},
+		{name: "a read-only grant doesn't grant writing", user: "mount: live-ro", project: "live", want: "live-ro", miss: "mount live"},
+		{name: "a project narrows a live grant", user: "mount: live", project: "live-ro", want: "live-ro"},
+		{name: "a project can still copy", user: "mount: live-ro", project: "copy", want: "copy"},
+		{name: "approved", project: "live-ro", approved: "mount live-ro", want: "live-ro"},
+		{name: "approving read-only doesn't approve writing", project: "live", approved: "mount live-ro", miss: "mount live"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			user, project := filepath.Join(t.TempDir(), "config.yaml"), filepath.Join(t.TempDir(), "sbox.yaml")
+			writeTestFile(t, user, "workspaces: {mine: {paths: [~/work], "+tt.user+"}}\n")
+			body := ""
+			if tt.project != "" {
+				body = "dev: {mount: " + tt.project + "}\n"
+			}
+			writeTestFile(t, project, body)
+			cfg, _, misses, err := layered(user, project, dir, "", home, map[string]bool{tt.approved: tt.approved != ""})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Dev.Mount != tt.want {
+				t.Errorf("dev.mount = %q, want %q", cfg.Dev.Mount, tt.want)
+			}
+			var got []string
+			for _, m := range misses {
+				got = append(got, m.id())
+			}
+			if strings.Join(got, ",") != tt.miss {
+				t.Errorf("misses = %q, want %q", got, tt.miss)
+			}
+		})
+	}
+	bad := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, bad, "workspaces: {mine: {paths: [~/work], mount: nfs}}\n")
+	if _, err := readConfigFile(bad, true); err == nil || !strings.Contains(err.Error(), "live-ro") {
+		t.Errorf("a bad workspace mount: %v, want it to name live-ro", err)
+	}
+}
+
+func TestBlockedReadOnlyLine(t *testing.T) {
+	t.Parallel()
+	r := request{"mount", "live-ro", "live", "true"}
+	if got, want := r.blocked("default"), "BLOCKED mount   live-ro  not allowed in workspace default → workspaces.default.allow.live: true"; got != want {
+		t.Errorf("%q, want %q", got, want)
 	}
 }

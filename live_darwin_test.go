@@ -4,11 +4,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -56,11 +58,11 @@ func TestLiveAcceptChecksTheToken(t *testing.T) {
 func TestLiveStateIsKept(t *testing.T) {
 	t.Parallel()
 	state := t.TempDir()
-	a, err := liveState(state, "0123456789abcdef")
+	a, err := liveState(liveFolder(state, "0123456789abcdef", false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := liveState(state, "0123456789abcdef")
+	b, err := liveState(liveFolder(state, "0123456789abcdef", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +77,66 @@ func TestLiveStateIsKept(t *testing.T) {
 			t.Errorf("%s: %v, mode %v; want 0600", f, err, fi.Mode())
 		}
 	}
-	if c, err := liveState(state, "fedcba9876543210"); err != nil || bytes.Equal(c.token, a.token) {
+	if c, err := liveState(liveFolder(state, "fedcba9876543210", false)); err != nil || bytes.Equal(c.token, a.token) {
 		t.Errorf("another project: %v, same token %v", err, bytes.Equal(c.token, a.token))
+	}
+}
+
+// TestLiveStateByMode: a read-only server has its own key, token and port, so
+// one left running from a read-write session is never the one it reaches.
+func TestLiveStateByMode(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	rw, err := liveState(liveFolder(state, "0123456789abcdef", false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ro, err := liveState(liveFolder(state, "0123456789abcdef", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(rw.token, ro.token) || bytes.Equal(rw.key, ro.key) || rw.port == ro.port {
+		t.Errorf("read-write and read-only share state: %+v, %+v", rw, ro)
+	}
+}
+
+// TestServeLiveReadOnly: the running server refuses a change when read-only,
+// and a refusal at the root is logged so that a BLOCKED line can name it.
+func TestServeLiveReadOnly(t *testing.T) {
+	t.Parallel()
+	state, dir := t.TempDir(), testFolder(t)
+	ln, err := serveLive(state, "0123456789abcdef", dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	if got := liveServeArgs("0123456789abcdef", dir, true); !slices.Equal(got, []string{"live-serve", "-ro", "0123456789abcdef", dir}) {
+		t.Errorf("read-only args: %q", got)
+	}
+	if got := liveServeArgs("0123456789abcdef", dir, false); !slices.Equal(got, []string{"live-serve", "0123456789abcdef", dir}) {
+		t.Errorf("read-write args: %q", got)
+	}
+	if got := refusedLine("setattr", ""); got != "setattr .\n" {
+		t.Errorf("a refusal at the root: %q", got)
+	}
+	file := liveRefusedFile(state, "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, file, refusedLine("setattr", "")+refusedLine("write", "README.md"))
+	want := []string{"BLOCKED live    .  read-only in a live session (setattr ×1)", "BLOCKED live    README.md  read-only in a live session (write ×1)"}
+	if got := liveRefusals(state, "0123456789abcdef"); !slices.Equal(got, want) {
+		t.Errorf("liveRefusals = %q, want %q", got, want)
+	}
+}
+
+// TestLiveServeMainUsage: the flag doesn't take the place of the arguments.
+func TestLiveServeMainUsage(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{}, {"-ro"}, {"-ro", "project"}, {"-nope", "project", "dir"}} {
+		if code := liveServeMain(context.Background(), args, io.Discard, t.TempDir(), nil); code != exitUsage {
+			t.Errorf("%q: exit %d, want usage", args, code)
+		}
 	}
 }
 

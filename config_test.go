@@ -268,9 +268,15 @@ func TestLoadConfigDevMount(t *testing.T) {
 		t.Errorf("dev.mount live: live() %v, %v", cfg.live(), err)
 	}
 	for _, body := range []string{"dev: {}\n", "dev: {mount: copy}\n"} {
-		if cfg, err := loadConfig(none, write(t, body)); err != nil || cfg.live() {
-			t.Errorf("%q: live() %v, %v; want a copy", body, cfg.live(), err)
+		if cfg, err := loadConfig(none, write(t, body)); err != nil || cfg.live() || cfg.liveRO() {
+			t.Errorf("%q: live() %v, liveRO() %v, %v; want a copy", body, cfg.live(), cfg.liveRO(), err)
 		}
+	}
+	if cfg, err := loadConfig(none, write(t, "dev: {mount: live}\n")); err != nil || cfg.liveRO() {
+		t.Errorf("dev.mount live: liveRO() %v, %v", cfg.liveRO(), err)
+	}
+	if cfg, err := loadConfig(none, write(t, "dev: {mount: live-ro}\n")); err != nil || !cfg.live() || !cfg.liveRO() || cfg.bootKeys()["dev.mount"] != `"live-ro"` {
+		t.Errorf("dev.mount live-ro: live() %v, liveRO() %v, boot key %s, %v", cfg.live(), cfg.liveRO(), cfg.bootKeys()["dev.mount"], err)
 	}
 	if _, err := loadConfig(none, write(t, "dev: {mount: nfs}\n")); err == nil || !strings.Contains(err.Error(), "dev.mount") {
 		t.Errorf("dev.mount nfs: %v, want a refusal naming the key", err)

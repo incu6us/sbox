@@ -195,10 +195,12 @@ func portLines(ss string, forwarded []int) []string {
 
 // sessionSummary is what sbox dev prints when the terminal closes;
 // unsynced is the guest's changes not yet synced, -1 when unknown.
-func sessionSummary(ran time.Duration, dir string, unsynced int, live bool, ev sessionEvents, ports []string) string {
+func sessionSummary(ran time.Duration, dir string, unsynced int, mount string, ev sessionEvents, ports []string) string {
 	var b strings.Builder
 	switch {
-	case live:
+	case mount == "live-ro":
+		fmt.Fprintf(&b, "session %s · live, read-only: nothing came back\n", age(ran))
+	case mount == "live":
 		fmt.Fprintf(&b, "session %s · live: the changes are on the Mac already\n", age(ran))
 	case unsynced > 0:
 		fmt.Fprintf(&b, "session %s · the guest has %d %s: sbox sync %s\n", age(ran), unsynced, plural(unsynced, "change", "changes"), dir)
@@ -286,6 +288,9 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 	if cfg.live() {
 		line := fmt.Sprintf("live     ~/work is the Mac's folder itself; read-only: %s; on the guest's disk: %s",
 			strings.Join(append(slices.Clone(_protectedNames), cfg.Protect...), ", "), strings.Join(cfg.liveLocal(), ", "))
+		if cfg.liveRO() {
+			line = "live     ~/work is the Mac's folder itself, read-only; on the guest's disk: " + strings.Join(cfg.liveLocal(), ", ")
+		}
 		if len(cfg.Hide) > 0 {
 			line += "; hidden: " + strings.Join(cfg.Hide, ", ")
 		}

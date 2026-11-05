@@ -38,7 +38,7 @@ type config struct {
 		Start       []string          `yaml:"start,omitempty"`       // steps run at every fresh boot; a trailing & runs one in the background
 		Command     string            `yaml:"command,omitempty"`     // run by sbox dev when no command is given; a login shell when unset
 		Permissions string            `yaml:"permissions,omitempty"` // skip (the default: the VM is the boundary) or ask
-		Mount       string            `yaml:"mount,omitempty"`       // copy (the default) or live: the Mac's folder itself (docs/live-mount.md)
+		Mount       string            `yaml:"mount,omitempty"`       // copy (the default), live: the Mac's folder itself (docs/live-mount.md), or live-ro: read-only (docs/live-links.md)
 		Local       []string          `yaml:"local,omitempty"`       // live: paths from the root kept on the guest's disk; liveLocal's default
 		VCPUs       int               `yaml:"vcpus,omitempty"`       // the session microVM's size; 2 and 1024 when unset
 		MemoryMiB   int               `yaml:"memory_mib,omitempty"`
@@ -185,7 +185,10 @@ func changedKeys(was, now map[string]string) []string {
 }
 
 // live reports whether sbox dev mounts the Mac's folder instead of a copy.
-func (c config) live() bool { return c.Dev.Mount == "live" }
+func (c config) live() bool { return c.Dev.Mount == "live" || c.liveRO() }
+
+// liveRO reports whether that folder is read-only in the guest.
+func (c config) liveRO() bool { return c.Dev.Mount == "live-ro" }
 
 // _protectedNames may not be changed by a live session's guest, at any
 // depth: git's hooks and config run code at the Mac's next git command,
@@ -530,8 +533,8 @@ func (c *config) check() error {
 	if p := c.Dev.Permissions; p != "" && p != "skip" && p != "ask" {
 		return fmt.Errorf("dev.permissions: %q: want skip or ask", p)
 	}
-	if m := c.Dev.Mount; m != "" && m != "copy" && m != "live" {
-		return fmt.Errorf("dev.mount: %q: want copy or live", m)
+	if m := c.Dev.Mount; m != "" && m != "copy" && m != "live" && m != "live-ro" {
+		return fmt.Errorf("dev.mount: %q: want copy, live or live-ro", m)
 	}
 	for _, rules := range [][]string{c.Permissions.Allow, c.Permissions.Deny, c.MCP.Allow, c.MCP.Deny} {
 		if slices.Contains(rules, "") {

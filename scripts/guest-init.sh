@@ -113,7 +113,9 @@ if [ -s /drive/sbox/live ]; then
 	[ -f /drive/sbox/local ] && while IFS= read -r p; do
 		case "$p" in "" | /* | ..* | */..*) continue ;; esac
 		n=$(echo "$p" | tr / _)
-		mkdir -p "/home/runner/.sbox/local/$n" "/home/runner/work/$p"
+		mkdir -p "/home/runner/.sbox/local/$n"
+		# Only when missing: a read-only mount refuses even a folder that's there.
+		[ -d "/home/runner/work/$p" ] || mkdir -p "/home/runner/work/$p"
 		chown runner:runner /home/runner/.sbox /home/runner/.sbox/local "/home/runner/.sbox/local/$n"
 		mount --bind "/home/runner/.sbox/local/$n" "/home/runner/work/$p"
 	done </drive/sbox/local

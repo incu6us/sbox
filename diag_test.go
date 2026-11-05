@@ -81,16 +81,19 @@ LISTEN 0 511 0.0.0.0:80 0.0.0.0:*
 
 func TestSessionSummary(t *testing.T) {
 	t.Parallel()
-	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", 3, false, parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
+	got := sessionSummary(2*time.Hour+5*time.Minute, "./app", 3, "", parseEvents(_events), []string{"BLOCKED port    5173  guest is listening, not forwarded → ports: [5173]"})
 	for _, want := range []string{"session 2h5m · the guest has 3 changes: sbox sync ./app", "egress   api.anthropic.com:443 ×2", "BLOCKED egress  telemetry.example:443", "BLOCKED port    5173"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary lacks %q:\n%s", want, got)
 		}
 	}
-	if quiet := sessionSummary(time.Minute, "./app", 0, false, parseEvents(""), nil); !strings.Contains(quiet, "nothing to sync") || strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
+	if quiet := sessionSummary(time.Minute, "./app", 0, "copy", parseEvents(""), nil); !strings.Contains(quiet, "nothing to sync") || strings.Contains(quiet, "egress") || strings.Contains(quiet, "BLOCKED") {
 		t.Errorf("a quiet session's summary %q, want just the first line", quiet)
 	}
-	if live := sessionSummary(time.Minute, "./app", 0, true, parseEvents(""), nil); live != "session 1m · live: the changes are on the Mac already\n" {
+	if ro := sessionSummary(time.Minute, "./app", 0, "live-ro", parseEvents(""), nil); ro != "session 1m · live, read-only: nothing came back\n" {
+		t.Errorf("read-only summary = %q", ro)
+	}
+	if live := sessionSummary(time.Minute, "./app", 0, "live", parseEvents(""), nil); live != "session 1m · live: the changes are on the Mac already\n" {
 		t.Errorf("a live session's summary %q", live)
 	}
 }
@@ -158,6 +161,16 @@ func TestDevPreflight(t *testing.T) {
 	}
 	if got := devPreflight(live, nil, nil); !slices.Equal(got, want) {
 		t.Errorf("live =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	var ro config
+	ro.Dev.Mount, ro.Hide = "live-ro", []string{".env"}
+	want = []string{
+		"egress   none: the guest reaches nothing outside",
+		"live     ~/work is the Mac's folder itself, read-only; on the guest's disk: node_modules, .venv; hidden: .env",
+	}
+	if got := devPreflight(ro, nil, nil); !slices.Equal(got, want) {
+		t.Errorf("live-ro =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

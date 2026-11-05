@@ -356,7 +356,7 @@ as a link is ungated until then.
   (`OPEN` for writing or creating, `WRITE`, `SETATTR`, `CREATE`, `REMOVE`,
   `RENAME`, `LINK`) refused at the root and at depth, `ACCESS` read-only, reads
   and `READDIR` unchanged.
-- [ ] **2. The project, read-only.** `dev.mount: live-ro`, its gate and request text,
+- [x] **2. The project, read-only.** `dev.mount: live-ro`, its gate and request text,
   a test that approving `live-ro` doesn't approve `live`. A server per mode, with a
   test that a running read-write server isn't reused. `dev.local` made on the Mac,
   refusing a symlink on the way; defaults only where they exist. The summary and

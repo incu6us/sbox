@@ -435,7 +435,7 @@ type devHost struct {
 	pollEvery            time.Duration               // how often the notice counts the guest's changes; 10 s when 0
 	// startLive starts a live session's server, or finds it running, and
 	// returns where the guest's relay goes; startLiveServer when nil.
-	startLive func(project, dir string) (*liveRelay, error)
+	startLive func(project, dir string, readOnly bool) (*liveRelay, error)
 }
 
 // liveServer writes project's protect list for its live server, starts or
@@ -453,15 +453,57 @@ func (h devHost) liveServer(project, dir string, cfg config) (*liveRelay, error)
 			return nil, err
 		}
 	}
+	local := cfg.liveLocal()
+	if cfg.liveRO() {
+		var err error
+		if local, err = readOnlyLocal(dir, cfg); err != nil {
+			return nil, err
+		}
+	}
 	start := h.startLive
 	if start == nil {
-		start = func(project, dir string) (*liveRelay, error) { return startLiveServer(h.stateDir, project, dir) }
+		start = func(project, dir string, readOnly bool) (*liveRelay, error) {
+			return startLiveServer(h.stateDir, project, dir, readOnly)
+		}
 	}
-	relay, err := start(project, dir)
+	relay, err := start(project, dir, cfg.liveRO())
 	if err == nil {
-		relay.local = cfg.liveLocal()
+		relay.local = local
 	}
 	return relay, err
+}
+
+// readOnlyLocal is what a read-only session keeps on the guest's disk. The
+// guest can't make a mount point there, so what the project lists is made
+// here, and one reached through a symlink stops it: sbox.yaml is the
+// project's, and it mustn't place a folder elsewhere. The defaults are kept
+// only where they already are a folder, leaving nothing on the Mac.
+func readOnlyLocal(dir string, cfg config) ([]string, error) {
+	if len(cfg.Dev.Local) == 0 {
+		return slices.DeleteFunc(cfg.liveLocal(), func(p string) bool {
+			fi, err := os.Lstat(filepath.Join(dir, p))
+			return err != nil || !fi.IsDir()
+		}), nil
+	}
+	for _, p := range cfg.Dev.Local {
+		at := dir
+		for _, name := range strings.Split(p, "/") {
+			at = filepath.Join(at, name)
+			fi, err := os.Lstat(at)
+			switch {
+			case os.IsNotExist(err):
+				err = os.Mkdir(at, 0o755)
+			case err == nil && fi.Mode()&os.ModeSymlink != 0:
+				err = fmt.Errorf("dev.local: %s goes through a symlink, %s", p, at)
+			case err == nil && !fi.IsDir():
+				err = fmt.Errorf("dev.local: %s isn't a folder", at)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return cfg.Dev.Local, nil
 }
 
 func randomBytes(n int) ([]byte, error) {
@@ -875,7 +917,7 @@ func collectSummary(ctx context.Context, id, dir string, started time.Time, coun
 	wg.Go(func() { unsynced = count() })
 	wg.Wait()
 	blocked := append(portLines(ss.String(), cfg.Ports), denials...)
-	return sessionSummary(time.Since(started), dir, unsynced, cfg.live(), parseEvents(events.String()), append(blocked, extra...)), unsynced
+	return sessionSummary(time.Since(started), dir, unsynced, cfg.Dev.Mount, parseEvents(events.String()), append(blocked, extra...)), unsynced
 }
 
 // liveSession finds the project's running or paused session.
