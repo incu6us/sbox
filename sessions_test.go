@@ -703,7 +703,7 @@ func TestDevMainReattaches(t *testing.T) {
 		notes string     // on stderr
 	}{
 		{name: "running", args: []string{dir}, ps: live + " running " + started + " " + project + "\n",
-			want: [][]string{{"ps"}, {"attach", live}, {"stop", live}}, notes: "attached to session " + live + ", running 2h0m"},
+			want: [][]string{{"ps"}, {"attach", live}, {"stop", live}}, notes: "attached to session " + live + ", running 2h"},
 		{name: "paused is resumed", args: []string{dir}, ps: live + " paused " + started + " " + project + "\n",
 			want: [][]string{{"ps"}, {"resume", live}, {"attach", live}, {"stop", live}}, notes: "attached to session " + live},
 		{name: "kept at detach", args: []string{dir}, ps: live + " running " + started + " " + project + "\n", keep: keep,

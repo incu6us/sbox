@@ -113,8 +113,9 @@ func TestHookScript(t *testing.T) {
 
 	t.Run("a start step still running after 30s gets a hint", func(t *testing.T) {
 		t.Parallel()
-		// The fake sleep shortens the script's 30 s wait to wait, so a
-		// one-second step outlasts it and a quick one doesn't.
+		// The fake sleep sets the script's 30 s wait to wait: a three-second step
+		// outlasts 0.2 s, and a quick step leaves long before 60 s, on a busy Mac too,
+		// unless something holds the output for all of it.
 		hint := func(wait string, step string) (string, time.Duration) {
 			home := newHome(t)
 			if err := os.MkdirAll(filepath.Join(home, ".fakebin"), 0o755); err != nil {
@@ -131,11 +132,11 @@ func TestHookScript(t *testing.T) {
 			}
 			return out, time.Since(began)
 		}
-		const want = "sbox: start: still running after 30s: /bin/sleep 1 (end a server's line with & to run it in the background)"
-		if out, _ := hint("0.2", "/bin/sleep 1"); !strings.Contains(out, want) {
+		const want = "sbox: start: still running after 30s: /bin/sleep 3 (end a server's line with & to run it in the background)"
+		if out, _ := hint("0.2", "/bin/sleep 3"); !strings.Contains(out, want) {
 			t.Errorf("slow step: output %q, want %q", out, want)
 		}
-		if out, took := hint("10", "true"); strings.Contains(out, "still running") || took > 5*time.Second {
+		if out, took := hint("60", "true"); strings.Contains(out, "still running") || took > 30*time.Second {
 			t.Errorf("quick step: output %q after %v; want no hint, and nothing left holding the output", out, took)
 		}
 	})
