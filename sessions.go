@@ -270,6 +270,11 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 				_, _ = fmt.Fprintln(stderr, "sbox: the live mount's server:", err)
 			}
 		}
+		if len(job.links) > 0 { // and each link's
+			if _, err := host.linkServers(project, cfg, job.links); err != nil {
+				_, _ = fmt.Fprintln(stderr, "sbox: a link's server:", err)
+			}
+		}
 		if changed := configChanged(host.stateDir, project, id, cfg); len(changed) > 0 {
 			applied, rest := applyLive(ctx, vm, id, cfg, job, changed, stderr)
 			if len(applied) > 0 {
@@ -368,6 +373,8 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	var refusals []string
 	if cfg.live() { // a live session's changes are on the Mac already
 		count = func() int { return 0 }
+	}
+	if cfg.live() || len(job.links) > 0 {
 		refusals = liveRefusals(host.stateDir, project)
 	}
 	summary, unsynced := collectSummary(ctx, id, args[0], started, count, cfg, vm, refusals)

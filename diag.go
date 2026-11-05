@@ -310,12 +310,23 @@ func devPreflight(cfg config, secrets map[string]string, project map[string]mcpS
 		}
 		lines = append(lines, "services "+strings.Join(ps, ", "))
 	}
-	if len(cfg.Mounts) > 0 {
+	if copies := cfg.copies(); len(copies) > 0 {
 		var ms []string
-		for _, m := range cfg.Mounts {
+		for _, m := range copies {
 			ms = append(ms, m.Host+" → "+m.Guest)
 		}
 		lines = append(lines, "mounts   "+strings.Join(ms, ", "))
+	}
+	if links := cfg.links(); len(links) > 0 {
+		var ms []string
+		for _, m := range links {
+			mode := "read-only"
+			if m.Mode == "rw" {
+				mode = "read-write"
+			}
+			ms = append(ms, m.Host+" → "+m.Guest+" ("+mode+")")
+		}
+		lines = append(lines, "links    "+strings.Join(ms, ", "))
 	}
 	if len(secrets) > 0 {
 		lines = append(lines, "secrets  "+strings.Join(slices.Sorted(maps.Keys(secrets)), ", "))

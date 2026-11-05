@@ -1661,3 +1661,101 @@ func TestDevLinkServerFails(t *testing.T) {
 		}
 	}
 }
+
+// TestDevLinksLifecycle: a copy session's summary has its links' refusals, a
+// reattach starts their servers again if they stopped, and a change to a link
+// waits for a new session.
+func TestDevLinksLifecycle(t *testing.T) {
+	t.Parallel()
+	dir, home, state := t.TempDir(), t.TempDir(), t.TempDir()
+	for _, p := range []string{"shared", "other"} {
+		if err := os.Mkdir(filepath.Join(home, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project := mustProjectID(t, dir)
+	stale := liveRefusedFile(state, project)
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, stale, "write from-an-earlier-session\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/shared, guest: /home/runner/shared, live: true}]\n")
+	var started []string
+	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLink: func(project string, l liveLink) (*liveRelay, error) {
+		started = append(started, l.guest)
+		f, err := os.OpenFile(liveRefusedFile(state, project), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		if err == nil {
+			_, _ = f.WriteString("write " + l.guest + "/a.txt\n") // as the server does when the guest is refused
+			_ = f.Close()
+		}
+		return &liveRelay{port: 4242, token: []byte("token")}, err
+	}}
+	var session string
+	vm := fakeVM{answer: func(args []string) string {
+		if args[0] == "start" {
+			session = args[1]
+			return "READY " + session + "\n"
+		}
+		return ""
+	}}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	notes := stderr.String()
+	for _, want := range []string{"BLOCKED live    /home/runner/shared/a.txt  read-only in a live session (write ×1)", "links    ~/shared → /home/runner/shared (read-only)"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, notes)
+		}
+	}
+	if strings.Contains(notes, "from-an-earlier-session") {
+		t.Errorf("an earlier session's refusals are in this one's summary:\n%s", notes)
+	}
+	if strings.Contains(notes, "mounts   ") {
+		t.Errorf("a link is listed as a copy:\n%s", notes)
+	}
+
+	// Attached again, the server is started again if it stopped, with no warning.
+	running := fakeVM{answer: func(args []string) string {
+		if args[0] == "ps" {
+			return session + " running 1700000000 " + project + "\n"
+		}
+		return ""
+	}}
+	started = nil
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, running.run, host); code != exitOK || !slices.Equal(started, []string{"/home/runner/shared"}) {
+		t.Errorf("reattach: exit %d, startLink calls %q\n%s", code, started, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "config changed") {
+		t.Errorf("reattach warned of a change:\n%s", stderr.String())
+	}
+
+	// A new link waits for a new session, as sbox dev says.
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/shared, guest: /home/runner/shared, live: true}, {host: ~/other, guest: /home/runner/other, live: true}]\n")
+	stderr.Reset()
+	if code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, running.run, host); code != exitOK {
+		t.Errorf("reattach after a change: exit %d\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "mounts.live") || !strings.Contains(stderr.String(), "sbox dev -restart") {
+		t.Errorf("a changed link isn't called out:\n%s", stderr.String())
+	}
+	for _, c := range running.calls {
+		if strings.Contains(strings.Join(c, " "), "rm -rf") {
+			t.Errorf("a changed link was copied in: %q", c)
+		}
+	}
+}
+
+// TestPreflightLinks: copies and links are listed apart, with a link's mode.
+func TestPreflightLinks(t *testing.T) {
+	t.Parallel()
+	var c config
+	c.Mounts = []mount{{Host: "~/c", Guest: "/home/runner/c"}, {Host: "~/r", Guest: "/home/runner/r", Live: true}, {Host: "~/w", Guest: "/home/runner/w", Mode: "rw", Live: true}}
+	got := strings.Join(devPreflight(c, nil, nil), "\n")
+	for _, want := range []string{"mounts   ~/c → /home/runner/c\n", "links    ~/r → /home/runner/r (read-only), ~/w → /home/runner/w (read-write)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preflight lacks %q:\n%s", want, got)
+		}
+	}
+}

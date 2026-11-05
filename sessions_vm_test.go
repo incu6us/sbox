@@ -1988,6 +1988,13 @@ mounts:
 		t.Errorf("the link beside a live project: %q", got)
 	}
 
+	// Each session's gone with its relays and tokens.
+	var left bytes.Buffer
+	_ = limactl(ctx, &left, "shell", "--workdir", "/", "sbox", "sh", "-c", "pgrep -af '[f]wd/link-' || true; sudo find /var/lib/sbox -path '*links/*.token'")
+	if strings.TrimSpace(left.String()) != "" {
+		t.Errorf("left after the sessions ended:\n%s", left.String())
+	}
+
 	// A link the runner leaves at a guest path doesn't steer the next mount there.
 	dev("", "mkdir -p /tmp/elsewhere; rm -rf ~/planted; ln -s /tmp/elsewhere ~/planted")
 	stdout, notes = dev("mounts: [{host: "+shared+", guest: /home/runner/planted/into, live: true}]\n",

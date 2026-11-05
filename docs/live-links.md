@@ -378,10 +378,10 @@ as a link is ungated until then.
   the drive, `listening`, tested from Go with fake commands (bash 3.2 and 5).
   `guest-init.sh`'s mounts. VM test: a read-only and a read-write folder in a
   copy-mode session and in a live one.
-- [ ] **7. Lifecycle.** Reattach restarts servers, `-restart` on a change,
+- [x] **7. Lifecycle.** Reattach restarts servers, `-restart` on a change,
   `BLOCKED live` lines with the guest path, the `sbox config` line, and stop and
-  clean leave nothing behind. VM test: kill a link's server, reattach, files
-  still open.
+  clean leave nothing behind. Killing a real server and reattaching was run by hand with
+  the real binary, as a test can't start one: a descriptor held open read the new content.
 - [ ] **8. Read-only files.** `only`, with table tests; `validate`; the mount and the
   symlink. VM test: a rename-over from the Mac shows, no sibling visible, and a guest
   replacing the link leaves the Mac untouched.
