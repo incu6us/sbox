@@ -1865,13 +1865,13 @@ func linksOnTheMac(t *testing.T, state string) func(project string, l liveLink) 
 	running := map[string]bool{}
 	return func(project string, l liveLink) (*liveRelay, error) {
 		spec := l.spec(project, state)
-		if !running[l.id] {
+		if !running[spec.folder] {
 			ln, err := serveSpec(state, project, spec)
 			if err != nil {
 				return nil, err
 			}
 			t.Cleanup(func() { _ = ln.Close() })
-			running[l.id] = true
+			running[spec.folder] = true
 		}
 		st, err := liveState(spec.folder)
 		return &liveRelay{port: st.port, token: st.token}, err
@@ -2080,6 +2080,129 @@ func TestFileLinkReadOnlyOnVM(t *testing.T) {
 	if !strings.Contains(notes.String(), "BLOCKED live    /home/runner/nested/rules.yaml") {
 		t.Errorf("the summary lacks the refusal:\n%s", notes.String())
 	}
+}
+
+// TestFileLinkReadWriteOnVM: every way of saving a read-write link to a file
+// reaches the Mac, and the Mac's edits come back; a conflict keeps the guest's
+// version, a deletion stays on its side, a link planted at the path sends nothing,
+// and a change just before a session stops is on the Mac.
+func TestFileLinkReadWriteOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, state, conf := filepath.Join(home, "app"), t.TempDir(), filepath.Join(home, "conf")
+	for _, d := range []string{dir, conf} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	macFile := filepath.Join(conf, "rw.conf")
+	writeTestFile(t, macFile, "[sec]\n\tkey = start\n")
+	writeTestFile(t, filepath.Join(conf, "beside.txt"), "the Mac's sibling secret\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: "+macFile+", guest: /home/runner/rw.conf, live: true, mode: rw}]\n")
+	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLink: linksOnTheMac(t, state)}
+	dev := func(script string) (string, string) {
+		t.Helper()
+		var out, notes bytes.Buffer
+		if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &out, &notes, sboxRun, host); code != exitOK {
+			t.Fatalf("sbox dev: exit %d\n%s\n%s", code, out.String(), notes.String())
+		}
+		return out.String(), notes.String()
+	}
+	// The Mac answers what the guest asks for: the request is the guest's write
+	// reaching the Mac, and the answer an edit there, saved each way.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+			got, _ := os.ReadFile(macFile)
+			switch {
+			case strings.Contains(string(got), "key = ask-rename"):
+				writeTestFile(t, macFile+".t", "[sec]\n\tkey = mac-renamed\n")
+				_ = os.Rename(macFile+".t", macFile)
+			case strings.Contains(string(got), "key = ask-inplace"):
+				writeTestFile(t, macFile, "[sec]\n\tkey = mac-inplace\n")
+			}
+		}
+	}()
+	saves := []struct{ name, cmd string }{
+		{"echo", `printf '[sec]\n\tkey = m1\n' > ~/rw.conf`},
+		{"sed -i", `sed -i 's/= .*/= m2/' ~/rw.conf`},
+		{"git config", `git config --file ~/rw.conf sec.key m3`},
+		{"python os.replace", `python3 -c "import os; open(os.path.expanduser('~/t'),'w').write('[sec]\n\tkey = m4\n'); os.replace(os.path.expanduser('~/t'), os.path.expanduser('~/rw.conf'))"`},
+		{"node rename", `node -e "const fs=require('fs'),h=require('os').homedir();fs.writeFileSync(h+'/t2','[sec]\n\tkey = m5\n');fs.renameSync(h+'/t2',h+'/rw.conf')"`},
+	}
+	script := "cat ~/rw.conf; "
+	wait := func(pattern, label string) string {
+		return "n=0; until grep -q '" + pattern + "' " + label + "; do n=$((n+1)); [ $n -gt 100 ] && echo 'TIMEOUT " + pattern + "' && break; sleep 0.1; done; "
+	}
+	hidden := "$(ls -d /run/sbox/links/*/rw.conf)"
+	for i, sv := range saves {
+		script += sv.cmd + " && echo '" + sv.name + ": rc 0' || echo '" + sv.name + ": failed'; " + wait(fmt.Sprintf("key = m%d", i+1), hidden)
+	}
+	script += `printf '[sec]\n\tkey = ask-rename\n' > ~/rw.conf; ` + wait("key = mac-renamed", "~/rw.conf") + "echo got-rename; "
+	script += `printf '[sec]\n\tkey = ask-inplace\n' > ~/rw.conf; ` + wait("key = mac-inplace", "~/rw.conf") + "echo got-inplace; "
+	script += "ls -a /run/sbox/links/*/; test -f ~/rw.conf && test ! -L ~/rw.conf && echo regular; " +
+		"rm ~/rw.conf; sleep 2; ls ~/rw.conf 2>&1 | grep -c 'No such'; cat " + hidden + "; " +
+		// A link planted at the path, to something only the runner's: nothing is sent.
+		"echo the-guest-secret > ~/secret; ln -s ~/secret ~/rw.conf; sleep 2; cat " + hidden + "; rm ~/rw.conf; " +
+		// The last change, right before the session stops.
+		`printf 'last change\n' > ~/rw.conf`
+	out, notes := dev(script)
+	for _, want := range []string{"key = start", "echo: rc 0", "sed -i: rc 0", "git config: rc 0", "python os.replace: rc 0", "node rename: rc 0", "got-rename", "got-inplace", "regular", "\n1\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, notes)
+		}
+	}
+	if strings.Contains(out, "TIMEOUT") {
+		t.Errorf("a change didn't arrive:\n%s\n%s", out, notes)
+	}
+	if strings.Contains(out, "beside.txt") || strings.Contains(out, "sibling secret") {
+		t.Errorf("the guest saw a sibling:\n%s", out)
+	}
+	if strings.Contains(out, "the-guest-secret\n[") || strings.Contains(string(mustRead(t, macFile)), "the-guest-secret") {
+		t.Errorf("a planted link's target reached the Mac:\n%s", out)
+	}
+	if got := string(mustRead(t, macFile)); got != "last change\n" {
+		t.Errorf("the change just before the stop isn't on the Mac: %q\n%s\n%s", got, out, notes)
+	}
+	entries, _ := os.ReadDir(conf)
+	if len(entries) != 2 {
+		t.Errorf("the Mac's folder gained or lost a file: %v", entries)
+	}
+
+	// A next session starts from the Mac's edit, made while nothing ran.
+	writeTestFile(t, macFile, "edited while no session ran\n")
+	if out, _ := dev("cat ~/rw.conf"); !strings.Contains(out, "edited while no session ran") {
+		t.Errorf("a new session's file: %q", out)
+	}
+	if got := string(mustRead(t, macFile)); got != "edited while no session ran\n" {
+		t.Errorf("the Mac's edit was overwritten: %q", got)
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // TestLiveLocalKeptOnVM: npm in a live session writes its project files to

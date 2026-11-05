@@ -368,6 +368,10 @@ func devMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 	}()
 	code = attachMain(ctx, attach, stdin, stdout, stderr, vm)
+	// One comparison: a change just made reaches the Mac now, not at the next boot.
+	if hasReadWriteFile(job.links) {
+		_ = vm(ctx, strings.NewReader(""), stderr, io.Discard, "attach", id, "--", "python3", "-I", "/drive/sbox/links.py", "--once", "/drive/sbox/links", "/home/runner")
+	}
 	close(stopWatch)
 	<-watched
 	count := func() int { return guestChanges(ctx, vm, id, host.stateDir, project, syncRules(cfg.Dev.Ignore)) }
@@ -734,8 +738,8 @@ func newLink(src string, m mount, hide []string) (liveLink, error) {
 	l := liveLink{src: src, guest: m.Guest, readOnly: m.Mode != "rw"}
 	if !fi.IsDir() {
 		l.src, l.file = filepath.Dir(src), filepath.Base(src)
-		if !l.readOnly { // ponytail: until read-write files land
-			return liveLink{}, fmt.Errorf("mounts: %s: a read-write link is a folder", m.Host)
+		if !l.readOnly && (strings.EqualFold(l.file, "HEAD") || slices.ContainsFunc(_protectedNames, func(n string) bool { return strings.EqualFold(n, l.file) })) {
+			return liveLink{}, fmt.Errorf("mounts: %s: the live server refuses every change to a file named %s", m.Host, l.file)
 		}
 		if strings.ContainsFunc(l.file, unicode.IsControl) {
 			return liveLink{}, fmt.Errorf("mounts: %s: its real name, %q, has a control character", m.Host, l.file)

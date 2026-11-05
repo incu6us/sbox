@@ -29,6 +29,8 @@ import (
 var (
 	//go:embed scripts/guest-init.sh
 	_guestInit string
+	//go:embed scripts/sbox-links.py
+	_linksScript string
 	//go:embed scripts/sbox-claude.py
 	_claudeScript string
 )
@@ -165,6 +167,12 @@ type liveLink struct {
 func linkID(src, file string, readOnly bool) string {
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%t", src, file, readOnly))
 	return hex.EncodeToString(sum[:8])
+}
+
+// hasReadWriteFile reports whether any link is a read-write file, which the
+// copy loop in the guest keeps.
+func hasReadWriteFile(links []liveLink) bool {
+	return slices.ContainsFunc(links, func(l liveLink) bool { return l.file != "" && !l.readOnly })
 }
 
 // driveLine is the link's line in sbox/links, tab-separated, as both sbox-run
@@ -652,6 +660,9 @@ func writeRunTar(w io.Writer, dir string, job guestJob, nonce, canary string) er
 			files = append(files, file{fmt.Sprintf("links/%d.token", l.guestPort), string(l.token), 0o400})
 		}
 		files = append(files, file{"sbox/links", lines.String(), 0o644})
+		if hasReadWriteFile(job.links) {
+			files = append(files, file{"sbox/links.py", _linksScript, 0o644})
+		}
 	}
 	for _, f := range files {
 		hdr := &tar.Header{Name: f.name, Mode: f.mode, Size: int64(len(f.body)), Typeflag: tar.TypeReg}

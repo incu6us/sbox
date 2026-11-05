@@ -1810,3 +1810,69 @@ func TestDevFileLinks(t *testing.T) {
 		t.Errorf("a file whose real name has a tab: %v", err)
 	}
 }
+
+// TestDevReadWriteFileLink: a read-write link to a file brings its copy loop onto
+// the guest's drive, and only then. Detaching runs one comparison, so a change made
+// just before it reaches the Mac now and not at the next boot. A name the server
+// refuses anyway is refused up front.
+func TestDevReadWriteFileLink(t *testing.T) {
+	t.Parallel()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, "notes.md"), "x\n")
+	dev := func(t *testing.T, mounts string) (map[string]string, [][]string, string, int) {
+		t.Helper()
+		dir := t.TempDir()
+		writeTestFile(t, filepath.Join(dir, "sbox.yaml"), mounts)
+		host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), home: home, startLink: func(string, liveLink) (*liveRelay, error) {
+			return &liveRelay{port: 5001, token: []byte("token")}, nil
+		}}
+		vm := fakeVM{answer: func(args []string) string {
+			if args[0] == "start" {
+				return "READY " + args[1] + "\n"
+			}
+			return ""
+		}}
+		var stdout, stderr bytes.Buffer
+		code := devMain(context.Background(), []string{dir}, strings.NewReader(""), &stdout, &stderr, vm.run, host)
+		if len(vm.stdins) < 2 {
+			return nil, vm.calls, stderr.String(), code
+		}
+		return tarFiles(t, vm.stdins[1]), vm.calls, stderr.String(), code
+	}
+	once := func(calls [][]string) bool {
+		return slices.ContainsFunc(calls, func(c []string) bool { return strings.Contains(strings.Join(c, " "), "links.py --once") })
+	}
+
+	files, calls, notes, code := dev(t, "mounts: [{host: ~/notes.md, guest: /home/runner/notes.md, live: true, mode: rw}]\n")
+	if code != exitOK {
+		t.Fatalf("exit %d\n%s", code, notes)
+	}
+	if files["sbox/links.py"] != _linksScript {
+		t.Error("the copy loop isn't on the drive")
+	}
+	if !strings.Contains(files["sbox/links"], "\trw\tfile\tnotes.md\t/home/runner/notes.md\n") {
+		t.Errorf("sbox/links = %q", files["sbox/links"])
+	}
+	if !once(calls) {
+		t.Errorf("no comparison at detach: %q", calls)
+	}
+
+	files, calls, notes, code = dev(t, "mounts: [{host: ~/notes.md, guest: /home/runner/notes.md, live: true}]\n")
+	if code != exitOK {
+		t.Fatalf("exit %d\n%s", code, notes)
+	}
+	if _, ok := files["sbox/links.py"]; ok || once(calls) {
+		t.Errorf("a read-only link: links.py on the drive %v, comparison at detach %v", ok, once(calls))
+	}
+
+	for _, name := range []string{".envrc", "HEAD", "head", ".VSCODE"} {
+		writeTestFile(t, filepath.Join(home, name), "x\n")
+		if _, _, notes, code := dev(t, "mounts: [{host: ~/"+name+", guest: /home/runner/f, live: true, mode: rw}]\n"); code == exitOK || !strings.Contains(notes, "refuses") {
+			t.Errorf("a read-write link to %s: exit %d\n%s", name, code, notes)
+		}
+		_ = os.Remove(filepath.Join(home, name))
+	}
+}

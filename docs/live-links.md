@@ -274,9 +274,13 @@ Every 0.5 s it compares each side's `lstat`:
   of mode bits in the guest isn't passed on either.
 - **At most 16 MiB.** A larger file on either side prints one line and isn't copied.
   ponytail: a whole-file copy and a hash; link the folder for a database or a large log.
-- **At boot** the same rules apply. So a change the last check didn't reach before a
-  hard stop goes to the Mac at the next boot. With no record yet and a different file
-  already at the guest path, it counts as both changed.
+- **What was seen is what came before the reads, and a copy means another look**, so an
+  edit the moment after a copy isn't taken for seen. The real VM test found that one.
+- **Before anything runs**, `guest-init.sh` makes one comparison, so a command finds the
+  file there. **At detach**, `sbox dev` makes one, so a change just made reaches the Mac
+  now. **At boot** the same rules apply, so a change the last check didn't reach before a
+  hard stop goes to the Mac then. With no record yet and a different file already at the
+  guest path, it counts as both changed.
 
 A read-write file link isn't strictly one file: it's two kept within about a second.
 `sync -watch` stays rejected for folders, where the cost grows with the tree; one
@@ -321,9 +325,9 @@ in for the relays:
   the guest: 1.0 s for a rename on the Mac, 1.02 s for an edit in place. Idle, it used 5
   CPU ticks of 3000 in 30 s (0.17% of a CPU). A writer adding a line every 0.1 s for 4 s
   reached the Mac once, whole.
-- **Claude Code's own edit tool wasn't run**: it needs a model call. A regular file on
-  ext4 can't give `EBUSY`, and Node's temp file and rename stood in for it. Commit 9's VM
-  test runs it if a token is there, and says so if not.
+- **Claude Code's own edit tool wasn't run**, here or in commit 9's VM test: it needs a
+  model call and a token. A regular file on ext4 can't give `EBUSY`, and Node's temp file
+  and rename stand in for it.
 - **Boot**: 1.05 to 1.11 s with no mounts, 1.09 to 1.10 s with two.
 
 ## Code touchpoints
@@ -385,7 +389,7 @@ as a link is ungated until then.
 - [x] **8. Read-only files.** `only`, with table tests; `validate`; the mount and the
   symlink. VM test: a rename-over from the Mac shows, no sibling visible, and a guest
   replacing the link leaves the Mac untouched.
-- [ ] **9. Read-write files.** `sbox-links.py` with its `--selftest` (each direction,
+- [x] **9. Read-write files.** `sbox-links.py` with its `--selftest` (each direction,
   conflict, deletion, half-written, a symlink at the path, the cap, boot after a hard
   stop), the root loop, `validate` on protected names. VM test recording what each
   tool does.
@@ -404,7 +408,7 @@ as a link is ungated until then.
   make one.
 - [ ] A rename-over on the Mac reaches the guest, read-only and read-write.
 - [ ] In a read-write file link, `echo >`, `sed -i`, `git config --file`, `os.replace`
-  and Claude Code's edit tool all reach the Mac within about a second, with no `EBUSY`.
+  and Node's temp file and rename all reach the Mac within about a second, with no `EBUSY`.
 - [ ] Both sides changed at once: the Mac's version stays, and the guest's is in
   `~/.sbox/conflicts/`. `rm` on either side deletes nothing on the other.
 - [ ] A symlink to a root-only file at a read-write file link's guest path sends

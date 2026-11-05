@@ -188,7 +188,8 @@ if [ -f /drive/sbox/links ]; then
 	echo 1023 >/sys/module/nfs/parameters/callback_tcpport 2>/dev/null
 	tab=$(printf '\t')
 	i=0
-	while IFS="$tab" read -r _ port _ _ kind name guest; do
+	while IFS="$tab" read -r _ port _ mode kind name guest; do
+		opts=vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,port=$port,hard,timeo=600
 		if [ "$kind" = file ]; then
 			at=/run/sbox/links/$port
 			mkdir -p "$at"
@@ -206,7 +207,10 @@ if [ -f /drive/sbox/links ]; then
 			fi
 		fi
 		mounted=1
-		until mount -t nfs4 -o "vers=4.0,addr=172.16.0.1,clientaddr=172.16.0.2,port=$port,hard,timeo=600" 172.16.0.1:/ "$at" 2>/dev/null; do
+		# The copy loop's look has to see a change at once. Only there: reads through
+		# a rename on the Mac met a stale handle far more often with actimeo=0.
+		[ "$kind$mode" = filerw ] && opts=$opts,actimeo=0
+		until mount -t nfs4 -o "$opts" 172.16.0.1:/ "$at" 2>/dev/null; do
 			i=$((i + 1))
 			if [ "$i" -ge 30 ]; then
 				echo "sbox: link $guest didn't answer; it is not the Mac's"
@@ -217,11 +221,21 @@ if [ -f /drive/sbox/links ]; then
 		done
 		# Read-only: looked up each time, so a rename on the Mac simply shows. If the
 		# guest replaces the link, only its own view changes.
-		if [ "$kind" = file ] && [ -n "$mounted" ]; then
+		if [ "$kind$mode" = filero ] && [ -n "$mounted" ]; then
 			setpriv --reuid=runner --regid=runner --init-groups rm -f "$guest"
 			setpriv --reuid=runner --regid=runner --init-groups ln -s "$at/$name" "$guest"
 		fi
+		# Read-write: an ordinary file, which every tool can save, kept by the copy
+		# loop; a link left by a read-only session would be followed by none of it.
+		[ "$kind$mode" = filerw ] && [ -L "$guest" ] && setpriv --reuid=runner --regid=runner --init-groups rm -f "$guest"
 	done </drive/sbox/links
+	if [ -f /drive/sbox/links.py ]; then
+		setpriv --reuid=runner --regid=runner --init-groups python3 -I /drive/sbox/links.py --once /drive/sbox/links /home/runner
+		while :; do
+			setpriv --reuid=runner --regid=runner --init-groups python3 -I /drive/sbox/links.py /drive/sbox/links /home/runner
+			sleep 1 # the agent killed it, or it failed: the link goes on
+		done </dev/null &
+	fi
 fi
 
 # Dev sessions: Claude Code's permissions and MCP servers from the config,
