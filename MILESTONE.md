@@ -799,6 +799,30 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   a project can't take back what the user hid. In copy mode it joins what a
   copy leaves out.
 
+- ✅ Live links (2026-11-05, [docs/live-links.md](docs/live-links.md)): the project
+  read-only (`dev.mount: live-ro`), and other Mac folders and files linked instead of
+  copied (`live: true` on a mount), read-only or read-write, each with its own server,
+  relay and token.
+  - A folder link follows a live mount's rules from its own root. A link to a file
+    serves its folder with one name in it. Read-only, the guest gets a symlink into a
+    hidden mount; read-write, an ordinary file and a copy loop in the guest, since a
+    mount at the path would refuse a rename over it (`EBUSY`).
+  - A read-write link is refused, whatever is allowed or approved, where a tool on the
+    Mac would run or read it as configuration. It also needs `allow.live`, as `allow.rw`
+    was written for `sbox run -apply`, which shows the changes first.
+  - The spike: three NFSv4.0 mounts at one IP on three ports are three clients. A rename
+    on the Mac through a link gave `ESTALE` in 57 rounds of 80 with `actimeo=0` and 1 of
+    80 with the defaults, so only the copy loop's mount has it. Truncating before writing
+    left an empty file on the Mac for a moment; it now writes first.
+  - Boot: 1.03 s with no links, 1.09 s with two folders, 1.07 s with a read-only file,
+    1.20 s with a read-write one. Each save crossed in about a second; idle, the loop
+    used 0.17% of a CPU.
+  - The real VM found an edit on the Mac the moment after a push was taken for seen,
+    `mkdir` on a `dev.local` folder that was there reported as the guest's, and a file
+    made on the Mac missing in the guest for 30 s (the kernel's folder cache, a second on
+    a link now; a live project's mount still has it). Not run: Claude Code's own edit
+    tool on a linked file, which needs a model call.
+
 ## Prerequisites ✅
 
 - `sbox setup` checks the Mac first (Apple M3 or later, macOS 15 or later,

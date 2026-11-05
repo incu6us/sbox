@@ -200,7 +200,7 @@ workspaces:
     mount: live                     # every project here is mounted live
 # a project's sbox.yaml
 dev:
-  mount: live                       # or copy, the default
+  mount: live                       # live-ro for read-only; copy is the default
   local: [node_modules, .next]      # kept on the guest's own disk (default: node_modules, .venv)
 protect: [config/prod.env]          # read-only in the guest, besides the defaults
 hide: [.env, .env.local, /secrets]  # the guest doesn't see these at all
@@ -234,6 +234,59 @@ Next.js's Turbopack needs `watchOptions: { pollIntervalMs: 1000 }` in the
 project's `next.config`. `dev.local` keeps dependency trees fast and their
 Linux binaries off the Mac (add `.next` for Next.js; each path leaves an
 empty folder on the Mac as its mount point). Changing `dev.mount` or `dev.local` needs `sbox dev -restart`.
+
+`dev.mount: live-ro` gives the guest the Mac's folder read-only: it reads your
+current files, every change is refused on the Mac however the guest asks, and
+each refusal is a `BLOCKED live` line. It needs the same `allow.live`, since the
+guest reads what a copy leaves out, and approving it doesn't approve `live`. Builds
+and anything else writing in the project fail unless they write to `dev.local`:
+paths you list there are made on the Mac before boot, and the defaults are bound
+only where they already exist.
+
+**Live links: other folders and files, nothing to sync.** A mount with `live: true`
+is the Mac's own folder or file instead of a copy, read-only unless `mode: rw`:
+
+```yaml
+# a project's sbox.yaml
+mounts:
+  - {host: ~/work/shared, guest: /home/runner/shared, live: true}              # read-only
+  - {host: ~/work/out,    guest: /home/runner/out,    live: true, mode: rw}    # read-write
+  - {host: ~/.config/app/rules.yaml, guest: /home/runner/rules.yaml, live: true}
+# ~/.config/sbox/config.yaml, or say yes when sbox dev asks
+workspaces:
+  client-a:
+    paths: [~/work]
+    allow:
+      live: true                    # needed for a read-write link
+      mounts: [~/work/shared, ~/.config/app/rules.yaml]
+      rw: [~/work/out]
+```
+
+A folder link follows every rule of a live mount from its own root: `.git`, `.envrc`
+and the rest read-only, no symlink followed, `hide` and `protect` applied. In a
+read-write folder an `rm -rf` in the guest deletes on your Mac, and there is no undo.
+`allow.rw` alone doesn't grant a read-write link: it was written for `sbox run -apply`,
+which shows the changes first. At most 10 links; changing one needs `sbox dev -restart`;
+they work in a copy session and a live one, and `sbox run` copies them as before.
+
+A read-write link can run code on your Mac if a tool there reads it as configuration:
+through `~/.gitconfig`, `core.fsmonitor` runs at your next git command anywhere. So one
+is refused, whatever you allow or approve, when it is, holds or is inside your home
+itself or anything above it, `.ssh`, `.gnupg`, `.aws`, `.config`, `.claude`,
+`$CLAUDE_CONFIG_DIR`, `Library`, `.gitconfig`, a shell's startup files, `.npmrc`, or a
+folder in your `$PATH`, resolving symlinks. There's no key to turn this off. It refuses
+some harmless paths, and it can't be complete: a read-write link is for data. Any link
+that holds the project or is inside it is refused too, as it would reach past `hide`.
+
+A link to a file shows the guest that file and nothing beside it. Read-only it's a
+symlink into a hidden mount, so a rename on the Mac simply shows. Read-write it's an
+ordinary file, so every way of saving works, a rename over it included, kept the same
+as the Mac's by a small loop in the guest: a change crosses within about a second. If
+both sides change within that, the Mac's stays and the guest's is saved in
+`~/.sbox/conflicts/`. Deleting the file on either side stays on that side, and mode bits
+don't cross. It's for small files, up to 16 MiB, and shares no locks: link the folder
+for a database or a large log. Boot: 1.03 s with no links, 1.09 s with two folders,
+1.07 s with a read-only file and 1.20 s with a read-write one.
 
 Egress entries on port 443 (or `:*`) go through an HTTPS proxy that
 tunnels to the listed hosts only; the guest's `HTTPS_PROXY` points at it,
@@ -321,7 +374,7 @@ mcp:
 
 Files from the Mac go in as copies, refreshed at every boot, so the Mac's
 version wins; nothing comes back (the project itself comes back with
-`sbox sync`):
+`sbox sync`; `live: true`, above, links one instead):
 
 ```yaml
 mounts:
@@ -720,5 +773,6 @@ golangci-lint run ./...
 VM-side scripts live in `scripts/` and are embedded in the binary:
 `provision.sh` (setup), `doctor.sh` (doctor's VM checks), `sbox-run.sh` (one
 job: prefetch and main microVM), `guest-init.sh` (runs inside each microVM),
-`sbox-dns.py` (the DNS logger) and `sbox-proxy.py` (the registry-only proxy and
-its relay); both Python scripts have `--selftest`.
+`sbox-dns.py` (the DNS logger), `sbox-proxy.py` (the registry-only proxy and
+its relay) and `sbox-links.py` (the copy loop of a read-write link to a file); the
+Python scripts have `--selftest`.

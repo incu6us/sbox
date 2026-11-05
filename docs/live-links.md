@@ -213,6 +213,15 @@ link's guest path must equal its own `realpath -m`, since a link the runner left
 the kept home would otherwise steer root's mount. A failed mount prints one line,
 as the project's does, and the session carries on; all links share one 30 s wait.
 
+### Folder cache
+
+A folder link and a read-only file link mount with `acdirmin=1,acdirmax=1`. By default
+the kernel caches a folder for 30 s or more, "not found" included: a file made on the
+Mac stayed missing in the guest for the whole 30 s, however often it looked. An edit to
+a file that's there doesn't wait for this. With it, a round trip through a read-write
+folder (the guest's new file reaching the Mac, the Mac's new file coming back) took 1.02
+s, and 3170 reads racing 300 renames on the Mac met no `ESTALE`, the same as without it.
+
 ### The project folder and a link
 
 A link that holds the project, or is inside it, is refused by resolved path.
@@ -232,11 +241,10 @@ never bound over its guest path.
   is resolved first, so a dotfile linked from a dotfiles repository exports the
   repository's folder with the one name. A name `hide` covers is refused by
   `validate`, as it would be missing in the guest.
-- **The guest mounts it out of the way**, at `/run/sbox/links/<port>`. A read-only
-  link takes the default options: a rename on the Mac showed within 33 ms, with
-  `ESTALE` in 1 round of 80. A read-write link's mount adds `actimeo=0`, so the
-  loop's `lstat` sees a change at once; `ESTALE` is common there (see the spike), and
-  the loop only retries at its next check.
+- **The guest mounts it out of the way**, at `/run/sbox/links/<port>`. A read-write
+  link's mount adds `actimeo=0`, so the loop's `lstat` sees a change at once; `ESTALE` is
+  common there (see the spike), and the loop only retries at its next check. The other
+  mounts keep the file cache's defaults, and see Folder cache below.
 - **Before either kind**, the parent of the guest path must equal its own `realpath
   -m`. A folder at the guest path prints a line and is skipped, never removed.
 
@@ -328,7 +336,9 @@ in for the relays:
 - **Claude Code's own edit tool wasn't run**, here or in commit 9's VM test: it needs a
   model call and a token. A regular file on ext4 can't give `EBUSY`, and Node's temp file
   and rename stand in for it.
-- **Boot**: 1.05 to 1.11 s with no mounts, 1.09 to 1.10 s with two.
+- **Boot**: 1.05 to 1.11 s with no mounts, 1.09 to 1.10 s with two. With the product's
+  code, medians of 5: 1.03 s with no links, 1.09 s with two folders, 1.07 s with a
+  read-only file, 1.20 s with a read-write one.
 
 ## Code touchpoints
 
@@ -393,43 +403,54 @@ as a link is ungated until then.
   conflict, deletion, half-written, a symlink at the path, the cap, boot after a hard
   stop), the root loop, `validate` on protected names. VM test recording what each
   tool does.
-- [ ] **10. Docs and timings.** README section with the trade-off in plain words,
+- [x] **10. Docs and timings.** README section with the trade-off in plain words,
   `docs/config.md`, `MILESTONE.md`, boot times with and without links.
 
 ## Verification
 
-- [ ] An edit in the guest is on the Mac within a second, and the reverse within
-  seconds, for a read-write folder.
-- [ ] In a read-only folder or file, writes fail as the runner, and from the raw
-  NFS client as uid 0; the Mac's files are byte-identical; refusals are BLOCKED
-  lines.
-- [ ] A read-write link keeps `.git`, `.envrc`, `HEAD`, `hide` and the symlink rules.
-- [ ] A file link shows no sibling, by `ls`, `LOOKUP` or a forged handle, and can't
-  make one.
-- [ ] A rename-over on the Mac reaches the guest, read-only and read-write.
-- [ ] In a read-write file link, `echo >`, `sed -i`, `git config --file`, `os.replace`
-  and Node's temp file and rename all reach the Mac within about a second, with no `EBUSY`.
-- [ ] Both sides changed at once: the Mac's version stays, and the guest's is in
-  `~/.sbox/conflicts/`. `rm` on either side deletes nothing on the other.
-- [ ] A symlink to a root-only file at a read-write file link's guest path sends
-  nothing to the Mac.
-- [ ] A change just before a hard stop is on the Mac after the next boot.
-- [ ] `dev.mount: live-ro`: writes refused as the runner and from the raw client as
-  uid 0; `-restart` from `live` leaves no way to write through the old server; a
-  `dev.local` through a symlink stops before boot.
-- [ ] One link's token and port get nothing from another link or session.
-- [ ] `~/.gitconfig`, `~/.zshrc`, `~`, `~/.config/x` and a `$PATH` folder as read-write
-  links are refused, approved or not, directly and through a symlink.
-- [ ] A symlink the runner left at a link's guest path on the kept home stops that
+On the real VM unless it says otherwise.
+
+- [x] A new file in a read-write folder goes guest to Mac and Mac to guest in a round
+  trip of 1.02 s (the test allows 3 s).
+- [x] In a read-only folder or file, writes fail as the runner, and from the raw NFS
+  client as uid 0; the Mac's files are byte-identical; refusals are BLOCKED lines.
+- [x] A read-write folder keeps `.git`, `.envrc`, `HEAD`, `hide` and the symlink rules.
+- [x] A file link shows no sibling, by `ls`, or from the raw client by `LOOKUP` or `OPEN`,
+  and can't make one. A sibling's old handle is `STALE` and a forged one refused in table
+  tests; the raw client's forged handle is at the project's mount, as the check is shared.
+- [x] A rename-over on the Mac reaches the guest, read-only and read-write.
+- [x] In a read-write file link, `echo >`, `sed -i`, `git config --file`, `os.replace`
+  and Node's temp file and rename all reach the Mac, with no `EBUSY`: about a second in
+  the spike, within 3 s by the test. Claude Code's own edit tool wasn't run.
+- [x] Both sides changed at once: the Mac's version stays, and the guest's is in
+  `~/.sbox/conflicts/`, by `--selftest`. `rm` in the guest deletes nothing on the Mac on
+  the VM; `rm` on the Mac nothing in the guest, by `--selftest`.
+- [x] A symlink at a read-write file link's guest path sends nothing to the Mac, with a
+  target the runner can read, the harder case.
+- [x] A change just before the session ends is on the Mac, by the comparison at detach.
+  A real hard stop isn't simulated: the next boot's comparison is by `--selftest`.
+- [x] `dev.mount: live-ro`: writes refused as the runner and from the raw client as
+  uid 0; a session after `live` can't write through the old server; a `dev.local` through
+  a symlink stops before boot, by a Go test.
+- [x] One link's token gets nothing from another's server: each has its own, in a Go
+  test, and the server closes a connection without its token. Not tried across two
+  sessions for links; the project's mount has that VM test, and the path is the same.
+- [x] `~/.gitconfig`, `~/.zshrc`, `~`, `~/.config/x` and a `$PATH` folder as read-write
+  links are refused, approved or not, directly and through a symlink, by Go tests.
+- [x] A symlink the runner left on a link's guest path on the kept home stops that
   mount, and nothing is mounted where it pointed.
-- [ ] Attaching with a changed copy mount doesn't touch a link's files.
-- [ ] `-fresh`, `sbox clean` and `sbox stop` delete nothing on the Mac and leave no
-  server, relay or token behind.
-- [ ] Boot time with no links is unchanged; sessions without `live` behave as before;
+- [x] Attaching with a changed copy mount doesn't touch a link's files, by a Go test.
+- [x] `-fresh` and `forget` delete nothing on the Mac, and no relay or token is left after
+  a session. `sbox clean` runs `forget` for every project, and wasn't run: it would take
+  every project's kept home. A real server stops itself within a minute, by hand.
+- [x] Boot time with no links is unchanged; sessions without `live` behave as before;
   the full VM suite passes.
 
 ## Known limits
 
+- A live project's own mount keeps the kernel's folder cache, so a file made on the Mac
+  can stay missing in its guest for 30 s or more. That mount wasn't changed here; the
+  fix would be the same two options.
 - A read-write file link lags by up to about a second, and when both sides change
   within that the Mac wins, with the guest's version saved. A change not yet copied at
   a hard stop is lost with `-fresh`.

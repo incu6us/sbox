@@ -46,7 +46,7 @@ type config struct {
 		Ignore      []string          `yaml:"ignore,omitempty"`      // names or root paths neither copied in nor synced, besides node_modules, .gitignore and the like; ! takes one back
 		PauseAfter  time.Duration     `yaml:"pause_after,omitempty"` // pause the session after this long with no terminal or forwarded connection; off when unset
 	} `yaml:"dev,omitempty"`
-	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot
+	Mounts  []mount           `yaml:"mounts,omitempty"`  // Mac files and folders copied into the guest at each boot, or linked with live: true
 	Secrets map[string]string `yaml:"secrets,omitempty"` // guest variable → env:HOST_VARIABLE, read when a session starts
 	// Claude Code's own rules in the guest, written to ~/.claude/settings.json.
 	Permissions struct {
@@ -565,7 +565,7 @@ func (c *config) check() error {
 	}
 	for _, m := range c.Mounts {
 		if m.Mode != "" && m.Mode != "ro" && m.Mode != "rw" {
-			return fmt.Errorf("mounts: %s: mode %q: want ro or rw (rw comes back with sbox run -apply; sbox dev copies mounts in only)", m.Host, m.Mode)
+			return fmt.Errorf("mounts: %s: mode %q: want ro or rw (a copy's rw comes back with sbox run -apply; with live: true, a change is on the Mac at once)", m.Host, m.Mode)
 		}
 		if !filepath.IsAbs(m.Host) && !strings.HasPrefix(m.Host, "~/") {
 			return fmt.Errorf("mounts: host %q: want an absolute path or one starting with ~/", m.Host)

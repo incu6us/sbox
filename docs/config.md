@@ -87,7 +87,8 @@ Durations and sizes use Go's `time.ParseDuration` form.
 
 ## Mounts
 
-There are no live mounts. The Lima VM has no host mounts by design and the
+There are no live mounts in this plan ([live-links.md](live-links.md) adds them
+later). The Lima VM has no host mounts by design and the
 microVM gets one read-only drive built from a tar. A mount is a copy in,
 and for `rw`, a copy back.
 
@@ -249,6 +250,7 @@ Stance per group:
 | `lima`, `image.packages` | config commit 2, applied by `sbox setup` | The Lima VM's 4 CPUs and 6 GiB fit one or two sessions; toolchains beyond Node and Python need the image to change. Both are setup-time, both are stamped so a change is visible. |
 | `services`, `ports` | dev mode commit 5 | Host services reachable from the guest, guest ports from the host. |
 | `dev.mount`, `dev.local`, `protect`, `hide`; a workspace's `mount` and `allow.live` | [live-mount.md](live-mount.md) | The project folder itself instead of a copy, governed like egress: a project asks, the user's file allows or grants. |
+| `dev.mount: live-ro`, a mount's `live: true` | [live-links.md](live-links.md) | The project read-only, and other Mac folders and files linked instead of copied, read-only or read-write. |
 | `vm`, `timeouts` | config commit 2 | They are constants and flags today; the file is just a place to keep them. A skill that needs 4 GiB or 5 minutes is a real case already seen in prefetch. |
 | `prefetch.registries` | config commit 2 | Private registries are the first thing a company user hits. One list appended to `ALLOWED` in the proxy. |
 | `entrypoints.run`, `skip`, `env` | with skill-scripts commit 3 | The heuristic will miss commands; a hand-written list is the honest fallback, and `skip` is how to drop a known-noisy MCP server. `run` lines are the user's, not the skill author's, which is why this file is never read from the target. |

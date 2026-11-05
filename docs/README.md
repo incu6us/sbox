@@ -72,4 +72,4 @@ Conventions shared by every plan:
 - [x] 6. Workspaces ([workspaces.md](workspaces.md)): every commit, verified on the real VM
 - [x] 7. Live mount ([live-mount.md](live-mount.md)): every commit, verified on the real VM
 - [ ] 8. Repos and URLs ([repos.md](repos.md)): planned, spike first
-- [ ] 9. Live links ([live-links.md](live-links.md)): planned, spike first
+- [x] 9. Live links ([live-links.md](live-links.md)): every commit, verified on the real VM; Claude Code's own edit tool not run on a linked file

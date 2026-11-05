@@ -208,8 +208,10 @@ if [ -f /drive/sbox/links ]; then
 		fi
 		mounted=1
 		# The copy loop's look has to see a change at once. Only there: reads through
-		# a rename on the Mac met a stale handle far more often with actimeo=0.
-		[ "$kind$mode" = filerw ] && opts=$opts,actimeo=0
+		# a rename on the Mac met a stale handle far more often with actimeo=0. The
+		# rest cache a folder for a second, not 30: a new file on the Mac is otherwise
+		# missing from the guest until then, however often it looks.
+		if [ "$kind$mode" = filerw ]; then opts=$opts,actimeo=0; else opts=$opts,acdirmin=1,acdirmax=1; fi
 		until mount -t nfs4 -o "$opts" 172.16.0.1:/ "$at" 2>/dev/null; do
 			i=$((i + 1))
 			if [ "$i" -ge 30 ]; then

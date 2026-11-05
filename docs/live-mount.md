@@ -395,5 +395,6 @@ branch isn't merged before the workspace gating lands.
 
 ## Out of scope
 
+- A read-only project, and other folders and files: [live-links.md](live-links.md).
 - Live mounts for `sbox run` and `sbox scan`.
 - Keeping the agent's commits in a guest-side overlay over `.git`.

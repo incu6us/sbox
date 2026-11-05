@@ -1945,17 +1945,46 @@ mounts:
 		time.Sleep(15 * time.Second) // after the guest is up and waiting for it
 		writeTestFile(t, filepath.Join(shared, "late.txt"), "written on the Mac after boot\n")
 	}()
-	stdout, notes := dev(links, "cat ~/shared/a.txt ~/shared/sub/deep.txt; ls -a ~/shared; "+
+	// A round trip: the guest's write reaching the Mac, and the Mac's answer back.
+	stopPong := make(chan struct{})
+	defer close(stopPong)
+	go func() {
+		for {
+			select {
+			case <-stopPong:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+			if _, err := os.Stat(filepath.Join(out, "ping")); err == nil {
+				_ = os.Remove(filepath.Join(out, "ping"))
+				_ = os.WriteFile(filepath.Join(out, "pong"), []byte("pong\n"), 0o644)
+			}
+		}
+	}()
+	roundTrip := `python3 -c "
+import os, time
+d = os.path.expanduser('~/out dir/')
+t = time.time()
+open(d + 'ping', 'w').close()
+while not os.path.exists(d + 'pong') and time.time() - t < 30:
+    time.sleep(0.01)
+print('round trip %.3f' % (time.time() - t) if os.path.exists(d + 'pong') else 'round trip timed out')
+os.remove(d + 'pong')
+"; `
+	stdout, notes := dev(links, roundTrip+"cat ~/shared/a.txt ~/shared/sub/deep.txt; ls -a ~/shared; "+
 		try("ro overwrite", "echo x > ~/shared/a.txt")+try("ro create", "touch ~/shared/planted")+try("ro remove", "rm ~/shared/a.txt")+
 		try("ro chmod", "chmod 700 ~/shared")+try("read .env", "cat ~/shared/.env")+
 		try("rw create", "echo from-the-guest > ~/'out dir'/new.txt")+try("rw .git", "echo x >> ~/'out dir'/.git/config")+try("rw hook", "touch ~/'out dir'/.git/hook")+
+		try("rw .envrc", "touch ~/'out dir'/.envrc")+try("rw HEAD", "touch ~/'out dir'/HEAD")+try("rw a hidden name", "echo x > ~/'out dir'/.env")+
+		try("rw an absolute symlink", "ln -s /Users/you/.zshrc ~/'out dir'/zshrc")+try("rw a symlink out", "ln -s ../shared ~/'out dir'/up")+
 		"grep -c ' nfs4 ' /proc/mounts; ls /drive/links 2>&1 | grep -c token; "+
 		"python3 -I ~/work/attack.py; "+
 		"for i in $(seq 1 90); do [ -f ~/shared/late.txt ] && cat ~/shared/late.txt && break; sleep 1; done")
 	_ = os.Remove(filepath.Join(shared, "late.txt"))
 	for _, want := range []string{
 		"from the Mac", "deep\n", "ro overwrite: refused", "ro create: refused", "ro remove: refused", "ro chmod: refused", "read .env: refused",
-		"rw create: allowed", "rw .git: refused", "rw hook: refused", "\n2\n0\n",
+		"rw create: allowed", "rw .git: refused", "rw hook: refused", "rw .envrc: refused", "rw HEAD: refused", "rw a hidden name: refused",
+		"rw an absolute symlink: refused", "rw a symlink out: refused", "\n2\n0\n",
 		"raw read 0", "raw write 13", "raw write at depth 13", "raw create 13", "raw remove 13", "raw hidden 2",
 		"written on the Mac after boot",
 	} {
@@ -1965,6 +1994,19 @@ mounts:
 	}
 	if strings.Contains(stdout, "hidden secret") || strings.Contains(stdout, ".env\n") {
 		t.Errorf("a link showed what hide names:\n%s", stdout)
+	}
+	m := regexp.MustCompile(`round trip ([0-9.]+)`).FindStringSubmatch(stdout)
+	if m == nil {
+		t.Errorf("no round trip through the read-write link:\n%s", stdout)
+	} else if secs, _ := strconv.ParseFloat(m[1], 64); secs > 3 {
+		t.Errorf("a round trip through the read-write link took %.3f s", secs)
+	} else {
+		t.Logf("a round trip through the read-write link: %.3f s", secs)
+	}
+	for _, p := range []string{".envrc", "HEAD", ".env", "zshrc", "up"} {
+		if _, err := os.Lstat(filepath.Join(out, p)); !os.IsNotExist(err) {
+			t.Errorf("%s exists on the Mac: %v", p, err)
+		}
 	}
 	if got, err := os.ReadFile(filepath.Join(out, "new.txt")); string(got) != "from-the-guest\n" {
 		t.Errorf("the read-write link's file on the Mac: %q, %v", got, err)
@@ -2001,6 +2043,22 @@ mounts:
 		"grep -c ' nfs4 ' /proc/mounts; ls ~/planted/into 2>/dev/null | grep -c a.txt; readlink ~/planted")
 	if !strings.HasPrefix(stdout, "0\n0\n/tmp/elsewhere") {
 		t.Errorf("a link left on the kept home steered a mount:\n%s\n%s", stdout, notes)
+	}
+
+	// Dropping the kept home can't reach through a link; sbox clean is this for each
+	// project, and isn't run here as it would take every project's.
+	macFiles := func() string { return treeDigest(t, shared) + treeDigest(t, out) }
+	before := macFiles()
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), links)
+	var fresh, freshNotes bytes.Buffer
+	if code := devMain(ctx, []string{"-fresh", dir, "--", "true"}, strings.NewReader(""), &fresh, &freshNotes, sboxRun, host); code != exitOK {
+		t.Errorf("sbox dev -fresh: exit %d\n%s", code, freshNotes.String())
+	}
+	if err := sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project); err != nil {
+		t.Errorf("forget: %v", err)
+	}
+	if macFiles() != before {
+		t.Error("-fresh or forget changed a link's files on the Mac")
 	}
 
 	// sbox run copies: a change stays in the guest.
@@ -2044,6 +2102,19 @@ func TestFileLinkReadOnlyOnVM(t *testing.T) {
 	writeTestFile(t, filepath.Join(conf, "rules.yaml"), "first\n")
 	writeTestFile(t, filepath.Join(conf, "secret.txt"), "the Mac's sibling secret\n")
 	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: "+filepath.Join(conf, "rules.yaml")+", guest: /home/runner/nested/rules.yaml, live: true}]\n")
+	prelude, _, _ := strings.Cut(_hostileClient, "reply = call(root, getfh)")
+	writeTestFile(t, filepath.Join(dir, "attack.py"), strings.Replace(prelude, `("172.16.0.1", 2049)`, `("172.16.0.1", 20490)`, 1)+`
+for name, ops in [
+    ("read", [root, open_for("rules.yaml", 1)]),
+    ("write", [root, open_for("rules.yaml", 3)]),
+    ("look up a sibling", [root, lookup("secret.txt")]),
+    ("read a sibling", [root, open_for("secret.txt", 1)]),
+    ("create a sibling", [root, open_for("planted", 3, True)]),
+    ("remove", [root, u32(28) + xstr(b"rules.yaml")]),
+    ("up from the root", [root, lookupp]),
+]:
+    print("raw", name, status(*ops))
+`)
 	host := devHost{stateDir: state, userConfig: allowAll(t), home: home, startLink: linksOnTheMac(t, state)}
 	go func() {
 		time.Sleep(10 * time.Second) // after the guest is up and waiting for it
@@ -2055,6 +2126,7 @@ func TestFileLinkReadOnlyOnVM(t *testing.T) {
 	}
 	script := "f=~/nested/rules.yaml; cat $f; m=$(dirname $(readlink $f)); ls -a $m; " +
 		try("write", "echo x > $f") + try("a sibling", "cat $m/secret.txt") + try("make a sibling", "touch $m/planted") + try("remove", "rm $m/rules.yaml") +
+		"python3 -I ~/work/attack.py; " +
 		"for i in $(seq 1 60); do grep -q second $f && cat $f && break; sleep 1; done; " +
 		"rm $f && echo mine > $f && cat $f"
 	var stdout, notes bytes.Buffer
@@ -2062,7 +2134,8 @@ func TestFileLinkReadOnlyOnVM(t *testing.T) {
 		t.Fatalf("sbox dev: exit %d\n%s\n%s", code, stdout.String(), notes.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"first\n", "rules.yaml\n", "write: refused", "a sibling: refused", "make a sibling: refused", "remove: refused", "second, renamed over\n", "mine\n"} {
+	for _, want := range []string{"first\n", "rules.yaml\n", "write: refused", "a sibling: refused", "make a sibling: refused", "remove: refused", "second, renamed over\n", "mine\n",
+		"raw read 0", "raw write 13", "raw look up a sibling 2", "raw read a sibling 2", "raw create a sibling 13", "raw remove 13", "raw up from the root 2"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("guest output lacks %q:\n%s\n%s", want, out, notes.String())
 		}
@@ -2149,7 +2222,7 @@ func TestFileLinkReadWriteOnVM(t *testing.T) {
 	}
 	script := "cat ~/rw.conf; "
 	wait := func(pattern, label string) string {
-		return "n=0; until grep -q '" + pattern + "' " + label + "; do n=$((n+1)); [ $n -gt 100 ] && echo 'TIMEOUT " + pattern + "' && break; sleep 0.1; done; "
+		return "n=0; until grep -q '" + pattern + "' " + label + "; do n=$((n+1)); [ $n -gt 30 ] && echo 'TIMEOUT " + pattern + "' && break; sleep 0.1; done; "
 	}
 	hidden := "$(ls -d /run/sbox/links/*/rw.conf)"
 	for i, sv := range saves {
