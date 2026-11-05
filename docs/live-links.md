@@ -362,10 +362,10 @@ as a link is ungated until then.
   refusing a symlink on the way; defaults only where they exist. The summary and
   `sbox config`. VM test: writes refused as the runner and from the raw client,
   `dev.local` works, the Mac's files byte-identical.
-- [ ] **3. The config key, and no copy of a link.** `mount.Live`, `mounts.live`
+- [x] **3. The config key, and no copy of a link.** `mount.Live`, `mounts.live`
   (a test that a recorded session without it still matches), the guest path rules,
   nesting, the port range and the cap. A test that `job.mounts` and `copyMounts` never
-  see a live mount; `sbox run` copies.
+  see a live mount; `sbox run` copies, pinned by commit 6's VM test.
 - [ ] **4. Gating and refusals.** `allow.mounts` for read-only; `allow.rw` and
   `allow.live` for read-write; the request text and a test that an old approval
   doesn't carry; BLOCKED lines. The read-write refusals as a table, with symlinks,

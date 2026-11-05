@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -95,9 +96,41 @@ type config struct {
 // boot, so the Mac's version wins; nothing comes back (sbox sync is for
 // the project).
 type mount struct {
-	Host  string `yaml:"host"`           // absolute, or ~/...
-	Guest string `yaml:"guest"`          // under /home/runner, outside the project
-	Mode  string `yaml:"mode,omitempty"` // ro (the default) or rw: sbox run -apply brings an rw mount's changes back
+	Host  string `yaml:"host"`                    // absolute, or ~/...
+	Guest string `yaml:"guest"`                   // under /home/runner, outside the project
+	Mode  string `yaml:"mode,omitempty"`          // ro (the default) or rw: sbox run -apply brings an rw mount's changes back
+	Live  bool   `yaml:"live,omitempty" json:"-"` // sbox dev links the Mac's own folder or file instead of copying it (docs/live-links.md)
+}
+
+// _sboxHome is what sbox writes in the guest's home after the mounts, so a
+// link there would land those writes on the Mac.
+var _sboxHome = []string{".ssh", ".claude", ".claude.json", ".sbox", ".npm", ".cache"}
+
+const (
+	_linkPort = 20490 // a link's relay in the guest: this plus its place in the list
+	_maxLinks = 10    // ponytail: a fixed range; an allocator if anyone needs an eleventh
+)
+
+// dedup keeps each mount's first appearance: your file and a project may
+// both name one.
+func dedup(mounts []mount) []mount {
+	var out []mount
+	for _, m := range mounts {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// links is the mounts that are links, in order.
+func (c config) links() []mount {
+	return slices.DeleteFunc(slices.Clone(c.Mounts), func(m mount) bool { return !m.Live })
+}
+
+// copies is the mounts that are copied in, in order.
+func (c config) copies() []mount {
+	return slices.DeleteFunc(slices.Clone(c.Mounts), func(m mount) bool { return m.Live })
 }
 
 // mountSources resolves each mount's host path against home and checks
@@ -143,12 +176,15 @@ var (
 // attach, the others when they are used.
 func (c config) bootKeys() map[string]string {
 	keys := map[string]any{
-		"egress": c.Egress, "ports": c.Ports, "services": c.Services, "secrets": c.Secrets, "mounts": c.Mounts,
+		"egress": c.Egress, "ports": c.Ports, "services": c.Services, "secrets": c.Secrets, "mounts": c.copies(),
 		"dev.env": c.Dev.Env, "dev.setup": c.Dev.Setup, "dev.start": c.Dev.Start,
 		"dev.vcpus": c.Dev.VCPUs, "dev.memory_mib": c.Dev.MemoryMiB, "dev.permissions": c.Dev.Permissions, "dev.pause_after": c.Dev.PauseAfter,
 		"permissions": c.Permissions, "mcp": c.MCP,
 	}
 	// Only when set, so sessions recorded before these keys still match.
+	if links := c.links(); len(links) > 0 {
+		keys["mounts.live"] = links
+	}
 	if c.Dev.Mount != "" {
 		keys["dev.mount"] = c.Dev.Mount
 	}
@@ -415,6 +451,7 @@ func (cfg *config) merge(c config) {
 // finish sorts and compacts the merged lists and checks what only the
 // whole can show.
 func (cfg config) finish() (config, error) {
+	cfg.Mounts = dedup(cfg.Mounts)
 	slices.Sort(cfg.Ports)
 	slices.Sort(cfg.Services)
 	slices.Sort(cfg.Egress)
@@ -429,7 +466,39 @@ func (cfg config) finish() (config, error) {
 		}
 		raw[port] = host
 	}
-	return cfg, nil
+	return cfg, cfg.checkLinks(raw)
+}
+
+// checkLinks checks what links can only break together: a mount inside
+// another (a copy's rm -rf, through a link, deletes on the Mac), and their
+// count and ports. raw is raw egress's ports.
+func (c config) checkLinks(raw map[string]string) error {
+	links := c.links()
+	if len(links) == 0 {
+		return nil
+	}
+	if len(links) > _maxLinks {
+		return fmt.Errorf("mounts: %d links: at most %d", len(links), _maxLinks)
+	}
+	for _, l := range links {
+		for _, m := range c.Mounts {
+			if m != l && (under(m.Guest, l.Guest) || under(l.Guest, m.Guest)) {
+				return fmt.Errorf("mounts: %s and %s nest: a link can't be inside another mount or around one", l.Guest, m.Guest)
+			}
+		}
+	}
+	taken := func(port int) bool { return port >= _linkPort && port < _linkPort+_maxLinks }
+	for _, p := range c.Services {
+		if taken(p) {
+			return fmt.Errorf("services: %d: links use ports %d to %d in the guest", p, _linkPort, _linkPort+_maxLinks-1)
+		}
+	}
+	for port := range raw {
+		if n, err := strconv.Atoi(port); err == nil && taken(n) {
+			return fmt.Errorf("egress: port %d: links use ports %d to %d in the guest", n, _linkPort, _linkPort+_maxLinks-1)
+		}
+	}
+	return nil
 }
 
 // rawEgress lists the egress entries that are an exact host on a port
@@ -504,6 +573,17 @@ func (c *config) check() error {
 		}
 		if guest == "/home/runner/work" || strings.HasPrefix(guest, "/home/runner/work/") {
 			return fmt.Errorf("mounts: guest %q: that's the project; sbox sync carries files there", m.Guest)
+		}
+		if !m.Live {
+			continue
+		}
+		if strings.ContainsFunc(m.Host+m.Guest, unicode.IsControl) {
+			return fmt.Errorf("mounts: %q → %q: a link's paths can't hold a control character", m.Host, m.Guest)
+		}
+		for _, name := range _sboxHome {
+			if under(guest, "/home/runner/"+name) {
+				return fmt.Errorf("mounts: guest %q: a link can't be where sbox writes in the home (%s)", m.Guest, name)
+			}
 		}
 	}
 	for _, list := range []struct {

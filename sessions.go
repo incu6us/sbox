@@ -715,7 +715,9 @@ func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error)
 	}
 	job := devJob(cfg, secrets)
 	for i, src := range srcs {
-		job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+		if !cfg.Mounts[i].Live { // a copy's guest path gets rm -rf: never a link's
+			job.mounts = append(job.mounts, mountCopy{src: src, guest: cfg.Mounts[i].Guest})
+		}
 	}
 	return cfg, job, nil
 }

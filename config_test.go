@@ -657,3 +657,103 @@ func TestPushKey(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveMountRules: what a link may be. sbox writes in parts of the home
+// after the mounts, and a copied mount runs rm -rf on its guest path; through a
+// link either lands on the Mac.
+func TestLiveMountRules(t *testing.T) {
+	t.Parallel()
+	link := func(guest string) string {
+		return "{host: ~/x, guest: /home/runner/" + guest + ", live: true}"
+	}
+	copied := func(guest string) string { return "{host: ~/y, guest: /home/runner/" + guest + "}" }
+	many := func(n int, each func(string) string) string {
+		var lines []string
+		for i := range n {
+			lines = append(lines, each(fmt.Sprintf("m%d", i)))
+		}
+		return strings.Join(lines, ", ")
+	}
+	for _, tt := range []struct {
+		name, body string
+		want       string // in the error; "" when it's fine
+	}{
+		{name: "a folder", body: "mounts: [" + link("shared") + "]\n"},
+		{name: "read-write", body: "mounts: [{host: ~/x, guest: /home/runner/out, live: true, mode: rw}]\n"},
+		{name: "over a fake credential", body: "mounts: [" + link(".config/gh") + ", {host: ~/z, guest: /home/runner/.aws, live: true}]\n"},
+		{name: "beside a copy", body: "mounts: [" + link("ab") + ", " + copied("a") + "]\n"},
+		{name: "a copy where sbox writes is as before", body: "mounts: [" + copied(".ssh/config") + ", " + copied(".claude/skills") + "]\n"},
+		{name: ".ssh", body: "mounts: [" + link(".ssh") + "]\n", want: "sbox writes"},
+		{name: "in .ssh", body: "mounts: [" + link(".ssh/keys") + "]\n", want: "sbox writes"},
+		{name: ".claude", body: "mounts: [" + link(".claude") + "]\n", want: "sbox writes"},
+		{name: "in .claude", body: "mounts: [" + link(".claude/skills") + "]\n", want: "sbox writes"},
+		{name: ".claude.json", body: "mounts: [" + link(".claude.json") + "]\n", want: "sbox writes"},
+		{name: ".sbox", body: "mounts: [" + link(".sbox/local") + "]\n", want: "sbox writes"},
+		{name: ".npm", body: "mounts: [" + link(".npm") + "]\n", want: "sbox writes"},
+		{name: "in .cache", body: "mounts: [" + link(".cache/uv") + "]\n", want: "sbox writes"},
+		{name: "a tab in the guest path", body: "mounts: [{host: ~/x, guest: \"/home/runner/a\\tb\", live: true}]\n", want: "control character"},
+		{name: "a newline in the host path", body: "mounts: [{host: \"~/a\\nb\", guest: /home/runner/a, live: true}]\n", want: "control character"},
+		{name: "a copy in a link", body: "mounts: [" + link("a") + ", " + copied("a/b") + "]\n", want: "nest"},
+		{name: "a link in a copy", body: "mounts: [" + copied("a") + ", " + link("a/b") + "]\n", want: "nest"},
+		{name: "a copy at a link", body: "mounts: [" + link("a") + ", " + copied("a") + "]\n", want: "nest"},
+		{name: "a link in a link", body: "mounts: [" + link("a") + ", {host: ~/z, guest: /home/runner/a/b, live: true}]\n", want: "nest"},
+		{name: "a link twice is once", body: "mounts: [" + link("a") + ", " + link("a") + "]\n"},
+		{name: "ten links", body: "mounts: [" + many(10, link) + "]\n"},
+		{name: "eleven links", body: "mounts: [" + many(11, link) + "]\n", want: "at most 10"},
+		{name: "eleven copies", body: "mounts: [" + many(11, copied) + "]\n"},
+		{name: "a service on a link's port", body: "services: [20490]\nmounts: [" + link("a") + "]\n", want: "20490"},
+		{name: "raw egress on a link's port", body: "egress: [db.example:20499]\nmounts: [" + link("a") + "]\n", want: "20499"},
+		{name: "beside the links' ports", body: "services: [20489, 20500]\negress: [db.example:20500]\nmounts: [" + link("a") + "]\n"},
+		{name: "that port with no link", body: "services: [20490]\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := filepath.Join(t.TempDir(), "sbox.yaml")
+			writeTestFile(t, p, tt.body)
+			_, err := loadConfig(filepath.Join(t.TempDir(), "none"), p)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("%v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("%v, want it to say %q", err, tt.want)
+			}
+		})
+	}
+
+	// Across the files, as the rules are about the result.
+	dir := t.TempDir()
+	user, project := filepath.Join(dir, "user.yaml"), filepath.Join(dir, "project.yaml")
+	writeTestFile(t, user, "mounts: ["+copied("a/b")+"]\n")
+	writeTestFile(t, project, "mounts: ["+link("a")+"]\n")
+	if _, err := loadConfig(user, project); err == nil || !strings.Contains(err.Error(), "nest") {
+		t.Errorf("a copy from your file in a link from the project's: %v", err)
+	}
+}
+
+// TestLiveMountBootKeys: links have their own key, as a change to one needs a
+// new session and a copy's doesn't; a session recorded before them still
+// matches.
+func TestLiveMountBootKeys(t *testing.T) {
+	t.Parallel()
+	var old config
+	old.Mounts = []mount{{Host: "~/a", Guest: "/home/runner/a"}}
+	keys := old.bootKeys()
+	if got, want := keys["mounts"], `[{"Host":"~/a","Guest":"/home/runner/a","Mode":""}]`; got != want {
+		t.Errorf("mounts = %s, want what sessions already recorded, %s", got, want)
+	}
+	if _, ok := keys["mounts.live"]; ok {
+		t.Errorf("mounts.live set with no link: %s", keys["mounts.live"])
+	}
+	var both config
+	both.Mounts = []mount{{Host: "~/a", Guest: "/home/runner/a"}, {Host: "~/b", Guest: "/home/runner/b", Mode: "rw", Live: true}}
+	keys = both.bootKeys()
+	if got, want := keys["mounts"], `[{"Host":"~/a","Guest":"/home/runner/a","Mode":""}]`; got != want {
+		t.Errorf("mounts = %s, want the copy alone, %s", got, want)
+	}
+	if got, want := keys["mounts.live"], `[{"Host":"~/b","Guest":"/home/runner/b","Mode":"rw"}]`; got != want {
+		t.Errorf("mounts.live = %s, want %s", got, want)
+	}
+	if got := changedKeys(old.bootKeys(), both.bootKeys()); !slices.Equal(got, []string{"mounts.live"}) {
+		t.Errorf("changed = %q", got)
+	}
+}

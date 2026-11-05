@@ -1523,3 +1523,46 @@ func TestReadOnlyLocal(t *testing.T) {
 		}
 	})
 }
+
+// TestLiveMountIsNeverCopied: a copied mount's guest path gets rm -rf at boot
+// and at attach. Through a read-write link that deletes on the Mac, so links
+// stay out of the copies, and a change to one waits for a new session.
+func TestLiveMountIsNeverCopied(t *testing.T) {
+	t.Parallel()
+	dir, home := t.TempDir(), t.TempDir()
+	for _, p := range []string{"copied", "linked"} {
+		if err := os.Mkdir(filepath.Join(home, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(home, p, "f"), p+"\n")
+	}
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), `mounts:
+  - {host: ~/copied, guest: /home/runner/copied}
+  - {host: ~/linked, guest: /home/runner/linked, live: true, mode: rw}
+`)
+	host := devHost{stateDir: t.TempDir(), userConfig: allowAll(t), home: home}
+	cfg, job, err := host.devConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(job.mounts) != 1 || job.mounts[0].guest != "/home/runner/copied" {
+		t.Errorf("job.mounts = %+v, want the copy alone", job.mounts)
+	}
+
+	vm := fakeVM{answer: func([]string) string { return "" }}
+	applied, rest := applyLive(context.Background(), vm.run, "id", cfg, job, []string{"mounts", "mounts.live"}, io.Discard)
+	if !slices.Equal(applied, []string{"mounts"}) || !slices.Equal(rest, []string{"mounts.live"}) {
+		t.Errorf("applied %q, rest %q", applied, rest)
+	}
+	for _, c := range vm.calls {
+		if strings.Contains(strings.Join(c, " "), "linked") {
+			t.Errorf("a call touched the link: %q", c)
+		}
+	}
+
+	var missing config
+	missing.Mounts = []mount{{Host: "~/gone", Guest: "/home/runner/gone", Live: true}}
+	if _, err := missing.mountSources(home); err == nil {
+		t.Error("a link to a path that isn't there: no error before anything starts")
+	}
+}
