@@ -215,12 +215,15 @@ as the project's does, and the session carries on; all links share one 30 s wait
 
 ### Folder cache
 
-A folder link and a read-only file link mount with `acdirmin=1,acdirmax=1`. By default
+A live project, a folder link and a read-only file link mount with
+`acdirmin=1,acdirmax=1`. By default
 the kernel caches a folder for 30 s or more, "not found" included: a file made on the
 Mac stayed missing in the guest for the whole 30 s, however often it looked. An edit to
 a file that's there doesn't wait for this. With it, a round trip through a read-write
 folder (the guest's new file reaching the Mac, the Mac's new file coming back) took 1.02
 s, and 3170 reads racing 300 renames on the Mac met no `ESTALE`, the same as without it.
+On a live project the round trip went from 30.01 s to 1.00 s. The cost, on 5000 files in
+500 folders: `git status` from about 6.05 s to 6.6 s, `find` from 0.35 s to 0.64 s.
 
 ### The project folder and a link
 
@@ -448,9 +451,6 @@ On the real VM unless it says otherwise.
 
 ## Known limits
 
-- A live project's own mount keeps the kernel's folder cache, so a file made on the Mac
-  can stay missing in its guest for 30 s or more. That mount wasn't changed here; the
-  fix would be the same two options.
 - A read-write file link lags by up to about a second, and when both sides change
   within that the Mac wins, with the guest's version saved. A change not yet copied at
   a hard stop is lost with `-fresh`.

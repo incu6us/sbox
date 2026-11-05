@@ -1520,6 +1520,61 @@ func TestLiveMountOnVM(t *testing.T) {
 	}
 }
 
+// TestLiveNewFileOnVM: a file made on the Mac shows in the guest within seconds,
+// even after the guest looked for it and missed: the kernel would otherwise cache
+// the folder, "not found" included, for 30 s or more.
+func TestLiveNewFileOnVM(t *testing.T) {
+	ctx := context.Background()
+	if ok, _ := doctor(ctx, io.Discard); !ok {
+		t.Skip("the sbox VM is not ready: run sbox setup")
+	}
+	dir, state := t.TempDir(), t.TempDir()
+	project, err := projectID(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sboxRun(ctx, nil, io.Discard, io.Discard, "forget", project) })
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "dev: {mount: live}\n")
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+			if _, err := os.Stat(filepath.Join(dir, "ping")); err == nil {
+				_ = os.Remove(filepath.Join(dir, "ping"))
+				_ = os.WriteFile(filepath.Join(dir, "pong"), []byte("pong\n"), 0o644)
+			}
+		}
+	}()
+	script := `python3 -c "
+import os, time
+assert not os.path.exists('pong')
+t = time.time()
+open('ping', 'w').close()
+while not os.path.exists('pong') and time.time() - t < 40:
+    time.sleep(0.01)
+print('round trip %.3f' % (time.time() - t))
+"`
+	host := devHost{stateDir: state, userConfig: allowAll(t), startLive: liveOnTheMac(t, state)}
+	var stdout, notes bytes.Buffer
+	if code := devMain(ctx, []string{dir, "--", "sh", "-c", script}, strings.NewReader(""), &stdout, &notes, sboxRun, host); code != exitOK {
+		t.Fatalf("sbox dev: exit %d\n%s\n%s", code, stdout.String(), notes.String())
+	}
+	m := regexp.MustCompile(`round trip ([0-9.]+)`).FindStringSubmatch(stdout.String())
+	if m == nil {
+		t.Fatalf("no round trip:\n%s\n%s", stdout.String(), notes.String())
+	}
+	if secs, _ := strconv.ParseFloat(m[1], 64); secs > 3 {
+		t.Errorf("a round trip through the live mount took %.3f s", secs)
+	} else {
+		t.Logf("a round trip through the live mount: %.3f s", secs)
+	}
+}
+
 // TestLiveMountWritesOnVM: the guest's writes land in the Mac's folder,
 // owned by the Mac user; each protected path refuses them, and the Mac's
 // .git is byte-identical afterwards.

@@ -191,6 +191,10 @@ bundler, Turbopack, reads `watchOptions.pollIntervalMs` from `next.config`,
 which is the project's to set. With it, a Mac edit reached the page in 0.85 s
 (0.11 s for an edit inside a copy-mode guest).
 
+A file made on the Mac shows within about a second: the mount caches a folder for
+one (`acdirmin=1,acdirmax=1`), not the kernel's 30 s or more, "not found" included. On
+5000 files in 500 folders that takes `git status` from about 6.05 s to 6.6 s.
+
 ### Git in the guest
 
 `.git` is read-only, so the guest gets `GIT_OPTIONAL_LOCKS=0` (`git status`

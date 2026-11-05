@@ -820,8 +820,9 @@ agent inside the sandbox. Plans with checkboxes: [docs/](docs/README.md).
   - The real VM found an edit on the Mac the moment after a push was taken for seen,
     `mkdir` on a `dev.local` folder that was there reported as the guest's, and a file
     made on the Mac missing in the guest for 30 s (the kernel's folder cache, a second on
-    a link now; a live project's mount still has it). Not run: Claude Code's own edit
-    tool on a linked file, which needs a model call.
+    every live mount now: a round trip from 30.01 s to 1.00 s, `git status` on 5000 files
+    from about 6.05 s to 6.6 s). Not run: Claude Code's own edit tool on a linked file,
+    which needs a model call.
 
 ## Prerequisites ✅
 
