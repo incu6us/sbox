@@ -61,7 +61,7 @@ grants and take `live` as well.
 | The project, read-only | `dev.mount: live-ro` | `allow.live`, a workspace's `mount: live` or `mount: live-ro`, or approve-once |
 | The project, read-write | `dev.mount: live` | `allow.live`, a workspace's `mount: live`, or approve-once |
 | Read-only mount | `live: true` | `allow.mounts`, or approve-once |
-| Read-write mount | `live: true, mode: rw` | `allow.rw` and `allow.live`, or approve-once |
+| Read-write mount | `live: true, mode: rw` | `allow.rw`, with `allow.live` or a workspace's `mount: live`, or approve-once |
 
 A read-only project still needs permission: the guest reads `.gitignore`d files
 that copy mode leaves out. Approving `live-ro` doesn't approve `live`, and a
@@ -366,7 +366,7 @@ as a link is ungated until then.
   (a test that a recorded session without it still matches), the guest path rules,
   nesting, the port range and the cap. A test that `job.mounts` and `copyMounts` never
   see a live mount; `sbox run` copies, pinned by commit 6's VM test.
-- [ ] **4. Gating and refusals.** `allow.mounts` for read-only; `allow.rw` and
+- [x] **4. Gating and refusals.** `allow.mounts` for read-only; `allow.rw` and
   `allow.live` for read-write; the request text and a test that an old approval
   doesn't carry; BLOCKED lines. The read-write refusals as a table, with symlinks,
   case, `$CLAUDE_CONFIG_DIR` and `$PATH`, and that approve-once can't pass them.

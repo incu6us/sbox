@@ -521,3 +521,193 @@ func TestBlockedReadOnlyLine(t *testing.T) {
 		t.Errorf("%q, want %q", got, want)
 	}
 }
+
+// TestLiveLinkGate: a project asks for a link inside what its workspace allows.
+// allow.rw alone isn't enough to write: it was written for sbox run -apply, which
+// shows the changes and asks first. For the same reason an approval doesn't carry
+// from a copy to a link.
+func TestLiveLinkGate(t *testing.T) {
+	t.Parallel()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "work", "app")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(home, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const ro, rw = "{host: ~/x, guest: /home/runner/x, live: true}", "{host: ~/x, guest: /home/runner/x, live: true, mode: rw}"
+	const roID, rwID = "mount ~/x → /home/runner/x (live)", "mount ~/x → /home/runner/x (live, rw)"
+	for _, tt := range []struct {
+		name, ws, ask, approved string
+		links                   int
+		miss, line              string
+	}{
+		{name: "read-only, not allowed", ask: ro, miss: roID, line: "allow.mounts: [~/x]"},
+		{name: "read-only, allow.mounts", ws: "allow: {mounts: [~/x]}", ask: ro, links: 1},
+		{name: "read-only, allow.rw", ws: "allow: {rw: [~/x]}", ask: ro, links: 1},
+		{name: "read-only, approved", ask: ro, approved: roID, links: 1},
+		{name: "a copy's approval doesn't carry", ask: ro, approved: "mount ~/x → /home/runner/x", miss: roID, line: "allow.mounts: [~/x]"},
+		{name: "read-write, not allowed", ask: rw, miss: rwID, line: "allow.rw: [~/x]"},
+		{name: "read-write, allow.rw alone", ws: "allow: {rw: [~/x]}", ask: rw, miss: rwID, line: "allow.live: true"},
+		{name: "read-write, allow.live alone", ws: "allow: {live: true}", ask: rw, miss: rwID, line: "allow.rw: [~/x]"},
+		{name: "read-write, allow.mounts isn't allow.rw", ws: "allow: {live: true, mounts: [~/x]}", ask: rw, miss: rwID, line: "allow.rw: [~/x]"},
+		{name: "read-write, both", ws: "allow: {live: true, rw: [~/x]}", ask: rw, links: 1},
+		{name: "read-write, allow.rw under a live grant", ws: "mount: live, allow: {rw: [~/x]}", ask: rw, links: 1},
+		{name: "read-write, allow.rw under a read-only grant", ws: "mount: live-ro, allow: {rw: [~/x]}", ask: rw, miss: rwID, line: "allow.live: true"},
+		{name: "read-write, approved", ask: rw, approved: rwID, links: 1},
+		{name: "a read-only approval doesn't carry", ask: rw, approved: roID, miss: rwID, line: "allow.rw: [~/x]"},
+		{name: "an approval of rw for sbox run doesn't carry", ask: rw, approved: "mount ~/x → /home/runner/x (rw)", miss: rwID, line: "allow.rw: [~/x]"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			user, project := filepath.Join(t.TempDir(), "config.yaml"), filepath.Join(t.TempDir(), "sbox.yaml")
+			writeTestFile(t, user, "workspaces: {mine: {paths: [~/work], "+tt.ws+"}}\n")
+			writeTestFile(t, project, "mounts: ["+tt.ask+"]\n")
+			cfg, _, misses, err := layered(user, project, dir, "", home, map[string]bool{tt.approved: tt.approved != ""})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(cfg.links()); got != tt.links {
+				t.Errorf("%d links, want %d", got, tt.links)
+			}
+			if tt.miss == "" {
+				if len(misses) != 0 {
+					t.Errorf("misses = %+v", misses)
+				}
+				return
+			}
+			if len(misses) != 1 || misses[0].id() != tt.miss || !strings.Contains(misses[0].blocked("mine"), tt.line) {
+				t.Errorf("misses = %+v, want %q saying %q", misses, tt.miss, tt.line)
+			}
+		})
+	}
+
+	// Your own file grants one outright.
+	user, project := filepath.Join(t.TempDir(), "config.yaml"), filepath.Join(t.TempDir(), "sbox.yaml")
+	writeTestFile(t, user, "workspaces: {mine: {paths: [~/work], mounts: ["+rw+"]}}\n")
+	writeTestFile(t, project, "")
+	if cfg, _, misses, err := layered(user, project, dir, "", home, nil); err != nil || len(misses) != 0 || len(cfg.links()) != 1 {
+		t.Errorf("a workspace's own link: %d links, misses %+v, %v", len(cfg.links()), misses, err)
+	}
+}
+
+// TestLinkPathRefusals: a read-write link is refused where it could run code on
+// the Mac, and any link where it would reach past the project's rules, whatever
+// was allowed.
+func TestLinkPathRefusals(t *testing.T) {
+	t.Parallel()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "Users", "me")
+	project := filepath.Join(home, "work", "app")
+	for _, d := range []string{project, "work/data", "work/toolbox/bin", "dotfiles", ".config/foo/out", ".claude-other/x", "Library/LaunchAgents", ".ssh"} {
+		p := d
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(home, d)
+		}
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(home, "dotfiles", "zshrc"), "")
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "zshrc"), filepath.Join(home, ".zshrc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(home, "work", "keys")); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{".gitconfig", "work/data/f.txt", ".npmrc"} {
+		writeTestFile(t, filepath.Join(home, f), "")
+	}
+	env := map[string]string{
+		"CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude-other"),
+		"PATH":              "/usr/bin::.:" + filepath.Join(home, "work", "toolbox", "bin"),
+	}
+	getenv := func(k string) string { return env[k] }
+	for _, tt := range []struct {
+		name, host, mode string
+		want             string // in the error; "" when it's fine
+	}{
+		{name: "data", host: "~/work/data", mode: "rw"},
+		{name: "a data file", host: "~/work/data/f.txt", mode: "rw"},
+		{name: "home", host: base + "/Users/me", mode: "rw", want: "home"},
+		{name: "above home", host: base + "/Users", mode: "rw", want: "home"},
+		{name: ".gitconfig", host: "~/.gitconfig", mode: "rw", want: ".gitconfig"},
+		{name: ".GITCONFIG", host: "~/.GITCONFIG", mode: "rw", want: ".gitconfig"},
+		{name: ".npmrc", host: "~/.npmrc", mode: "rw", want: ".npmrc"},
+		{name: "in .ssh", host: "~/.ssh", mode: "rw", want: ".ssh"},
+		{name: ".ssh through a link", host: "~/work/keys", mode: "rw", want: ".ssh"},
+		{name: "in .config", host: "~/.config/foo/out", mode: "rw", want: ".config"},
+		{name: "in Library", host: "~/Library/LaunchAgents", mode: "rw", want: "Library"},
+		{name: "the real .zshrc", host: "~/.zshrc", mode: "rw", want: ".zshrc"},
+		{name: "the folder holding the real .zshrc", host: "~/dotfiles", mode: "rw", want: ".zshrc"},
+		{name: "CLAUDE_CONFIG_DIR", host: "~/.claude-other/x", mode: "rw", want: "CLAUDE_CONFIG_DIR"},
+		{name: "a folder in PATH", host: "~/work/toolbox/bin", mode: "rw", want: "PATH"},
+		{name: "holding a folder in PATH", host: "~/work/toolbox", mode: "rw", want: "PATH"},
+		{name: "above /usr/bin", host: "/usr", mode: "rw", want: "PATH"},
+		{name: "the project", host: "~/work/app", mode: "rw", want: "project"},
+		{name: "around the project", host: "~/work", mode: "rw", want: "project"},
+		{name: "the project, read-only", host: "~/work/app", want: "project"},
+		{name: "around the project, read-only", host: "~/work", want: "project"},
+		{name: "inside the project, read-only", host: "~/work/app/sub", want: "project"},
+		{name: ".gitconfig, read-only", host: "~/.gitconfig"},
+		{name: ".ssh, read-only", host: "~/.ssh"},
+		{name: "a folder in PATH, read-only", host: "/usr/bin"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var c config
+			c.Mounts = []mount{{Host: tt.host, Guest: "/home/runner/l", Mode: tt.mode, Live: true}}
+			err := c.checkLinkPaths(home, project, getenv)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("%v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("%v, want it to say %q", err, tt.want)
+			}
+		})
+	}
+	var copies config
+	copies.Mounts = []mount{{Host: "~/.gitconfig", Guest: "/home/runner/.gitconfig", Mode: "rw"}, {Host: "~/work", Guest: "/home/runner/w"}}
+	if err := copies.checkLinkPaths(home, project, getenv); err != nil {
+		t.Errorf("copies are as before: %v", err)
+	}
+}
+
+// TestDevRefusesALinkOnApproval: no allowance or approval passes the refusals;
+// nothing starts.
+func TestDevRefusesALinkOnApproval(t *testing.T) {
+	t.Parallel()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "app")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n")
+	writeTestFile(t, filepath.Join(dir, "sbox.yaml"), "mounts: [{host: ~/.gitconfig, guest: /home/runner/.gitconfig, live: true, mode: rw}]\n")
+	user := filepath.Join(t.TempDir(), "config.yaml")
+	writeTestFile(t, user, "egress: []\n")
+	vm := fakeVM{answer: func([]string) string { return "" }}
+	host := devHost{stateDir: t.TempDir(), userConfig: user, home: home, approve: func([]string) bool { return true }}
+	var stdout, stderr bytes.Buffer
+	if code := devMain(context.Background(), []string{dir, "--", "true"}, strings.NewReader(""), &stdout, &stderr, vm.run, host); code == exitOK {
+		t.Errorf("exit 0, want a refusal\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), ".gitconfig") {
+		t.Errorf("stderr doesn't name it:\n%s", stderr.String())
+	}
+	for _, c := range vm.calls {
+		if c[0] == "start" {
+			t.Errorf("a session started: %q", vm.calls)
+		}
+	}
+}

@@ -713,6 +713,10 @@ func (h devHost) devConfigFrom(dir string, cfg config) (config, guestJob, error)
 	if err != nil {
 		return config{}, guestJob{}, err
 	}
+	getenv := func(k string) string { v, _ := lookup(k); return v }
+	if err := cfg.checkLinkPaths(home, dir, getenv); err != nil {
+		return config{}, guestJob{}, err
+	}
 	job := devJob(cfg, secrets)
 	for i, src := range srcs {
 		if !cfg.Mounts[i].Live { // a copy's guest path gets rm -rf: never a link's

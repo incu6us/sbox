@@ -227,6 +227,53 @@ func allowsMount(ro, rw []string, host string, writable bool, home string) bool 
 	return false
 }
 
+// _macRuns are what a tool on the Mac runs or reads as configuration, from the
+// home: a guest that can write ~/.gitconfig sets core.fsmonitor, and it runs at
+// your next git command anywhere. ponytail: a list, and it can't be complete; a
+// read-write link is for data.
+var _macRuns = []string{".ssh", ".gnupg", ".aws", ".config", ".claude", "Library", ".gitconfig",
+	".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile", ".npmrc"}
+
+// checkLinkPaths refuses what no allowance or approval may pass: a read-write
+// link that is, holds or is inside what could run code on the Mac, and any link
+// overlapping the project, which would reach past its hide and protect. All by
+// resolved path, compared as APFS does; ponytail: case alone, no Unicode
+// normalisation.
+func (c config) checkLinkPaths(home, project string, getenv func(string) string) error {
+	fold := func(p string) string { return strings.ToLower(macPath(p, home)) }
+	overlap := func(a, b string) bool { return under(a, b) || under(b, a) }
+	runs := map[string]string{}
+	for _, name := range _macRuns {
+		runs[fold(filepath.Join(home, name))] = "~/" + name
+	}
+	if dir := getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		runs[fold(dir)] = "$CLAUDE_CONFIG_DIR"
+	}
+	for _, dir := range filepath.SplitList(getenv("PATH")) {
+		if filepath.IsAbs(dir) {
+			runs[fold(dir)] = "$PATH's " + dir
+		}
+	}
+	for _, l := range c.links() {
+		p := fold(l.Host)
+		if l.Mode == "rw" && under(fold(home), p) {
+			return fmt.Errorf("mounts: %s: a read-write link can't be your home folder, or above it", l.Host)
+		}
+		if overlap(p, fold(project)) {
+			return fmt.Errorf("mounts: %s: a link can't hold the project or be inside it, as it would reach past hide and protect; dev.mount links the project", l.Host)
+		}
+		if l.Mode != "rw" {
+			continue
+		}
+		for _, at := range slices.Sorted(maps.Keys(runs)) {
+			if overlap(p, at) {
+				return fmt.Errorf("mounts: %s: a read-write link can't reach %s: a tool on the Mac reads or runs it, so the guest could run code there; link it read-only, or link a folder of data", l.Host, runs[at])
+			}
+		}
+	}
+	return nil
+}
+
 // request is one thing a project's sbox.yaml asks for that reaches past
 // its VM: as approvals and BLOCKED lines name it (entry), and as the
 // workspace's allow list would take it (list, value).
@@ -327,12 +374,23 @@ func layered(userFile, projectFile, dir, override, home string, approved map[str
 	project.Services = slices.DeleteFunc(project.Services, func(p int) bool {
 		return !keep(request{"service", strconv.Itoa(p), "services", strconv.Itoa(p)}, allowsService(services, p))
 	})
+	liveWrites := w.Allow.Live || w.Mount == "live" || user.Dev.Mount == "live"
 	project.Mounts = slices.DeleteFunc(project.Mounts, func(m mount) bool {
+		allowed := allowsMount(ro, rw, m.Host, m.Mode == "rw", home)
 		r := request{"mount", m.Host + " → " + m.Guest, "mounts", m.Host}
-		if m.Mode == "rw" {
-			r = request{"mount", m.Host + " → " + m.Guest + " (rw)", "rw", m.Host}
+		switch {
+		case m.Live && m.Mode == "rw": // no review step, so allow.rw alone isn't enough: it was written for run -apply
+			r.entry, r.list = r.entry+" (live, rw)", "rw"
+			if allowed && !liveWrites {
+				r.list, r.value = "live", "true"
+			}
+			allowed = allowed && liveWrites
+		case m.Live:
+			r.entry += " (live)"
+		case m.Mode == "rw":
+			r.entry, r.list = r.entry+" (rw)", "rw"
 		}
-		return !keep(r, allowsMount(ro, rw, m.Host, m.Mode == "rw", home))
+		return !keep(r, allowed)
 	})
 	// A live mount puts the Mac's folder in reach of the guest's writes; a
 	// read-only one, of its reads, past what copy mode leaves out.
